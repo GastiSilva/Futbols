@@ -109,4 +109,73 @@ const PlayerStatsSchema = {
  *  registrations: position ASC
  *  users:         stats.goals DESC
  *  users:         stats.assists DESC
+ *  members:       userId ASC  (COLLECTION_GROUP — para "mis grupos")
+ *  groups:        nameLower ASC (para búsqueda por prefijo de nombre)
+ *  joinRequests:  status ASC  (para filtrar pendientes)
  */
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  COLECCIÓN: groups
+ *  Path: /groups/{groupId}
+ * ══════════════════════════════════════════════════════════
+ *
+ *  Cada grupo es un espacio compartido para un círculo de amigos.
+ *  Los partidos existen de forma global y los grupos sirven para
+ *  organizar quiénes participan.
+ */
+const GroupSchema = {
+  name:        'string',          // Nombre visible del grupo
+  nameLower:   'string',          // Nombre en minúsculas (para búsqueda por prefijo)
+  description: 'string',          // Descripción opcional
+
+  inviteCode:  'string',          // Código de 8 chars para compartir enlace de invitación
+  createdBy:   'string',          // uid del creador
+
+  memberCount: 'number',          // Contador (actualizado vía transaction)
+
+  createdAt:   'Timestamp',
+  updatedAt:   'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: members
+ *  Path: /groups/{groupId}/members/{userId}
+ * ══════════════════════════════════════════════════════════
+ *
+ *  El userId como document ID garantiza un único registro por
+ *  miembro. Se consulta también como collectionGroup para obtener
+ *  "todos los grupos donde estoy".
+ */
+const GroupMemberSchema = {
+  userId:      'string',          // = document ID
+  displayName: 'string',
+  photoURL:    'string | null',
+
+  role:        "'owner' | 'admin' | 'member'",
+  // owner  → creador del grupo, permisos totales
+  // admin  → puede aceptar/rechazar solicitudes y expulsar miembros
+  // member → miembro regular
+
+  joinedAt:    'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: joinRequests
+ *  Path: /groups/{groupId}/joinRequests/{userId}
+ * ══════════════════════════════════════════════════════════
+ *
+ *  Solicitudes de ingreso enviadas por usuarios que encontraron
+ *  el grupo por búsqueda. Los admins/owner las aceptan o rechazan.
+ */
+const JoinRequestSchema = {
+  userId:      'string',          // = document ID
+  displayName: 'string',
+  photoURL:    'string | null',
+
+  requestedAt: 'Timestamp',
+  status:      "'pending' | 'accepted' | 'rejected'",
+}
+
