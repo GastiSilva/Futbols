@@ -1,0 +1,87 @@
+rules_version = '2';
+// ─────────────────────────────────────────────────────────────────────────────
+//  Firestore Security Rules — Futbols PWA
+// ─────────────────────────────────────────────────────────────────────────────
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.admin == true;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isValidStats(stats) {
+      return stats is map
+        && stats.goals is int && stats.goals >= 0
+        && stats.assists is int && stats.assists >= 0
+        && stats.matchesPlayed is int && stats.matchesPlayed >= 0;
+    }
+
+    // ── Colección: users ──────────────────────────────────────────────────────
+    // Cualquier usuario autenticado puede leer perfiles (para el ranking).
+    // Solo el propio usuario puede actualizar su perfil (excepto stats, que
+    // solo se actualizan desde Cloud Functions con Admin SDK).
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId)
+                    && !('stats' in request.resource.data.diff(resource.data).affectedKeys());
+      // Las stats solo las puede modificar el Admin SDK (Cloud Functions)
+      allow delete: if false;
+    }
+
+    // ── Colección: matches ────────────────────────────────────────────────────
+    match /matches/{matchId} {
+      // Cualquier autenticado puede leer partidos
+      allow read: if isAuthenticated();
+
+      // Solo admins crean o modifican la configuración del partido
+      allow create: if isAdmin();
+      allow update: if isAdmin()
+                    || (
+                      // Los usuarios solo pueden modificar currentPlayers y status
+                      // (a través de la transacción del composable)
+                      isAuthenticated()
+                      && request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['currentPlayers', 'status', 'updatedAt'])
+                    );
+      allow delete: if isAdmin();
+
+      // ── Subcolección: registrations ────────────────────────────────────────
+      match /registrations/{userId} {
+        // Cualquier autenticado puede leer la lista de inscriptos
+        allow read: if isAuthenticated();
+
+        // Un usuario solo puede inscribirse a sí mismo
+        allow create: if isOwner(userId)
+                      && request.resource.data.userId == request.auth.uid;
+
+        // Puede actualizar (ej: team asignado por admin)
+        allow update: if isAdmin()
+                      || isOwner(userId);
+
+        // Puede cancelar su propia inscripción
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      // ── Subcolección: playerStats ──────────────────────────────────────────
+      match /playerStats/{userId} {
+        // Lectura pública para autenticados
+        allow read: if isAuthenticated();
+
+        // Solo el Admin SDK (Cloud Functions) escribe stats
+        // En producción, esto es manejado por Cloud Functions con Admin SDK
+        // que bypasea las rules. Aquí bloqueamos acceso directo.
+        allow write: if false;
+      }
+    }
+  }
+}

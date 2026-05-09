@@ -1,0 +1,38 @@
+{
+  "name": "futbols",
+  "version": "1.0.0",
+  "description": "PWA para organizar partidos de fútbol amateur",
+  "productName": "Futbols",
+  "author": "",
+  "private": true,
+  "scripts": {
+    "lint":    "eslint --ext .js,.vue ./src",
+    "format":  "prettier --write \"**/*.{js,vue,scss,html,json}\"",
+    "dev":     "quasar dev",
+    "build":   "quasar build",
+    "build:pwa": "quasar build -m pwa"
+  },
+  "dependencies": {
+    "@quasar/extras": "^1.16.9",
+    "firebase": "^10.12.0",
+    "pinia": "^2.1.7",
+    "quasar": "^2.16.0",
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@quasar/app-vite": "^1.9.0",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "autoprefixer": "^10.4.19",
+    "eslint": "^8.57.0",
+    "eslint-plugin-vue": "^9.25.0",
+    "prettier": "^3.2.5",
+    "sass": "^1.77.0",
+    "vite": "^5.2.0"
+  },
+  "engines": {
+    "node": "^20.0.0 || ^22.0.0",
+    "npm": ">= 6.13.4",
+    "yarn": ">= 1.21.1"
+  }
+}
