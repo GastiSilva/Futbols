@@ -34,6 +34,26 @@ const routes = [
         meta: { requiresAuth: true },
       },
 
+      // Grupos
+      {
+        path: 'grupos',
+        name: 'groups',
+        component: () => import('src/pages/groups/GroupsPage.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'grupos/unirse',
+        name: 'join-group',
+        component: () => import('src/pages/groups/JoinGroupPage.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'grupos/:id',
+        name: 'group-detail',
+        component: () => import('src/pages/groups/GroupDetailPage.vue'),
+        meta: { requiresAuth: true },
+      },
+
       // Admin
       {
         path: 'admin',

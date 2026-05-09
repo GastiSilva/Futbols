@@ -83,5 +83,73 @@ service cloud.firestore {
         allow write: if false;
       }
     }
+
+    // ── Colección: groups ─────────────────────────────────────────────────────
+    match /groups/{groupId} {
+      // Cualquier usuario autenticado puede leer grupos (para búsqueda por nombre)
+      allow read: if isAuthenticated();
+
+      // Cualquier usuario autenticado puede crear un grupo
+      allow create: if isAuthenticated()
+                    && request.resource.data.createdBy == request.auth.uid;
+
+      // Solo owner/admin del grupo puede actualizar la configuración del grupo,
+      // O cualquier autenticado puede actualizar solo memberCount+updatedAt
+      // (necesario para join/leave via cliente)
+      allow update: if isAuthenticated() && (
+        get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+          in ['owner', 'admin']
+        || request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['memberCount', 'updatedAt'])
+      );
+
+      allow delete: if isAuthenticated()
+                    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == 'owner';
+
+      // ── Subcolección: members ────────────────────────────────────────────
+      match /members/{userId} {
+        // Cualquier autenticado puede leer miembros (lista pública del grupo)
+        allow read: if isAuthenticated();
+
+        // Un usuario puede añadirse a sí mismo (unirse por invite code)
+        // o un admin/owner puede añadir a alguien (al aceptar solicitud)
+        allow create: if isOwner(userId)
+                      || (isAuthenticated()
+                          && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+                               in ['owner', 'admin']);
+
+        // Solo admin/owner puede cambiar el rol de un miembro
+        allow update: if isAuthenticated()
+                      && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+                           in ['owner', 'admin'];
+
+        // Un miembro puede eliminarse a sí mismo (salir), o admin/owner puede expulsar
+        allow delete: if isOwner(userId)
+                      || (isAuthenticated()
+                          && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+                               in ['owner', 'admin']);
+      }
+
+      // ── Subcolección: joinRequests ───────────────────────────────────────
+      match /joinRequests/{userId} {
+        // El propio solicitante puede leer su solicitud;
+        // admin/owner pueden leer todas las solicitudes
+        allow read: if isOwner(userId)
+                    || (isAuthenticated()
+                        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+                             in ['owner', 'admin']);
+
+        // Solo el propio usuario puede crear su solicitud de ingreso
+        allow create: if isOwner(userId);
+
+        // Solo admin/owner puede actualizar el estado (aceptar/rechazar)
+        allow update: if isAuthenticated()
+                      && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+                           in ['owner', 'admin'];
+
+        allow delete: if false;
+      }
+    }
   }
 }
+

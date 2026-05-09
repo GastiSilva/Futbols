@@ -30,6 +30,21 @@
           <q-item-section>Ranking</q-item-section>
         </q-item>
 
+        <q-separator class="q-my-md" />
+        <q-item-label header class="text-grey-7 text-uppercase text-caption">
+          Grupos
+        </q-item-label>
+
+        <q-item clickable v-ripple :to="{ name: 'groups' }" exact>
+          <q-item-section avatar><q-icon name="group" /></q-item-section>
+          <q-item-section>Mis Grupos</q-item-section>
+        </q-item>
+
+        <q-item clickable v-ripple :to="{ name: 'join-group' }" exact>
+          <q-item-section avatar><q-icon name="person_add" /></q-item-section>
+          <q-item-section>Buscar Grupo</q-item-section>
+        </q-item>
+
         <!-- Solo visible para admins -->
         <template v-if="isAdmin">
           <q-separator class="q-my-md" />
