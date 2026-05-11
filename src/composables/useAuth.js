@@ -61,13 +61,15 @@ export function useAuth() {
         const tokenResult = await getIdTokenResult(firebaseUser, true)
         const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid))
 
+        const userData = userDoc.exists() ? userDoc.data() : {}
         authStore.setUser({
           uid: firebaseUser.uid,
           displayName: firebaseUser.displayName,
           email: firebaseUser.email,
           photoURL: firebaseUser.photoURL,
           isAdmin: tokenResult.claims.admin === true,
-          stats: userDoc.exists() ? userDoc.data().stats : defaultStats(),
+          role: userData.role ?? 'player',
+          stats: userData.stats ?? defaultStats(),
         })
       } else {
         authStore.clearUser()
@@ -81,13 +83,14 @@ export function useAuth() {
     const snap = await getDoc(userRef)
 
     if (!snap.exists()) {
-      // Primera vez: crea el documento con stats vacías
+      // Primera vez: crea el documento con stats vacías y rol 'player'
       await setDoc(userRef, {
         uid: firebaseUser.uid,
         displayName: firebaseUser.displayName,
         email: firebaseUser.email,
         photoURL: firebaseUser.photoURL,
         fcmToken: null,
+        role: 'player',
         stats: defaultStats(),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),

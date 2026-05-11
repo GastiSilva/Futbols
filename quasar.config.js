@@ -6,7 +6,7 @@ module.exports = configure(function (/* ctx */) {
     eslint: { fix: true },
 
     // ── Boot files ──────────────────────────────────────────────────────────
-    boot: ['firebase'],
+    boot: ['pinia', 'firebase'],
 
     // ── CSS global ──────────────────────────────────────────────────────────
     css: ['app.scss'],
@@ -75,7 +75,7 @@ module.exports = configure(function (/* ctx */) {
       manifest: {
         name: 'Futbols',
         short_name: 'Futbols',
-        description: 'Organizá tus partidos de fútbol amateur',
+        description: 'Organizá tus partidos de fútbol con amigos',
         display: 'standalone',
         orientation: 'portrait',
         background_color: '#ffffff',

@@ -5,6 +5,25 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
+// Roles disponibles en la aplicación
+export const USER_ROLES = {
+  ADMIN: 'admin',
+  OG: 'og',
+  PLAYER: 'player',
+}
+
+export const ROLE_LABELS = {
+  admin: 'Admin',
+  og: 'OG',
+  player: 'Jugador',
+}
+
+export const ROLE_COLORS = {
+  admin: 'amber-8',
+  og: 'blue-8',
+  player: 'green-8',
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const initialized = ref(false)  // true cuando onAuthStateChanged ha respondido
@@ -12,6 +31,8 @@ export const useAuthStore = defineStore('auth', () => {
   // ── Getters ────────────────────────────────────────────────────────────────
   const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.isAdmin === true)
+  const isOg = computed(() => user.value?.role === USER_ROLES.OG)
+  const role = computed(() => user.value?.role ?? USER_ROLES.PLAYER)
 
   // ── Actions ────────────────────────────────────────────────────────────────
   function setUser(userData) {
@@ -35,6 +56,8 @@ export const useAuthStore = defineStore('auth', () => {
     initialized,
     isAuthenticated,
     isAdmin,
+    isOg,
+    role,
     setUser,
     clearUser,
     updateFcmToken,

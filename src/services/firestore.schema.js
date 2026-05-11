@@ -15,6 +15,7 @@ const UserSchema = {
   email:       'string',
   photoURL:    'string | null',
   fcmToken:    'string | null',   // Token FCM para notificaciones push
+  role:        "'admin' | 'og' | 'player'", // Rol del usuario (default: 'player')
 
   stats: {
     goals:         'number',      // Goles acumulados en todos los partidos
@@ -38,6 +39,9 @@ const MatchSchema = {
 
   date:           'Timestamp',    // Fecha y hora del partido
   openAt:         'Timestamp',    // Cuándo se habilita la inscripción
+  notifyAt:       'Timestamp | null', // Primera notificación (default: openAt - 3h)
+
+  groupId:        'string | null', // ID del grupo asociado al partido
 
   format:         "'5v5' | '7v7' | '8v8'",
   maxPlayers:     '10 | 14 | 16', // Determinado por format

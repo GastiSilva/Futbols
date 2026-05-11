@@ -100,12 +100,17 @@ export function useMatch() {
       const maxPlayers = getMaxPlayers(formData.format)
       const openAt = Timestamp.fromDate(new Date(formData.openAt))
       const date = Timestamp.fromDate(new Date(formData.date))
+      const notifyAt = formData.notifyAt
+        ? Timestamp.fromDate(new Date(formData.notifyAt))
+        : null
 
       const matchRef = await addDoc(collection(db, 'matches'), {
         title: formData.title,
         location: formData.location ?? '',
         date,
         openAt,
+        notifyAt,
+        groupId: formData.groupId ?? null,
         format: formData.format,
         maxPlayers,
         currentPlayers: 0,

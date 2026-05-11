@@ -49,6 +49,13 @@
       "fields": [
         { "fieldPath": "status", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "displayName", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

@@ -28,6 +28,16 @@
       <q-spinner-dots color="green-9" size="48px" />
     </div>
 
+    <!-- Error -->
+    <q-banner
+      v-else-if="loadError"
+      class="bg-negative text-white rounded-borders q-mb-md"
+      dense
+    >
+      <template #avatar><q-icon name="error" /></template>
+      {{ loadError }}
+    </q-banner>
+
     <!-- Sin grupos -->
     <div v-else-if="groups.length === 0" class="text-center q-mt-xl text-grey-6">
       <q-icon name="group_off" size="72px" class="q-mb-md" />
@@ -42,11 +52,11 @@
         :key="group.id"
         class="col-12 col-sm-6 col-md-4"
       >
-        <q-card
-          class="cursor-pointer full-height"
-          @click="$router.push({ name: 'group-detail', params: { id: group.id } })"
-        >
-          <q-card-section>
+        <q-card class="full-height">
+          <q-card-section
+            class="cursor-pointer"
+            @click="$router.push({ name: 'group-detail', params: { id: group.id } })"
+          >
             <div class="row items-center no-wrap">
               <q-avatar color="green-9" text-color="white" size="48px" class="q-mr-md">
                 <q-icon name="sports_soccer" />
@@ -62,8 +72,52 @@
               {{ group.description }}
             </div>
           </q-card-section>
+
+          <!-- Desplegable de miembros -->
+          <q-expansion-item
+            dense
+            icon="people"
+            label="Ver miembros"
+            header-class="text-green-9 text-caption"
+            @before-show="loadMembers(group.id)"
+          >
+            <q-list dense class="q-pb-sm">
+              <q-item v-if="!groupMembers[group.id]" class="justify-center">
+                <q-spinner-dots color="green-9" size="24px" />
+              </q-item>
+              <q-item
+                v-for="member in groupMembers[group.id]"
+                :key="member.id"
+                class="q-py-xs"
+              >
+                <q-item-section avatar>
+                  <q-avatar size="28px">
+                    <img
+                      v-if="member.photoURL"
+                      :src="member.photoURL"
+                      :alt="member.displayName"
+                      referrerpolicy="no-referrer"
+                    />
+                    <q-icon v-else name="person" size="18px" />
+                  </q-avatar>
+                </q-item-section>
+                <q-item-section>
+                  <q-item-label class="text-body2">{{ member.displayName }}</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-badge
+                    :color="member.role === 'owner' ? 'green-9' : member.role === 'admin' ? 'blue-7' : 'grey-5'"
+                    :label="member.role === 'owner' ? 'Owner' : member.role === 'admin' ? 'Admin' : 'Miembro'"
+                    dense
+                  />
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-expansion-item>
+
           <q-card-actions align="right">
-            <q-btn flat color="green-9" label="Ver grupo" icon-right="chevron_right" />
+            <q-btn flat color="green-9" label="Ver grupo" icon-right="chevron_right"
+              @click="$router.push({ name: 'group-detail', params: { id: group.id } })" />
           </q-card-actions>
         </q-card>
       </div>
@@ -118,16 +172,32 @@ import { useQuasar } from 'quasar'
 
 const router = useRouter()
 const $q = useQuasar()
-const { loading, createGroup, getMyGroups } = useGroups()
+const { loading, createGroup, getMyGroups, getGroupMembers } = useGroups()
 
 const groups = ref([])
+const groupMembers = ref({})
+const loadError = ref(null)
 const showCreateDialog = ref(false)
 const creating = ref(false)
 const newGroup = ref({ name: '', description: '' })
 
 onMounted(async () => {
-  groups.value = await getMyGroups()
+  try {
+    loadError.value = null
+    groups.value = await getMyGroups()
+  } catch (err) {
+    loadError.value = err.message ?? 'Error al cargar los grupos. Verifica tu conexión.'
+  }
 })
+
+async function loadMembers(groupId) {
+  if (groupMembers.value[groupId]) return
+  try {
+    groupMembers.value[groupId] = await getGroupMembers(groupId)
+  } catch {
+    groupMembers.value[groupId] = []
+  }
+}
 
 function closeCreateDialog() {
   showCreateDialog.value = false

@@ -32,8 +32,15 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isAuthenticated();
       allow create: if isOwner(userId);
-      allow update: if isOwner(userId)
-                    && !('stats' in request.resource.data.diff(resource.data).affectedKeys());
+      // El propio usuario puede actualizar su perfil (no stats).
+      // Los admins pueden actualizar el campo 'role' de cualquier usuario.
+      allow update: if (
+        isOwner(userId)
+        && !('stats' in request.resource.data.diff(resource.data).affectedKeys())
+      ) || (
+        isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'updatedAt'])
+      );
       // Las stats solo las puede modificar el Admin SDK (Cloud Functions)
       allow delete: if false;
     }

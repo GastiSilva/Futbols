@@ -19,7 +19,7 @@ export default route(function ({ store }) {
 
   // ── Navigation Guard ──────────────────────────────────────────────────────
   router.beforeEach(async (to) => {
-    const authStore = useAuthStore(store)
+    const authStore = useAuthStore()
 
     // Espera a que Firebase resuelva el estado inicial de auth
     if (!authStore.initialized) {

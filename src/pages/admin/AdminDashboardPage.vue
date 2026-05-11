@@ -79,19 +79,111 @@
           </q-item>
         </q-list>
       </div>
+
+      <!-- Gestión de roles de usuarios -->
+      <div class="col-12 q-mt-md">
+        <div class="text-subtitle1 text-weight-bold q-mb-sm">
+          <q-icon name="manage_accounts" color="green-8" class="q-mr-xs" />
+          Gestión de usuarios
+        </div>
+
+        <q-card flat bordered>
+          <q-card-section class="q-pa-none">
+            <q-list separator>
+              <q-item v-if="loadingUsers" class="justify-center q-pa-md">
+                <q-spinner-dots color="green-9" size="32px" />
+              </q-item>
+              <q-item v-else-if="users.length === 0" class="text-grey-6 text-center q-pa-md">
+                <q-item-section>No hay usuarios registrados</q-item-section>
+              </q-item>
+              <q-item v-for="u in users" :key="u.id" class="q-py-sm">
+                <q-item-section avatar>
+                  <q-avatar size="38px">
+                    <img
+                      v-if="u.photoURL"
+                      :src="u.photoURL"
+                      :alt="u.displayName"
+                      referrerpolicy="no-referrer"
+                    />
+                    <q-icon v-else name="person" />
+                  </q-avatar>
+                </q-item-section>
+                <q-item-section>
+                  <q-item-label class="text-weight-medium">{{ u.displayName }}</q-item-label>
+                  <q-item-label caption>{{ u.email }}</q-item-label>
+                </q-item-section>
+                <q-item-section side style="min-width: 130px">
+                  <q-select
+                    :model-value="u.role ?? 'player'"
+                    :options="ROLE_OPTIONS"
+                    option-label="label"
+                    option-value="value"
+                    emit-value
+                    map-options
+                    dense
+                    outlined
+                    :loading="settingRoleFor === u.id"
+                    @update:model-value="(newRole) => setRole(u, newRole)"
+                  />
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-card-section>
+        </q-card>
+      </div>
+
     </div>
   </q-page>
 </template>
 
 <script setup>
-import { onMounted, onUnmounted } from 'vue'
-import { date } from 'quasar'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { date, useQuasar } from 'quasar'
+import { collection, getDocs, orderBy, query } from 'firebase/firestore'
+import { httpsCallable } from 'firebase/functions'
+import { db, functions } from 'src/services/firebase'
 import { useMatch } from 'src/composables/useMatch'
 
+const $q = useQuasar()
 const { matches, subscribeToUpcoming, stopListening } = useMatch()
 
-onMounted(() => subscribeToUpcoming())
+// ── Usuarios ──────────────────────────────────────────────────────────────────
+const users = ref([])
+const loadingUsers = ref(false)
+const settingRoleFor = ref(null)
+
+const ROLE_OPTIONS = [
+  { label: 'Jugador', value: 'player' },
+  { label: 'OG', value: 'og' },
+  { label: 'Admin', value: 'admin' },
+]
+
+onMounted(async () => {
+  subscribeToUpcoming()
+  loadingUsers.value = true
+  try {
+    const snap = await getDocs(query(collection(db, 'users'), orderBy('displayName', 'asc')))
+    users.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+  } finally {
+    loadingUsers.value = false
+  }
+})
 onUnmounted(() => stopListening())
+
+async function setRole(u, newRole) {
+  if (u.role === newRole) return
+  settingRoleFor.value = u.id
+  try {
+    const fn = httpsCallable(functions, 'setUserRole')
+    await fn({ targetUid: u.id, role: newRole })
+    u.role = newRole
+    $q.notify({ type: 'positive', message: `Rol de ${u.displayName} actualizado a ${newRole}` })
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    settingRoleFor.value = null
+  }
+}
 
 function formatDate(ts) {
   return ts ? date.formatDate(ts.toDate(), 'DD/MM HH:mm') : ''

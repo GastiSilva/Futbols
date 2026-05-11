@@ -11,6 +11,24 @@
           <q-card-section>
             <q-form @submit.prevent="handleSubmit" greedy class="q-gutter-y-md">
 
+              <!-- Grupo -->
+              <q-select
+                v-model="form.groupId"
+                :options="groups"
+                option-label="name"
+                option-value="id"
+                emit-value
+                map-options
+                label="Grupo"
+                outlined
+                clearable
+                hint="Grupo al que pertenece este partido (opcional)"
+              >
+                <template #prepend>
+                  <q-icon name="group" />
+                </template>
+              </q-select>
+
               <!-- Título -->
               <q-input
                 v-model="form.title"
@@ -36,14 +54,25 @@
                 :rules="[val => !!val || 'Campo requerido']"
               />
 
-              <!-- Fecha y hora de apertura de inscripción -->
+              <!-- Hora de apertura de lista -->
               <q-input
                 v-model="form.openAt"
-                label="Apertura de lista (fecha y hora)"
+                label="Hora de inicio de lista (apertura de inscripción)"
                 outlined
                 type="datetime-local"
-                hint="Cuándo se habilitará el botón 'Anotarme'"
+                hint="Cuándo se habilita el botón 'Anotarme'"
                 :rules="[val => !!val || 'Campo requerido', validateOpenAt]"
+                @update:model-value="syncNotifyAt"
+              />
+
+              <!-- Primera notificación -->
+              <q-input
+                v-model="form.notifyAt"
+                label="Primera notificación"
+                outlined
+                type="datetime-local"
+                hint="Notificación recordatoria antes de que abra la lista (por defecto 3 h antes)"
+                :rules="[validateNotifyAt]"
               />
 
               <!-- Formato del partido -->
@@ -63,7 +92,7 @@
                 </template>
               </q-select>
 
-              <!-- Info de cupos (dinámica según formato) -->
+              <!-- Info de cupos -->
               <q-banner
                 v-if="form.format"
                 class="bg-green-1 text-green-9 rounded-borders"
@@ -94,49 +123,92 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useMatch, FORMAT_OPTIONS } from 'src/composables/useMatch'
+import { useGroups } from 'src/composables/useGroups'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from 'src/services/firebase'
 
 const $q = useQuasar()
 const router = useRouter()
 const { createMatch, loading } = useMatch()
+const { getMyGroups } = useGroups()
+
+const groups = ref([])
 
 const form = ref({
+  groupId: null,
   title: '',
   location: '',
   date: '',
   openAt: '',
+  notifyAt: '',
   format: null,
+})
+
+onMounted(async () => {
+  try {
+    groups.value = await getMyGroups()
+  } catch {
+    groups.value = []
+  }
 })
 
 const selectedFormat = computed(() =>
   FORMAT_OPTIONS.find((f) => f.value === form.value.format),
 )
 
+// Cuando cambia openAt, actualiza notifyAt al valor por defecto (3 h antes)
+function syncNotifyAt(newOpenAt) {
+  if (!newOpenAt) return
+  const openAtMs = new Date(newOpenAt).getTime()
+  if (isNaN(openAtMs)) return
+  const threeHoursBefore = new Date(openAtMs - 3 * 60 * 60 * 1000)
+  form.value.notifyAt = toDatetimeLocal(threeHoursBefore)
+}
+
+function toDatetimeLocal(date) {
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 function validateOpenAt(val) {
   if (!val || !form.value.date) return true
   return new Date(val) < new Date(form.value.date) || 'La apertura debe ser antes del partido'
+}
+
+function validateNotifyAt(val) {
+  if (!val || !form.value.openAt) return true
+  return new Date(val) < new Date(form.value.openAt) || 'La notificación debe ser antes de la apertura de lista'
 }
 
 async function handleSubmit() {
   try {
     const matchId = await createMatch(form.value)
 
-    // Programa la notificación push vía Cloud Function
-    const scheduleNotification = httpsCallable(functions, 'scheduleMatchOpenNotification')
-    await scheduleNotification({
+    // Programa la notificación de apertura de lista
+    const scheduleOpen = httpsCallable(functions, 'scheduleMatchOpenNotification')
+    await scheduleOpen({
       matchId,
       openAt: new Date(form.value.openAt).toISOString(),
       matchTitle: form.value.title,
     })
 
+    // Programa la notificación recordatoria si se definió notifyAt
+    if (form.value.notifyAt) {
+      const scheduleReminder = httpsCallable(functions, 'scheduleMatchReminderNotification')
+      await scheduleReminder({
+        matchId,
+        notifyAt: new Date(form.value.notifyAt).toISOString(),
+        matchTitle: form.value.title,
+      })
+    }
+
     $q.notify({
       type: 'positive',
-      message: '¡Partido creado y notificación programada!',
+      message: '¡Partido creado y notificaciones programadas!',
       icon: 'check_circle',
     })
 
