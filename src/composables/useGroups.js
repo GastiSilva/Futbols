@@ -12,7 +12,6 @@ import {
   addDoc,
   setDoc,
   updateDoc,
-  deleteDoc,
   query,
   where,
   orderBy,
@@ -23,6 +22,9 @@ import {
 } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
+
+// Estado reactivo compartido entre instancias del composable — se actualiza al instante
+const groups = ref([])
 
 // Genera un código de 8 caracteres sin letras/números ambiguos (O, 0, I, 1)
 function generateInviteCode() {
@@ -68,6 +70,12 @@ export function useGroups() {
         joinedAt: serverTimestamp(),
       })
 
+      // Actualizar estado reactivo al instante
+      const newGroupSnap = await getDoc(doc(db, 'groups', groupRef.id))
+      if (newGroupSnap.exists()) {
+        groups.value = [...groups.value, { id: newGroupSnap.id, ...newGroupSnap.data() }]
+      }
+
       return groupRef.id
     } catch (err) {
       error.value = err.message
@@ -98,15 +106,21 @@ export function useGroups() {
       const groupIds = snaps.docs.map(d => d.ref.parent.parent.id)
       console.log("3. IDs de los grupos extraídos:", groupIds)
 
-      if (groupIds.length === 0) return []
+      if (groupIds.length === 0) {
+        groups.value = []
+        return []
+      }
 
       const groupSnaps = await Promise.all(
         groupIds.map(id => getDoc(doc(db, 'groups', id))),
       )
 
-      return groupSnaps
+      const result = groupSnaps
         .filter(snap => snap.exists())
         .map(snap => ({ id: snap.id, ...snap.data() }))
+
+      groups.value = result
+      return result
     } catch (err) {
       error.value = err.message
       console.error("🚨 Error en getMyGroups:", err)
@@ -221,6 +235,12 @@ export function useGroups() {
         })
       })
 
+      // Actualizar estado reactivo al instante
+      const joinedSnap = await getDoc(doc(db, 'groups', groupId))
+      if (joinedSnap.exists() && !groups.value.some(g => g.id === groupId)) {
+        groups.value = [...groups.value, { id: joinedSnap.id, ...joinedSnap.data() }]
+      }
+
       return { groupId, alreadyMember: false }
     } catch (err) {
       error.value = err.message
@@ -294,6 +314,8 @@ export function useGroups() {
           updatedAt: serverTimestamp(),
         })
       })
+      // Actualizar estado reactivo al instante
+      groups.value = groups.value.filter(g => g.id !== groupId)
     } catch (err) {
       error.value = err.message
       throw err
@@ -350,6 +372,7 @@ export function useGroups() {
   return {
     loading,
     error,
+    groups,
     createGroup,
     getMyGroups,
     getGroup,

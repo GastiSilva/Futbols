@@ -172,9 +172,7 @@ import { useQuasar } from 'quasar'
 
 const router = useRouter()
 const $q = useQuasar()
-const { loading, createGroup, getMyGroups, getGroupMembers } = useGroups()
-
-const groups = ref([])
+const { loading, groups, createGroup, getMyGroups, getGroupMembers } = useGroups()
 const groupMembers = ref({})
 const loadError = ref(null)
 const showCreateDialog = ref(false)
@@ -184,7 +182,7 @@ const newGroup = ref({ name: '', description: '' })
 onMounted(async () => {
   try {
     loadError.value = null
-    groups.value = await getMyGroups()
+    await getMyGroups()
   } catch (err) {
     loadError.value = err.message ?? 'Error al cargar los grupos. Verifica tu conexión.'
   }

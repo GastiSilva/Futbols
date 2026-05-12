@@ -348,7 +348,7 @@ const nextMatch = computed(() => {
     openAt: upcomingMatch.openAt,
     format: upcomingMatch.format,
     maxPlayers: upcomingMatch.maxPlayers,
-    currentPlayers: upcomingMatch.registrations?.length ?? 0,
+    currentPlayers: upcomingMatch.currentPlayers ?? 0,
     status: upcomingMatch.status,
   }
 })

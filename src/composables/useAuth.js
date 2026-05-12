@@ -59,16 +59,33 @@ export function useAuth() {
       if (firebaseUser) {
         // Verifica si el usuario tiene custom claim 'admin'
         const tokenResult = await getIdTokenResult(firebaseUser, true)
-        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid))
+        const userRef = doc(db, 'users', firebaseUser.uid)
+        let userDoc = await getDoc(userRef)
 
-        const userData = userDoc.exists() ? userDoc.data() : {}
+        // Si el documento no existe (trigger falló o primer login), lo creamos AHORA
+        if (!userDoc.exists()) {
+          await setDoc(userRef, {
+            uid: firebaseUser.uid,
+            displayName: firebaseUser.displayName,
+            email: firebaseUser.email,
+            photoURL: firebaseUser.photoURL,
+            fcmToken: null,
+            role: 'player',
+            stats: defaultStats(),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          })
+          userDoc = await getDoc(userRef)
+        }
+
+        const userData = userDoc.data()
         authStore.setUser({
           uid: firebaseUser.uid,
           displayName: firebaseUser.displayName,
           email: firebaseUser.email,
           photoURL: firebaseUser.photoURL,
           isAdmin: tokenResult.claims.admin === true,
-          role: userDoc.exists() ? userDoc.data().role : 'player',
+          role: userData.role ?? 'player',
           stats: userData.stats ?? defaultStats(),
         })
       } else {

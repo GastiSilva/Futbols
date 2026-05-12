@@ -108,18 +108,16 @@ export function useRegistration() {
         if (!matchSnap.exists()) throw new Error(REGISTRATION_ERRORS.MATCH_NOT_FOUND)
 
         const match = matchSnap.data()
-        
-        // Ventana de tiempo para OG
+
+        // Validación 100% por reloj — el status no bloquea la inscripción
         const now = Date.now()
         const openAtMillis = match.openAt?.toMillis() ?? 0
         const isOG = authStore.user?.role === 'og'
-        const isOgWindowOpen = isOG && now >= (openAtMillis - 30 * 60 * 1000)
-
-        // Si está programado, solo pasa si estamos en la ventana del OG
-        if (match.status === 'scheduled' && !isOgWindowOpen) {
+        const threshold = isOG ? openAtMillis - (30 * 60 * 1000) : openAtMillis
+        if (now < threshold) {
           throw new Error(REGISTRATION_ERRORS.MATCH_NOT_OPEN)
         }
-        
+
         if (match.status === 'closed' || match.status === 'finished') {
           throw new Error(REGISTRATION_ERRORS.MATCH_CLOSED)
         }
@@ -242,7 +240,7 @@ export function useRegistration() {
     // Si es OG, el umbral es 30 mins antes. Si no, es la hora normal.
     const threshold = isOG ? openAt - (30 * 60 * 1000) : openAt
     
-    return match.status === 'open' || now >= threshold
+    return now >= threshold
   }
 
   /**
