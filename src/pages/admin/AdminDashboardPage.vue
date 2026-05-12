@@ -226,6 +226,10 @@ async function setRole(u, newRole) {
   try {
     const fn = httpsCallable(functions, 'setUserRole')
     await fn({ targetUid: u.id, role: newRole })
+    
+    // Espera un momento para que Firebase procese el custom claim
+    await new Promise(resolve => setTimeout(resolve, 500))
+    
     u.role = newRole
     $q.notify({
       type: 'positive',

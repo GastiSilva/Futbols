@@ -2,3 +2,10 @@
 
 // Quasar overrides (opcional)
 // Puedes agregar estilos globales aquí
+
+// Evita el warning de Chrome "non-passive touchstart event listener".
+// touch-action: manipulation le dice al navegador que puede manejar
+// el scroll/zoom nativamente sin esperar a los listeners de JS.
+* {
+  touch-action: manipulation;
+}

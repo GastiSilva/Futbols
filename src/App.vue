@@ -26,6 +26,7 @@ import { useQuasar } from 'quasar'
 const $q = useQuasar()
 const updateReady = ref(false)
 let waitingWorker = null
+let updateListenerRegistered = false
 
 onMounted(() => {
   const { initAuthListener } = useAuth()
@@ -41,24 +42,38 @@ onMounted(() => {
       }
     })
 
-    // Detectar cuando hay un SW nuevo esperando (para mostrar el banner)
-    navigator.serviceWorker.ready.then((reg) => {
-      reg.addEventListener('updatefound', () => {
-        const newWorker = reg.installing
-        newWorker?.addEventListener('statechange', () => {
-          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-            waitingWorker = newWorker
-            updateReady.value = true
-          }
+    // Registrar listeners solo UNA VEZ (no en cada mount)
+    if (!updateListenerRegistered) {
+      updateListenerRegistered = true
+
+      navigator.serviceWorker.ready.then((reg) => {
+        // Listener para futuras actualizaciones
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing
+          newWorker?.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              // Ignora si fue hace menos de 3 segundos (probablemente un refresh de la página)
+              const lastReloadTime = sessionStorage.getItem('lastPageReload')
+              const timeSinceReload = Date.now() - parseInt(lastReloadTime || 0)
+
+              if (timeSinceReload > 3000) {
+                waitingWorker = newWorker
+                updateReady.value = true
+              }
+            }
+          })
         })
+
+        // Verificar si ya hay un SW esperando (actualización pendiente previa)
+        if (reg.waiting && navigator.serviceWorker.controller) {
+          waitingWorker = reg.waiting
+          updateReady.value = true
+        }
       })
 
-      // Verificar si ya hay un SW esperando
-      if (reg.waiting && navigator.serviceWorker.controller) {
-        waitingWorker = reg.waiting
-        updateReady.value = true
-      }
-    })
+      // Registra el timestamp del último reload
+      sessionStorage.setItem('lastPageReload', Date.now().toString())
+    }
   }
 })
 

@@ -17,41 +17,23 @@ const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https')
 const logger = require('firebase-functions/logger')
 const admin = require('firebase-admin')
 
+// Inicializar Firebase Admin SDK al arrancar el módulo (recomendado para Gen 2)
+admin.initializeApp()
+
+const { FieldValue } = require('firebase-admin/firestore')
+
 const PROJECT_ID = process.env.GCLOUD_PROJECT
 const LOCATION = 'southamerica-east1'
 const QUEUE_NAME = 'match-notifications'
 
-// Lazy initialization to prevent timeouts during deployment analysis
-let isInitialized = false
-function initialize() {
-  if (!isInitialized && admin.apps.length === 0) {
-    admin.initializeApp()
-    isInitialized = true
-  }
-}
-
-function getDb() {
-  initialize()
-  return admin.firestore()
-}
-
-function getMessaging() {
-  initialize()
-  return admin.messaging()
-}
-
-function getAuth() {
-  initialize()
-  return admin.auth()
-}
+const getDb = () => admin.firestore()
+const getMessaging = () => admin.messaging()
+const getAuth = () => admin.auth()
 
 function getCloudTasksClient() {
-  if (!isInitialized) initialize()
   const { CloudTasksClient } = require('@google-cloud/tasks')
   return new CloudTasksClient()
 }
-
-const { FieldValue } = require('firebase-admin/firestore')
 
 // ── 1. Callable: programar notificación de apertura ──────────────────────────
 /**
@@ -256,36 +238,80 @@ exports.setAdminClaim = onCall(
  * Roles válidos: 'admin', 'og', 'player'
  * Si se asigna 'admin', también se establece el custom claim.
  * Si se quita 'admin', se elimina el custom claim.
+ * 
+ * Nota: El cliente debe refrescar el token después de este cambio.
  */
 exports.setUserRole = onCall(
   { region: LOCATION },
   async (request) => {
-    if (!request.auth?.token?.admin) {
-      throw new HttpsError('permission-denied', 'Solo administradores pueden cambiar roles.')
+    try {
+      // Verificar autenticación
+      if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'Usuario no autenticado.')
+      }
+
+      logger.info(`setUserRole llamada por ${request.auth.uid}`)
+
+      // Verificar si el usuario tiene permiso de admin
+      if (!request.auth?.token?.admin) {
+        logger.warn(`Intento no autorizado de setUserRole por ${request.auth.uid}`)
+        throw new HttpsError('permission-denied', 'Solo administradores pueden cambiar roles.')
+      }
+
+      const { targetUid, role } = request.data
+      const validRoles = ['admin', 'og', 'player']
+
+      // Validar parámetros
+      if (!targetUid) {
+        throw new HttpsError('invalid-argument', 'targetUid requerido.')
+      }
+      if (!role || !validRoles.includes(role)) {
+        throw new HttpsError('invalid-argument', `Rol inválido. Debe ser: ${validRoles.join(', ')}.`)
+      }
+
+      logger.info(`Cambiando rol de ${targetUid} a '${role}'`)
+
+      // Paso 1: Actualizar el custom claim en Firebase Auth
+      const isAdminRole = role === 'admin'
+      logger.info(`Estableciendo custom claim admin=${isAdminRole} para ${targetUid}`)
+      
+      try {
+        await getAuth().setCustomUserClaims(targetUid, { admin: isAdminRole })
+        logger.info(`✓ Custom claim actualizado para ${targetUid}`)
+      } catch (authError) {
+        logger.error(`Error al actualizar custom claim: ${authError.message}`, authError)
+        throw new HttpsError('internal', `Error al actualizar permisos: ${authError.message}`)
+      }
+
+      // Paso 2: Actualizar el documento en Firestore
+      logger.info(`Actualizando documento de usuario en Firestore: ${targetUid}`)
+      
+      try {
+        await getDb().collection('users').doc(targetUid).update({
+          role,
+          updatedAt: FieldValue.serverTimestamp(),
+        })
+        logger.info(`✓ Documento de usuario actualizado: ${targetUid}`)
+      } catch (dbError) {
+        logger.error(`Error al actualizar Firestore: ${dbError.message}`, dbError)
+        throw new HttpsError('internal', `Error al guardar cambios: ${dbError.message}`)
+      }
+
+      logger.info(`✓ Rol '${role}' asignado exitosamente a ${targetUid}`)
+      return { success: true, message: `Rol actualizado a '${role}'` }
+      
+    } catch (error) {
+      logger.error(`Error en setUserRole: ${error.message}`, error)
+      
+      // Si ya es un HttpsError, re-lanzarlo tal cual
+      if (error instanceof HttpsError) {
+        throw error
+      }
+      
+      // Caso contrario, lanzar un error genérico pero informativo
+      const errorMsg = error.message || 'Error desconocido'
+      throw new HttpsError('internal', `Error al asignar rol: ${errorMsg}`)
     }
-
-    const { targetUid, role } = request.data
-    const validRoles = ['admin', 'og', 'player']
-
-    if (!targetUid) {
-      throw new HttpsError('invalid-argument', 'targetUid requerido.')
-    }
-    if (!validRoles.includes(role)) {
-      throw new HttpsError('invalid-argument', `Rol inválido. Debe ser: ${validRoles.join(', ')}.`)
-    }
-
-    // Actualiza el custom claim según el nuevo rol
-    const isAdminRole = role === 'admin'
-    await getAuth().setCustomUserClaims(targetUid, { admin: isAdminRole })
-
-    // Actualiza el campo role en Firestore
-    await getDb().collection('users').doc(targetUid).update({
-      role,
-      updatedAt: FieldValue.serverTimestamp(),
-    })
-
-    logger.info(`Rol '${role}' asignado al usuario ${targetUid}`)
-    return { success: true }
   },
 )
 
