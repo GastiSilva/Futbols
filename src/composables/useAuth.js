@@ -68,7 +68,7 @@ export function useAuth() {
           email: firebaseUser.email,
           photoURL: firebaseUser.photoURL,
           isAdmin: tokenResult.claims.admin === true,
-          role: userData.role ?? 'player',
+          role: userDoc.exists() ? userDoc.data().role : 'player',
           stats: userData.stats ?? defaultStats(),
         })
       } else {

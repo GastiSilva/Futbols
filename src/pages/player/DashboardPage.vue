@@ -3,13 +3,6 @@
 
     <!-- ── Saludo ──────────────────────────────────────────────────────────── -->
     <div class="row items-center q-mb-lg no-wrap">
-      <q-avatar size="52px" class="q-mr-md shadow-2">
-        <img
-          :src="user?.photoURL ?? 'icons/icon-128x128.png'"
-          :alt="user?.displayName ?? 'usuario'"
-          referrerpolicy="no-referrer"
-        />
-      </q-avatar>
       <div class="col overflow-hidden">
         <div class="text-h6 text-weight-bold ellipsis">¡Hola, {{ firstName }}!</div>
         <div class="text-caption text-grey-6 text-capitalize">{{ today }}</div>
@@ -166,9 +159,21 @@
           </q-btn>
 
           <!-- ④ Cerrado / finalizado -->
-          <div v-else class="row justify-center items-center q-gutter-xs text-grey-5">
-            <q-icon name="lock" size="24px" />
-            <span class="text-body2">Inscripción cerrada</span>
+          <div v-else class="column items-center q-gutter-sm">
+            <div class="row justify-center items-center q-gutter-xs text-grey-5 q-mb-sm">
+              <q-icon name="lock" size="24px" />
+              <span class="text-body2">Inscripción cerrada</span>
+            </div>
+            <!-- Si el jugador estaba anotado puede cargar resultado -->
+            <q-btn
+              v-if="userRegistration && !userRegistration.isOnWaitlist"
+              unelevated
+              color="orange-7"
+              class="full-width"
+              icon="scoreboard"
+              label="Cargar resultado"
+              :to="{ name: 'post-match', params: { id: nextMatch.id } }"
+            />
           </div>
 
         </q-card-section>
@@ -310,10 +315,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 import { useRegistration } from 'src/composables/useRegistration'
+import { useMatch } from 'src/composables/useMatch'
 
 const $q = useQuasar()
 const { user } = useAuth()
@@ -328,32 +334,23 @@ const {
   subscribeToRegistrations,
   stopListening,
 } = useRegistration()
+const { matches, subscribeToUpcoming: subscribeToMatchesUpcoming } = useMatch()
 
-// ── Mock del próximo partido ──────────────────────────────────────────────────
-// TODO: reemplazar con subscribeToUpcoming() + nextMatch de useMatch
-// cuando el backend esté listo. Solo cambiar el bloque ref() de abajo.
-//
-// Para probar el countdown: cambiar status a 'scheduled' y openAt a fecha futura:
-//   const _openAt = new Date(_now.getTime() + 90 * 60 * 1000) // 90 min desde ahora
-const _now = new Date()
-const _openAt = new Date(_now.getFullYear(), _now.getMonth(), _now.getDate(), 20, 0, 0)
-const _matchAt = new Date(_now.getFullYear(), _now.getMonth(), _now.getDate(), 21, 0, 0)
-
-/** Crea un objeto con la misma interfaz que Firestore Timestamp */
-function ts(date) {
-  return { toMillis: () => date.getTime(), toDate: () => date }
-}
-
-const nextMatch = ref({
-  id: 'mock-partido-01',
-  title: 'Partido del Jueves',
-  location: 'Cancha de Palermo, Sector A',
-  date: ts(_matchAt),
-  openAt: ts(_openAt),
-  format: '7v7',
-  maxPlayers: 14,
-  currentPlayers: 8,
-  status: 'open', // ← 'scheduled' | 'open' | 'closed'
+// ── Próximo partido (desde Firestore) ─────────────────────────────────────────
+const nextMatch = computed(() => {
+  const upcomingMatch = matches.value?.[0]
+  if (!upcomingMatch) return null
+  return {
+    id: upcomingMatch.id,
+    title: upcomingMatch.title,
+    location: upcomingMatch.location,
+    date: upcomingMatch.date,
+    openAt: upcomingMatch.openAt,
+    format: upcomingMatch.format,
+    maxPlayers: upcomingMatch.maxPlayers,
+    currentPlayers: upcomingMatch.registrations?.length ?? 0,
+    status: upcomingMatch.status,
+  }
 })
 
 // ── Datos derivados ───────────────────────────────────────────────────────────
@@ -462,13 +459,23 @@ function handleLeave() {
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(() => {
-  subscribeToRegistrations(nextMatch.value.id)
-
-  if (nextMatch.value?.status === 'scheduled') {
-    tickCountdown()
-    countdownTimer = setInterval(tickCountdown, 1000)
-  }
+  subscribeToMatchesUpcoming()
 })
+
+// Watcher para partido: cuando hay próximo partido, subscribe a registraciones y inicia countdown
+watch(
+  () => nextMatch.value?.id,
+  (matchId) => {
+    clearInterval(countdownTimer)
+    if (matchId) {
+      subscribeToRegistrations(matchId)
+      if (nextMatch.value?.status === 'scheduled') {
+        tickCountdown()
+        countdownTimer = setInterval(tickCountdown, 1000)
+      }
+    }
+  },
+)
 
 onUnmounted(() => {
   clearInterval(countdownTimer)

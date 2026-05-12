@@ -25,6 +25,15 @@ service cloud.firestore {
         && stats.matchesPlayed is int && stats.matchesPlayed >= 0;
     }
 
+    function isOG() {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'og';
+    }
+
+    match /{path=**}/members/{userId} {
+      allow read: if isAuthenticated();
+    }
+
     // ── Colección: users ──────────────────────────────────────────────────────
     // Cualquier usuario autenticado puede leer perfiles (para el ranking).
     // Solo el propio usuario puede actualizar su perfil (excepto stats, que
@@ -34,15 +43,29 @@ service cloud.firestore {
       allow create: if isOwner(userId);
       // El propio usuario puede actualizar su perfil (no stats).
       // Los admins pueden actualizar el campo 'role' de cualquier usuario.
+      // Cualquier autenticado puede actualizar stats (para carga de resultados entre amigos).
       allow update: if (
         isOwner(userId)
         && !('stats' in request.resource.data.diff(resource.data).affectedKeys())
       ) || (
         isAdmin()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'updatedAt'])
+      ) || (
+        isAuthenticated()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['stats', 'updatedAt'])
       );
       // Las stats solo las puede modificar el Admin SDK (Cloud Functions)
       allow delete: if false;
+
+      // ── Subcolección: groups (referencia a grupos del usuario) ──────────────
+      match /groups/{groupId} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId)
+                     || (isAuthenticated()
+                         && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+                              in ['owner', 'admin']);
+      }
     }
 
     // ── Colección: matches ────────────────────────────────────────────────────
@@ -50,15 +73,22 @@ service cloud.firestore {
       // Cualquier autenticado puede leer partidos
       allow read: if isAuthenticated();
 
-      // Solo admins crean o modifican la configuración del partido
+      // Solo admins crean partidos
       allow create: if isAdmin();
+
+      // Admin puede modificar todo.
+      // Usuarios autenticados pueden actualizar currentPlayers/status (inscripción)
+      // o scoreA/scoreB/status=finished (carga de resultado).
       allow update: if isAdmin()
                     || (
-                      // Los usuarios solo pueden modificar currentPlayers y status
-                      // (a través de la transacción del composable)
                       isAuthenticated()
                       && request.resource.data.diff(resource.data).affectedKeys()
                            .hasOnly(['currentPlayers', 'status', 'updatedAt'])
+                    )
+                    || (
+                      isAuthenticated()
+                      && request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['scoreA', 'scoreB', 'status', 'updatedAt'])
                     );
       allow delete: if isAdmin();
 
@@ -69,7 +99,12 @@ service cloud.firestore {
 
         // Un usuario solo puede inscribirse a sí mismo
         allow create: if isOwner(userId)
-                      && request.resource.data.userId == request.auth.uid;
+                      && request.resource.data.userId == request.auth.uid
+                      && (
+                         get(/databases/$(database)/documents/matches/$(matchId)).data.status == 'open'
+                         ||
+                         (isOG() && request.time >= get(/databases/$(database)/documents/matches/$(matchId)).data.openAt - duration.value(30, 'm'))
+                      );
 
         // Puede actualizar (ej: team asignado por admin)
         allow update: if isAdmin()
@@ -84,10 +119,10 @@ service cloud.firestore {
         // Lectura pública para autenticados
         allow read: if isAuthenticated();
 
-        // Solo el Admin SDK (Cloud Functions) escribe stats
-        // En producción, esto es manejado por Cloud Functions con Admin SDK
-        // que bypasea las rules. Aquí bloqueamos acceso directo.
-        allow write: if false;
+        // Cualquier usuario autenticado puede cargar stats del partido
+        // (confiamos en el grupo de amigos; si se necesita más restricción,
+        // se puede verificar que sea titular del partido)
+        allow write: if isAuthenticated();
       }
     }
 

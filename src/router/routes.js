@@ -70,11 +70,19 @@ const routes = [
             component: () => import('src/pages/admin/CreateMatchPage.vue'),
           },
           {
-            path: 'resultado/:id',
-            name: 'post-match',
-            component: () => import('src/pages/admin/PostMatchPage.vue'),
+            path: 'editar-partido/:id',
+            name: 'edit-match',
+            component: () => import('src/pages/admin/EditMatchPage.vue'),
           },
         ],
+      },
+
+      // Resultado de partido (accesible por cualquier jugador registrado)
+      {
+        path: 'resultado/:id',
+        name: 'post-match',
+        component: () => import('src/pages/admin/PostMatchPage.vue'),
+        meta: { requiresAuth: true },
       },
     ],
   },

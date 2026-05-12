@@ -2,12 +2,17 @@
   <q-page padding>
     <div class="row justify-center">
       <div class="col-12 col-md-7 col-lg-6">
-        <div class="text-h5 text-weight-bold q-mb-lg">
-          <q-icon name="add_circle" color="green-8" class="q-mr-sm" />
-          Crear nuevo partido
+        <div class="row items-center q-mb-lg">
+          <q-btn flat round icon="arrow_back" color="green-8" @click="router.back()" class="q-mr-sm" />
+          <div class="text-h5 text-weight-bold">
+            <q-icon name="edit" color="green-8" class="q-mr-sm" />
+            Editar partido
+          </div>
         </div>
 
-        <q-card flat bordered>
+        <q-skeleton v-if="loadingMatch" type="rect" height="400px" />
+
+        <q-card v-else flat bordered>
           <q-card-section>
             <q-form @submit.prevent="handleSubmit" greedy class="q-gutter-y-md">
 
@@ -51,7 +56,7 @@
                 label="Fecha y hora del partido"
                 outlined
                 type="datetime-local"
-                hint="Podés completarlo después"
+                hint="Podés dejarlo vacío si todavía no está confirmado"
                 clearable
               />
 
@@ -61,7 +66,7 @@
                 label="Hora de inicio de lista (apertura de inscripción)"
                 outlined
                 type="datetime-local"
-                hint="Cuándo se habilita el botón 'Anotarme' (opcional)"
+                hint="Cuándo se habilita el botón 'Anotarme'"
                 clearable
                 :rules="[validateOpenAt]"
                 @update:model-value="syncNotifyAt"
@@ -73,7 +78,7 @@
                 label="Primera notificación"
                 outlined
                 type="datetime-local"
-                hint="Notificación recordatoria (por defecto 3 h antes de la apertura)"
+                hint="Notificación recordatoria (por defecto 3 h antes)"
                 clearable
                 :rules="[validateNotifyAt]"
               />
@@ -107,16 +112,41 @@
                 Cupos máximos: <strong>{{ selectedFormat?.maxPlayers }}</strong> jugadores
               </q-banner>
 
-              <q-btn
-                type="submit"
-                label="Crear Partido"
-                color="green-8"
-                unelevated
-                size="lg"
-                class="full-width"
-                :loading="loading"
-                icon="sports_soccer"
-              />
+              <!-- Estado del partido -->
+              <q-select
+                v-model="form.status"
+                :options="STATUS_OPTIONS"
+                option-label="label"
+                option-value="value"
+                emit-value
+                map-options
+                label="Estado del partido"
+                outlined
+              >
+                <template #prepend>
+                  <q-icon name="flag" />
+                </template>
+              </q-select>
+
+              <div class="row q-gutter-sm">
+                <q-btn
+                  type="submit"
+                  label="Guardar cambios"
+                  color="green-8"
+                  unelevated
+                  size="lg"
+                  class="col"
+                  :loading="saving"
+                  icon="save"
+                />
+                <q-btn
+                  flat
+                  label="Cancelar"
+                  color="grey-7"
+                  size="lg"
+                  @click="router.back()"
+                />
+              </div>
             </q-form>
           </q-card-section>
         </q-card>
@@ -126,8 +156,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useMatch, FORMAT_OPTIONS } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
@@ -135,11 +165,22 @@ import { httpsCallable } from 'firebase/functions'
 import { functions } from 'src/services/firebase'
 
 const $q = useQuasar()
+const route = useRoute()
 const router = useRouter()
-const { createMatch, loading } = useMatch()
+const matchId = route.params.id
+const { fetchMatch, updateMatch } = useMatch()
 const { getMyGroups } = useGroups()
 
+const STATUS_OPTIONS = [
+  { label: '🕐 Programado', value: 'scheduled' },
+  { label: '✅ Abierto', value: 'open' },
+  { label: '🔒 Cerrado', value: 'closed' },
+  { label: '🏁 Finalizado', value: 'finished' },
+]
+
 const groups = ref([])
+const loadingMatch = ref(true)
+const saving = ref(false)
 
 const form = ref({
   groupId: null,
@@ -149,13 +190,36 @@ const form = ref({
   openAt: '',
   notifyAt: '',
   format: null,
+  status: 'scheduled',
 })
+
+function toDatetimeLocal(ts) {
+  if (!ts) return ''
+  const d = ts?.toDate ? ts.toDate() : new Date(ts)
+  if (isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 onMounted(async () => {
   try {
-    groups.value = await getMyGroups()
-  } catch {
-    groups.value = []
+    ;[groups.value] = await Promise.all([getMyGroups()])
+    const match = await fetchMatch(matchId)
+    form.value = {
+      groupId: match.groupId ?? null,
+      title: match.title ?? '',
+      location: match.location ?? '',
+      date: toDatetimeLocal(match.date),
+      openAt: toDatetimeLocal(match.openAt),
+      notifyAt: toDatetimeLocal(match.notifyAt),
+      format: match.format ?? null,
+      status: match.status ?? 'scheduled',
+    }
+  } catch (err) {
+    $q.notify({ type: 'negative', message: 'No se pudo cargar el partido' })
+    router.back()
+  } finally {
+    loadingMatch.value = false
   }
 })
 
@@ -163,18 +227,14 @@ const selectedFormat = computed(() =>
   FORMAT_OPTIONS.find((f) => f.value === form.value.format),
 )
 
-// Cuando cambia openAt, actualiza notifyAt al valor por defecto (3 h antes)
 function syncNotifyAt(newOpenAt) {
   if (!newOpenAt) return
   const openAtMs = new Date(newOpenAt).getTime()
   if (isNaN(openAtMs)) return
   const threeHoursBefore = new Date(openAtMs - 3 * 60 * 60 * 1000)
-  form.value.notifyAt = toDatetimeLocal(threeHoursBefore)
-}
-
-function toDatetimeLocal(date) {
   const pad = (n) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const d = threeHoursBefore
+  form.value.notifyAt = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function validateOpenAt(val) {
@@ -184,14 +244,16 @@ function validateOpenAt(val) {
 
 function validateNotifyAt(val) {
   if (!val || !form.value.openAt) return true
-  return new Date(val) < new Date(form.value.openAt) || 'La notificación debe ser antes de la apertura de lista'
+  return new Date(val) < new Date(form.value.openAt) || 'La notificación debe ser antes de la apertura'
 }
 
 async function handleSubmit() {
+  saving.value = true
   try {
-    const matchId = await createMatch(form.value)
+    // Actualiza el partido en Firestore
+    await updateMatch(matchId, form.value)
 
-    // Solo programa notificaciones si se definió openAt
+    // Si se modificó openAt, reprogramar notificaciones
     if (form.value.openAt) {
       try {
         const scheduleOpen = httpsCallable(functions, 'scheduleMatchOpenNotification')
@@ -201,7 +263,7 @@ async function handleSubmit() {
           matchTitle: form.value.title,
         })
       } catch (notifErr) {
-        console.warn('[Notif] Error al programar apertura:', notifErr.message)
+        console.warn('[Notif] No se pudo reprogramar notificación:', notifErr.message)
       }
 
       if (form.value.notifyAt) {
@@ -213,20 +275,17 @@ async function handleSubmit() {
             matchTitle: form.value.title,
           })
         } catch (notifErr) {
-          console.warn('[Notif] Error al programar recordatorio:', notifErr.message)
+          console.warn('[Notif] No se pudo reprogramar recordatorio:', notifErr.message)
         }
       }
     }
 
-    $q.notify({
-      type: 'positive',
-      message: '¡Partido creado!',
-      icon: 'check_circle',
-    })
-
+    $q.notify({ type: 'positive', message: '¡Partido actualizado!', icon: 'check_circle' })
     router.push({ name: 'admin-dashboard' })
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    saving.value = false
   }
 }
 </script>

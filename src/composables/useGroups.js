@@ -77,15 +77,26 @@ export function useGroups() {
     }
   }
 
-  // ── Mis grupos (collectionGroup query en members) ──────────────────────────
+// ── Mis grupos (collectionGroup query en members) ──────────────────────────
   async function getMyGroups() {
     loading.value = true
     error.value = null
     try {
-      const uid = authStore.user.uid
+      const uid = authStore.user?.uid
+      console.log("1. Buscando grupos para el UID:", uid)
+
+      if (!uid) {
+        console.error("🚨 ERROR: No hay UID al momento de buscar los grupos.")
+        return []
+      }
+
       const q = query(collectionGroup(db, 'members'), where('userId', '==', uid))
       const snaps = await getDocs(q)
+      
+      console.log("2. Cantidad de documentos members encontrados:", snaps.size)
+
       const groupIds = snaps.docs.map(d => d.ref.parent.parent.id)
+      console.log("3. IDs de los grupos extraídos:", groupIds)
 
       if (groupIds.length === 0) return []
 
@@ -98,6 +109,7 @@ export function useGroups() {
         .map(snap => ({ id: snap.id, ...snap.data() }))
     } catch (err) {
       error.value = err.message
+      console.error("🚨 Error en getMyGroups:", err)
       throw err
     } finally {
       loading.value = false
@@ -231,6 +243,10 @@ export function useGroups() {
           role: 'member',
           joinedAt: serverTimestamp(),
         })
+        // También guardar en /users/{userId}/groups/{groupId} para getMyGroups
+        tx.set(doc(db, 'users', userId, 'groups', groupId), {
+          joinedAt: serverTimestamp(),
+        })
         tx.update(doc(db, 'groups', groupId, 'joinRequests', userId), {
           status: 'accepted',
         })
@@ -271,6 +287,8 @@ export function useGroups() {
       const uid = authStore.user.uid
       await runTransaction(db, async tx => {
         tx.delete(doc(db, 'groups', groupId, 'members', uid))
+        // También borrar de /users/{uid}/groups/{groupId}
+        tx.delete(doc(db, 'users', uid, 'groups', groupId))
         tx.update(doc(db, 'groups', groupId), {
           memberCount: increment(-1),
           updatedAt: serverTimestamp(),
@@ -291,6 +309,8 @@ export function useGroups() {
     try {
       await runTransaction(db, async tx => {
         tx.delete(doc(db, 'groups', groupId, 'members', userId))
+        // También borrar de /users/{userId}/groups/{groupId}
+        tx.delete(doc(db, 'users', userId, 'groups', groupId))
         tx.update(doc(db, 'groups', groupId), {
           memberCount: increment(-1),
           updatedAt: serverTimestamp(),

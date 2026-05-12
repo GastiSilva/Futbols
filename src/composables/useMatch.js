@@ -98,11 +98,9 @@ export function useMatch() {
     error.value = null
     try {
       const maxPlayers = getMaxPlayers(formData.format)
-      const openAt = Timestamp.fromDate(new Date(formData.openAt))
-      const date = Timestamp.fromDate(new Date(formData.date))
-      const notifyAt = formData.notifyAt
-        ? Timestamp.fromDate(new Date(formData.notifyAt))
-        : null
+      const date = formData.date ? Timestamp.fromDate(new Date(formData.date)) : null
+      const openAt = formData.openAt ? Timestamp.fromDate(new Date(formData.openAt)) : null
+      const notifyAt = formData.notifyAt ? Timestamp.fromDate(new Date(formData.notifyAt)) : null
 
       const matchRef = await addDoc(collection(db, 'matches'), {
         title: formData.title,
@@ -123,6 +121,35 @@ export function useMatch() {
       })
 
       return matchRef.id
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // ── Editar un partido existente (solo admin) ──────────────────────────────
+  async function updateMatch(matchId, formData) {
+    loading.value = true
+    error.value = null
+    try {
+      const maxPlayers = getMaxPlayers(formData.format)
+      const date = formData.date ? Timestamp.fromDate(new Date(formData.date)) : null
+      const openAt = formData.openAt ? Timestamp.fromDate(new Date(formData.openAt)) : null
+      const notifyAt = formData.notifyAt ? Timestamp.fromDate(new Date(formData.notifyAt)) : null
+
+      await updateDoc(doc(db, 'matches', matchId), {
+        title: formData.title,
+        location: formData.location ?? '',
+        date,
+        openAt,
+        notifyAt,
+        groupId: formData.groupId ?? null,
+        format: formData.format,
+        maxPlayers,
+        updatedAt: serverTimestamp(),
+      })
     } catch (err) {
       error.value = err.message
       throw err
@@ -167,6 +194,7 @@ export function useMatch() {
     subscribeToMatch,
     fetchMatch,
     createMatch,
+    updateMatch,
     saveMatchResult,
     stopListening,
     FORMAT_OPTIONS,

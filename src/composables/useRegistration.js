@@ -104,16 +104,22 @@ export function useRegistration() {
         const matchSnap = await transaction.get(matchRef)
         const regSnap = await transaction.get(regRef)
 
-        // ── 2. VALIDACIONES ───────────────────────────────────────────────
-        if (!matchSnap.exists()) {
-          throw new Error(REGISTRATION_ERRORS.MATCH_NOT_FOUND)
-        }
+      // ── 2. VALIDACIONES ───────────────────────────────────────────────
+        if (!matchSnap.exists()) throw new Error(REGISTRATION_ERRORS.MATCH_NOT_FOUND)
 
         const match = matchSnap.data()
+        
+        // Ventana de tiempo para OG
+        const now = Date.now()
+        const openAtMillis = match.openAt?.toMillis() ?? 0
+        const isOG = authStore.user?.role === 'og'
+        const isOgWindowOpen = isOG && now >= (openAtMillis - 30 * 60 * 1000)
 
-        if (match.status === 'scheduled') {
+        // Si está programado, solo pasa si estamos en la ventana del OG
+        if (match.status === 'scheduled' && !isOgWindowOpen) {
           throw new Error(REGISTRATION_ERRORS.MATCH_NOT_OPEN)
         }
+        
         if (match.status === 'closed' || match.status === 'finished') {
           throw new Error(REGISTRATION_ERRORS.MATCH_CLOSED)
         }
@@ -227,11 +233,16 @@ export function useRegistration() {
   function canRegister(match) {
     if (!match) return false
     if (match.status === 'closed' || match.status === 'finished') return false
-    if (userRegistration.value) return false  // ya inscripto
+    if (userRegistration.value) return false
 
     const now = Date.now()
     const openAt = match.openAt?.toMillis?.() ?? 0
-    return now >= openAt
+    const isOG = authStore.user?.role === 'og'
+    
+    // Si es OG, el umbral es 30 mins antes. Si no, es la hora normal.
+    const threshold = isOG ? openAt - (30 * 60 * 1000) : openAt
+    
+    return match.status === 'open' || now >= threshold
   }
 
   /**
@@ -240,7 +251,10 @@ export function useRegistration() {
    */
   function msUntilOpen(match) {
     const openAt = match?.openAt?.toMillis?.() ?? 0
-    return Math.max(0, openAt - Date.now())
+    const isOG = authStore.user?.role === 'og'
+    const threshold = isOG ? openAt - (30 * 60 * 1000) : openAt
+    
+    return Math.max(0, threshold - Date.now())
   }
 
   function stopListening() {

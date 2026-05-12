@@ -41,7 +41,7 @@ export const db = initializeFirestore(firebaseApp, {
 })
 
 // ── Cloud Functions ───────────────────────────────────────────────────────────
-export const functions = getFunctions(firebaseApp, 'us-central1')
+export const functions = getFunctions(firebaseApp, 'southamerica-east1')
 
 // ── FCM (Firebase Cloud Messaging) ────────────────────────────────────────────
 // Se inicializa de forma lazy porque isSupported() es async

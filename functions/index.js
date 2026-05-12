@@ -14,21 +14,44 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https')
-// const { onSchedule } = require('firebase-functions/v2/scheduler')
-const { beforeUserCreated } = require('firebase-functions/v2/identity')
-const { getFirestore, FieldValue } = require('firebase-admin/firestore')
-const { getMessaging } = require('firebase-admin/messaging')
-const { getAuth } = require('firebase-admin/auth')
-const { initializeApp } = require('firebase-admin/app')
-const { CloudTasksClient } = require('@google-cloud/tasks')
 const logger = require('firebase-functions/logger')
+const admin = require('firebase-admin')
 
-initializeApp()
-
-const db = getFirestore()
 const PROJECT_ID = process.env.GCLOUD_PROJECT
-const LOCATION = 'us-southamerica-east1'
+const LOCATION = 'southamerica-east1'
 const QUEUE_NAME = 'match-notifications'
+
+// Lazy initialization to prevent timeouts during deployment analysis
+let isInitialized = false
+function initialize() {
+  if (!isInitialized && admin.apps.length === 0) {
+    admin.initializeApp()
+    isInitialized = true
+  }
+}
+
+function getDb() {
+  initialize()
+  return admin.firestore()
+}
+
+function getMessaging() {
+  initialize()
+  return admin.messaging()
+}
+
+function getAuth() {
+  initialize()
+  return admin.auth()
+}
+
+function getCloudTasksClient() {
+  if (!isInitialized) initialize()
+  const { CloudTasksClient } = require('@google-cloud/tasks')
+  return new CloudTasksClient()
+}
+
+const { FieldValue } = require('firebase-admin/firestore')
 
 // ── 1. Callable: programar notificación de apertura ──────────────────────────
 /**
@@ -54,7 +77,7 @@ exports.scheduleMatchOpenNotification = onCall(
       throw new HttpsError('invalid-argument', 'openAt no es una fecha válida.')
     }
 
-    const client = new CloudTasksClient()
+    const client = getCloudTasksClient()
     const parent = client.queuePath(PROJECT_ID, LOCATION, QUEUE_NAME)
 
     // URL de la Cloud Function HTTP que enviará el FCM
@@ -79,7 +102,7 @@ exports.scheduleMatchOpenNotification = onCall(
     logger.info(`Tarea programada: ${response.name}`, { matchId })
 
     // Guarda el nombre de la tarea en el partido para poder cancelarla si es necesario
-    await db.collection('matches').doc(matchId).update({
+    await getDb().collection('matches').doc(matchId).update({
       cloudTaskName: response.name,
       updatedAt: FieldValue.serverTimestamp(),
     })
@@ -106,13 +129,13 @@ exports.sendMatchOpenNotification = onRequest(
       }
 
       // Actualiza el estado del partido a 'open'
-      await db.collection('matches').doc(matchId).update({
+      await getDb().collection('matches').doc(matchId).update({
         status: 'open',
         updatedAt: FieldValue.serverTimestamp(),
       })
 
       // Recolecta todos los tokens FCM válidos
-      const usersSnap = await db
+      const usersSnap = await getDb()
         .collection('users')
         .where('fcmToken', '!=', null)
         .select('fcmToken')
@@ -181,8 +204,8 @@ exports.sendMatchOpenNotification = onRequest(
 
       // Limpia tokens inválidos de Firestore (evita acumulación de basura)
       if (invalidTokens.length > 0) {
-        const cleanupBatch = db.batch()
-        const invalidSnap = await db
+        const cleanupBatch = getDb().batch()
+        const invalidSnap = await getDb()
           .collection('users')
           .where('fcmToken', 'in', invalidTokens.slice(0, 30))
           .get()
@@ -202,14 +225,6 @@ exports.sendMatchOpenNotification = onRequest(
   },
 )
 
-// ── 3. Auth trigger: inicializar perfil en Firestore ─────────────────────────
-exports.onUserCreated = beforeUserCreated(async (event) => {
-  const user = event.data
-  // Solo permite login con Google (bloquea email/password, etc.)
-  if (!user.providerData?.some((p) => p.providerId === 'google.com')) {
-    throw new HttpsError('permission-denied', 'Solo se permite autenticación con Google.')
-  }
-})
 
 // ── 4. Callable: asignar rol admin ────────────────────────────────────────────
 /**
@@ -264,7 +279,7 @@ exports.setUserRole = onCall(
     await getAuth().setCustomUserClaims(targetUid, { admin: isAdminRole })
 
     // Actualiza el campo role en Firestore
-    await db.collection('users').doc(targetUid).update({
+    await getDb().collection('users').doc(targetUid).update({
       role,
       updatedAt: FieldValue.serverTimestamp(),
     })
@@ -302,7 +317,7 @@ exports.scheduleMatchReminderNotification = onCall(
       return { success: true, skipped: true }
     }
 
-    const client = new CloudTasksClient()
+    const client = getCloudTasksClient()
     const parent = client.queuePath(PROJECT_ID, LOCATION, QUEUE_NAME)
 
     const functionUrl = `https://${LOCATION}-${PROJECT_ID}.cloudfunctions.net/sendMatchReminderNotification`
@@ -344,7 +359,7 @@ exports.sendMatchReminderNotification = onRequest(
         return
       }
 
-      const usersSnap = await db
+      const usersSnap = await getDb()
         .collection('users')
         .where('fcmToken', '!=', null)
         .select('fcmToken')

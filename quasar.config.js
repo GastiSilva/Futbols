@@ -1,7 +1,9 @@
 // quasar.config.js
-const { configure } = require('quasar/wrappers')
+import { configure } from 'quasar/wrappers'
+import { readFileSync, writeFileSync } from 'fs'
+import { resolve } from 'path'
 
-module.exports = configure(function (/* ctx */) {
+export default configure(function (/* ctx */) {
   return {
     eslint: { fix: true },
 
@@ -33,6 +35,35 @@ module.exports = configure(function (/* ctx */) {
         VITE_FIREBASE_MEASUREMENT_ID:     process.env.VITE_FIREBASE_MEASUREMENT_ID,
         VITE_FIREBASE_VAPID_KEY:          process.env.VITE_FIREBASE_VAPID_KEY,
       },
+
+      // Inyecta la config de Firebase real en el SW de FCM después del build
+      extendViteConf(viteConf) {
+        viteConf.plugins = viteConf.plugins ?? []
+        viteConf.plugins.push({
+          name: 'inject-firebase-sw-config',
+          apply: 'build',
+          closeBundle() {
+            const swPath = resolve('dist/pwa/firebase-messaging-sw.js')
+            try {
+              let content = readFileSync(swPath, 'utf-8')
+              content = content
+                .replace(
+                  `self.VITE_FIREBASE_API_KEY || '__REPLACED_AT_BUILD__'`,
+                  `'${process.env.VITE_FIREBASE_API_KEY}'`,
+                )
+                .replace(`authDomain: '__REPLACED_AT_BUILD__'`,        `authDomain: '${process.env.VITE_FIREBASE_AUTH_DOMAIN}'`)
+                .replace(`projectId: '__REPLACED_AT_BUILD__'`,          `projectId: '${process.env.VITE_FIREBASE_PROJECT_ID}'`)
+                .replace(`storageBucket: '__REPLACED_AT_BUILD__'`,      `storageBucket: '${process.env.VITE_FIREBASE_STORAGE_BUCKET}'`)
+                .replace(`messagingSenderId: '__REPLACED_AT_BUILD__'`,  `messagingSenderId: '${process.env.VITE_FIREBASE_MESSAGING_SENDER_ID}'`)
+                .replace(`appId: '__REPLACED_AT_BUILD__'`,              `appId: '${process.env.VITE_FIREBASE_APP_ID}'`)
+              writeFileSync(swPath, content)
+              console.log('[inject-firebase-sw-config] firebase-messaging-sw.js configurado correctamente')
+            } catch (e) {
+              console.warn('[inject-firebase-sw-config] Error:', e.message)
+            }
+          },
+        })
+      },
     },
 
     // ── Dev server ──────────────────────────────────────────────────────────
@@ -59,7 +90,7 @@ module.exports = configure(function (/* ctx */) {
 
     // ── PWA ─────────────────────────────────────────────────────────────────
     pwa: {
-      workboxMode: 'generateSW',
+      workboxMode: 'GenerateSW',
       injectPwaMetaTags: true,
       swFilename: 'sw.js',
       manifestFilename: 'manifest.json',
@@ -69,7 +100,12 @@ module.exports = configure(function (/* ctx */) {
         cfg.skipWaiting = true
         cfg.clientsClaim = true
         // No pre-cachea el SW de FCM (ya lo maneja firebase-messaging-sw.js)
-        cfg.exclude = [/firebase-messaging-sw\.js/]
+        cfg.globIgnores = [
+          '**/node_modules/**/*',
+          '**/*.map',
+          'manifest.json',
+          'firebase-messaging-sw.js',
+        ]
       },
 
       manifest: {
