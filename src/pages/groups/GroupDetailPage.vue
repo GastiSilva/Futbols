@@ -212,14 +212,51 @@
           @click="handleLeave"
         />
       </div>
+
+      <!-- ── Partidos del grupo ─────────────────────────────────────────── -->
+      <div class="text-subtitle1 text-weight-bold q-mt-xl q-mb-sm">
+        <q-icon name="sports_soccer" class="q-mr-xs text-green-9" />Partidos
+      </div>
+
+      <div v-if="matches.length === 0" class="text-center text-grey-5 q-py-lg">
+        <q-icon name="event_busy" size="40px" class="q-mb-xs" />
+        <div class="text-body2">No hay partidos en este grupo todavía</div>
+      </div>
+
+      <q-list v-else bordered separator class="rounded-borders">
+        <q-item
+          v-for="match in matches"
+          :key="match.id"
+          clickable
+          :to="{ name: 'match-detail', params: { id: match.id } }"
+        >
+          <q-item-section>
+            <q-item-label class="text-weight-medium">{{ match.title }}</q-item-label>
+            <q-item-label caption>
+              <q-icon name="calendar_today" size="xs" class="q-mr-xs" />
+              {{ match.date ? formatMatchDate(match.date) : 'Sin fecha definida' }}
+            </q-item-label>
+          </q-item-section>
+          <q-item-section side>
+            <q-chip
+              dense
+              :color="matchStatusColor(match.status)"
+              text-color="white"
+              :label="matchStatusLabel(match.status)"
+            />
+          </q-item-section>
+        </q-item>
+      </q-list>
+
     </template>
   </q-page>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useGroups } from 'src/composables/useGroups'
+import { useMatch } from 'src/composables/useMatch'
 import { useAuthStore } from 'src/stores/auth.store'
 import { useQuasar } from 'quasar'
 
@@ -240,6 +277,8 @@ const {
   getMyRole,
   regenerateInviteCode,
 } = useGroups()
+
+const { matches, subscribeToGroupMatches, stopListening } = useMatch()
 
 const groupId = route.params.id
 const group = ref(null)
@@ -269,6 +308,11 @@ onMounted(async () => {
   } finally {
     loadingGroup.value = false
   }
+  subscribeToGroupMatches(groupId)
+})
+
+onUnmounted(() => {
+  stopListening()
 })
 
 // ── Helpers de rol ─────────────────────────────────────────────────────────
@@ -394,5 +438,31 @@ function handleRegenerateCode() {
       $q.notify({ type: 'negative', message: err.message })
     }
   })
+}
+
+// ── Helpers de partidos ────────────────────────────────────────────────────
+function formatMatchDate(ts) {
+  const date = ts?.toDate ? ts.toDate() : new Date(ts)
+  return date.toLocaleDateString('es-AR', {
+    weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function matchStatusLabel(status) {
+  return {
+    scheduled: 'Programado',
+    open: 'Abierto',
+    closed: 'Cerrado',
+    finished: 'Finalizado',
+  }[status] ?? status
+}
+
+function matchStatusColor(status) {
+  return {
+    scheduled: 'blue-grey-5',
+    open: 'green-8',
+    closed: 'orange-7',
+    finished: 'grey-6',
+  }[status] ?? 'grey-5'
 }
 </script>

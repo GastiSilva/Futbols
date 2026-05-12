@@ -179,6 +179,25 @@ export function useMatch() {
   // ── Próximo partido visible para el jugador ───────────────────────────────
   const nextMatch = computed(() => matches.value[0] ?? null)
 
+  // ── Escucha en tiempo real los partidos de un grupo ───────────────────────
+  function subscribeToGroupMatches(groupId) {
+    const q = query(
+      collection(db, 'matches'),
+      where('groupId', '==', groupId),
+      orderBy('date', 'asc'),
+    )
+    unsubscribe = onSnapshot(
+      q,
+      (snap) => {
+        matches.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      },
+      (err) => {
+        error.value = err.message
+      },
+    )
+    return unsubscribe
+  }
+
   function stopListening() {
     unsubscribe?.()
     unsubscribe = null
@@ -191,6 +210,7 @@ export function useMatch() {
     loading,
     error,
     subscribeToUpcoming,
+    subscribeToGroupMatches,
     subscribeToMatch,
     fetchMatch,
     createMatch,

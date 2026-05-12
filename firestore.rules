@@ -11,11 +11,13 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() && request.auth.token.admin == true;
+      return isAuthenticated() &&
+             request.auth.token.admin == true;
     }
 
     function isOwner(uid) {
-      return isAuthenticated() && request.auth.uid == uid;
+      return isAuthenticated() &&
+             request.auth.uid == uid;
     }
 
     function isValidStats(stats) {
@@ -26,172 +28,215 @@ service cloud.firestore {
     }
 
     function isOG() {
-      return isAuthenticated() && 
+      return isAuthenticated() &&
              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'og';
     }
 
+    function isGroupAdmin(groupId) {
+      return isAuthenticated()
+        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+            in ['owner', 'admin'];
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // MEMBERS GLOBAL READ
+    // ─────────────────────────────────────────────────────────────────────────
     match /{path=**}/members/{userId} {
       allow read: if isAuthenticated();
     }
 
-    // ── Colección: users ──────────────────────────────────────────────────────
-    // Cualquier usuario autenticado puede leer perfiles (para el ranking).
-    // Solo el propio usuario puede actualizar su perfil (excepto stats, que
-    // solo se actualizan desde Cloud Functions con Admin SDK).
+    // ─────────────────────────────────────────────────────────────────────────
+    // USERS
+    // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId} {
+
       allow read: if isAuthenticated();
+
       allow create: if isOwner(userId);
-      // El propio usuario puede actualizar su perfil (no stats).
-      // Los admins pueden actualizar el campo 'role' de cualquier usuario.
-      // Cualquier autenticado puede actualizar stats (para carga de resultados entre amigos).
+
       allow update: if (
-        isOwner(userId)
-        && !('stats' in request.resource.data.diff(resource.data).affectedKeys())
-      ) || (
-        isAdmin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'updatedAt'])
-      ) || (
-        isAuthenticated()
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['stats', 'updatedAt'])
+
+        // Usuario actualiza su perfil (menos stats)
+        (
+          isOwner(userId)
+          && !('stats' in request.resource.data.diff(resource.data).affectedKeys())
+        )
+
+        ||
+
+        // Admin cambia role
+        (
+          isAdmin()
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['role', 'updatedAt'])
+        )
+
+        ||
+
+        // SOLO admins u OG modifican stats
+        (
+          (isAdmin() || isOG())
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['stats', 'updatedAt'])
+        )
       );
-      // Las stats solo las puede modificar el Admin SDK (Cloud Functions)
+
       allow delete: if false;
 
-      // ── Subcolección: groups (referencia a grupos del usuario) ──────────────
+      // ── users/{userId}/groups ─────────────────────────────────────────────
       match /groups/{groupId} {
+
         allow read: if isOwner(userId);
+
         allow write: if isOwner(userId)
-                     || (isAuthenticated()
-                         && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
-                              in ['owner', 'admin']);
+                     || isGroupAdmin(groupId);
       }
     }
 
-    // ── Colección: matches ────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // MATCHES
+    // ─────────────────────────────────────────────────────────────────────────
     match /matches/{matchId} {
-      // Cualquier autenticado puede leer partidos
+
       allow read: if isAuthenticated();
 
       // Solo admins crean partidos
       allow create: if isAdmin();
 
-      // Admin puede modificar todo.
-      // Usuarios autenticados pueden actualizar currentPlayers/status (inscripción)
-      // o scoreA/scoreB/status=finished (carga de resultado).
-      allow update: if isAdmin()
-                    || (
-                      isAuthenticated()
-                      && request.resource.data.diff(resource.data).affectedKeys()
-                           .hasOnly(['currentPlayers', 'status', 'updatedAt'])
-                    )
-                    || (
-                      isAuthenticated()
-                      && request.resource.data.diff(resource.data).affectedKeys()
-                           .hasOnly(['scoreA', 'scoreB', 'status', 'updatedAt'])
-                    );
+      // ── UPDATE MATCH ──────────────────────────────────────────────────────
+      allow update: if
+
+        // Admin puede todo
+        isAdmin()
+
+        ||
+
+        // Usuarios solo pueden modificar currentPlayers
+        (
+          isAuthenticated()
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['currentPlayers', 'updatedAt'])
+        )
+
+        ||
+
+        // SOLO admins y OG pueden cargar resultados
+        (
+          (isAdmin() || isOG())
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['scoreA', 'scoreB', 'status', 'updatedAt'])
+        );
+
       allow delete: if isAdmin();
 
-      // ── Subcolección: registrations ────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────────
+      // REGISTRATIONS
+      // ──────────────────────────────────────────────────────────────────────
       match /registrations/{userId} {
-        // Cualquier autenticado puede leer la lista de inscriptos
+
         allow read: if isAuthenticated();
 
-        // Un usuario solo puede inscribirse a sí mismo
-        allow create: if isOwner(userId)
-                      && request.resource.data.userId == request.auth.uid
-                      && (
-                         get(/databases/$(database)/documents/matches/$(matchId)).data.status == 'open'
-                         ||
-                         (isOG() && request.time >= get(/databases/$(database)/documents/matches/$(matchId)).data.openAt - duration.value(30, 'm'))
-                      );
+        // Usuario se anota a sí mismo
+        allow create: if
+          isOwner(userId)
 
-        // Puede actualizar (ej: team asignado por admin)
-        allow update: if isAdmin()
-                      || isOwner(userId);
+          && request.resource.data.userId == request.auth.uid
 
-        // Puede cancelar su propia inscripción
+          // Partido abierto por tiempo
+          && (
+            request.time >=
+            get(/databases/$(database)/documents/matches/$(matchId)).data.openAt
+
+            ||
+
+            // OG entra 30 mins antes
+            (
+              isOG()
+              &&
+              request.time >=
+              get(/databases/$(database)/documents/matches/$(matchId)).data.openAt
+              - duration.value(30, 'm')
+            )
+          );
+
+        // Admin o dueño modifica inscripción
+        allow update: if isAdmin() || isOwner(userId);
+
+        // Cancelar inscripción
         allow delete: if isOwner(userId) || isAdmin();
       }
 
-      // ── Subcolección: playerStats ──────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────────
+      // PLAYER STATS
+      // ──────────────────────────────────────────────────────────────────────
       match /playerStats/{userId} {
-        // Lectura pública para autenticados
+
         allow read: if isAuthenticated();
 
-        // Cualquier usuario autenticado puede cargar stats del partido
-        // (confiamos en el grupo de amigos; si se necesita más restricción,
-        // se puede verificar que sea titular del partido)
-        allow write: if isAuthenticated();
+        // SOLO admin u OG pueden cargar stats
+        allow write: if isAdmin() || isOG();
       }
     }
 
-    // ── Colección: groups ─────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // GROUPS
+    // ─────────────────────────────────────────────────────────────────────────
     match /groups/{groupId} {
-      // Cualquier usuario autenticado puede leer grupos (para búsqueda por nombre)
+
       allow read: if isAuthenticated();
 
-      // Cualquier usuario autenticado puede crear un grupo
       allow create: if isAuthenticated()
                     && request.resource.data.createdBy == request.auth.uid;
 
-      // Solo owner/admin del grupo puede actualizar la configuración del grupo,
-      // O cualquier autenticado puede actualizar solo memberCount+updatedAt
-      // (necesario para join/leave via cliente)
       allow update: if isAuthenticated() && (
-        get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
-          in ['owner', 'admin']
-        || request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['memberCount', 'updatedAt'])
+
+        // owner/admin del grupo
+        isGroupAdmin(groupId)
+
+        ||
+
+        // usuarios solo actualizan memberCount
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['memberCount', 'updatedAt'])
       );
 
       allow delete: if isAuthenticated()
-                    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == 'owner';
+                    && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
+                         == 'owner';
 
-      // ── Subcolección: members ────────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────────
+      // MEMBERS
+      // ──────────────────────────────────────────────────────────────────────
       match /members/{userId} {
-        // Cualquier autenticado puede leer miembros (lista pública del grupo)
+
         allow read: if isAuthenticated();
 
-        // Un usuario puede añadirse a sí mismo (unirse por invite code)
-        // o un admin/owner puede añadir a alguien (al aceptar solicitud)
-        allow create: if isOwner(userId)
-                      || (isAuthenticated()
-                          && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
-                               in ['owner', 'admin']);
+        allow create: if
+          isOwner(userId)
+          || isGroupAdmin(groupId);
 
-        // Solo admin/owner puede cambiar el rol de un miembro
-        allow update: if isAuthenticated()
-                      && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
-                           in ['owner', 'admin'];
+        allow update: if isGroupAdmin(groupId);
 
-        // Un miembro puede eliminarse a sí mismo (salir), o admin/owner puede expulsar
-        allow delete: if isOwner(userId)
-                      || (isAuthenticated()
-                          && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
-                               in ['owner', 'admin']);
+        allow delete: if
+          isOwner(userId)
+          || isGroupAdmin(groupId);
       }
 
-      // ── Subcolección: joinRequests ───────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────────
+      // JOIN REQUESTS
+      // ──────────────────────────────────────────────────────────────────────
       match /joinRequests/{userId} {
-        // El propio solicitante puede leer su solicitud;
-        // admin/owner pueden leer todas las solicitudes
-        allow read: if isOwner(userId)
-                    || (isAuthenticated()
-                        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
-                             in ['owner', 'admin']);
 
-        // Solo el propio usuario puede crear su solicitud de ingreso
+        allow read: if
+          isOwner(userId)
+          || isGroupAdmin(groupId);
+
         allow create: if isOwner(userId);
 
-        // Solo admin/owner puede actualizar el estado (aceptar/rechazar)
-        allow update: if isAuthenticated()
-                      && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
-                           in ['owner', 'admin'];
+        allow update: if isGroupAdmin(groupId);
 
         allow delete: if false;
       }
     }
   }
 }
-

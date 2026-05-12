@@ -7,7 +7,7 @@
         <q-btn flat dense round icon="menu" aria-label="Menú" @click="drawer = !drawer" />
 
         <q-toolbar-title class="text-weight-bold q-pl-xs">
-          <q-icon name="sports_soccer" size="22px" class="q-mr-xs" />Futbols
+          <q-icon name="sports_soccer" size="22px" class="q-mr-xs" />Partidos de fútbol
         </q-toolbar-title>
 
         <!-- Avatar del usuario en el header -->
