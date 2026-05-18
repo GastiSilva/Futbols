@@ -9,260 +9,248 @@
       </div>
     </div>
 
-    <!-- ── Sin partido próximo ─────────────────────────────────────────────── -->
-    <div v-if="!nextMatch" class="column items-center q-mt-xl text-grey-5 q-gutter-sm">
+    <!-- ── Sin partidos próximos ──────────────────────────────────────────── -->
+    <div v-if="upcomingMatches.length === 0" class="column items-center q-mt-xl text-grey-5 q-gutter-sm">
       <q-icon name="sports_soccer" size="80px" />
       <div class="text-h6">No hay partidos programados</div>
       <div class="text-body2">Volvé pronto o avisale al admin</div>
     </div>
 
-    <!-- ── Card del próximo partido ───────────────────────────────────────── -->
+    <!-- ── Lista de próximos partidos ────────────────────────────────────── -->
     <template v-else>
 
       <div class="text-overline text-green-9 text-weight-bold q-mb-sm dash-overline">
-        PRÓXIMO PARTIDO
+        PRÓXIMOS PARTIDOS ({{ upcomingMatches.length }})
       </div>
 
-      <q-card flat bordered class="q-mb-lg">
-
-        <!-- Título + status chip -->
-        <q-card-section class="q-pb-sm">
-          <div class="row justify-between items-start no-wrap q-gutter-x-sm">
-            <div class="col overflow-hidden">
-              <div class="text-h6 text-weight-bold ellipsis">{{ nextMatch.title }}</div>
-              <div class="text-caption text-grey-6 q-mt-xs ellipsis">
-                <q-icon name="place" size="xs" class="q-mr-xs" />{{ nextMatch.location }}
+      <!-- ── Cards comprimidas de partidos ────────────────────────────────── -->
+      <div class="q-gutter-sm q-mb-lg">
+        <q-expansion-item
+          v-for="match in upcomingMatches"
+          :key="match.id"
+          flat
+          bordered
+          :icon="getStatusIcon(match.status)"
+          :header-class="getHeaderClass(match.id)"
+          @show="selectedMatchId = match.id"
+        >
+          <template #header>
+            <div class="row items-center q-gutter-md full-width">
+              <div class="col">
+                <div class="text-weight-bold">{{ match.title }}</div>
+                <div class="text-caption text-grey-6">
+                  <q-icon name="calendar_today" size="xs" class="q-mr-xs" />{{ formatMatchDate(match.date) }}
+                  <q-icon name="schedule" size="xs" class="q-ml-sm q-mr-xs" />{{ formatMatchTime(match.date) }}
+                </div>
               </div>
-            </div>
-            <q-chip
-              dense
-              :color="statusColor"
-              text-color="white"
-              :icon="statusIcon"
-              :label="statusLabel"
-              class="q-mt-xs"
-              style="flex-shrink: 0"
-            />
-          </div>
-        </q-card-section>
-
-        <q-separator inset />
-
-        <!-- Detalles: fecha, hora, formato -->
-        <q-card-section class="q-py-md">
-          <div class="row q-col-gutter-md text-center">
-            <div class="col-4">
-              <q-icon name="calendar_today" color="green-9" size="26px" />
-              <div class="text-caption text-grey-6 q-mt-xs">Fecha</div>
-              <div class="text-body2 text-weight-medium">{{ matchDate }}</div>
-            </div>
-            <div class="col-4">
-              <q-icon name="schedule" color="green-9" size="26px" />
-              <div class="text-caption text-grey-6 q-mt-xs">Hora</div>
-              <div class="text-body2 text-weight-medium">{{ matchTime }}</div>
-            </div>
-            <div class="col-4">
-              <q-icon name="sports_soccer" color="green-9" size="26px" />
-              <div class="text-caption text-grey-6 q-mt-xs">Formato</div>
-              <div class="text-body2 text-weight-medium">{{ nextMatch.format }}</div>
-            </div>
-          </div>
-        </q-card-section>
-
-        <!-- Barra de cupos -->
-        <q-card-section class="q-pt-none q-pb-md">
-          <div class="row justify-between items-center q-mb-xs">
-            <span class="text-caption text-grey-6">Cupos</span>
-            <span class="text-caption text-weight-bold">
-              {{ nextMatch.currentPlayers }} / {{ nextMatch.maxPlayers }}
-            </span>
-          </div>
-          <q-linear-progress
-            :value="nextMatch.currentPlayers / nextMatch.maxPlayers"
-            :color="progressColor"
-            track-color="grey-3"
-            rounded
-            size="8px"
-          />
-        </q-card-section>
-
-        <q-separator />
-
-        <!-- ── Zona de acción principal ─────────────────────────────────── -->
-        <q-card-section class="q-pa-lg">
-
-          <!-- ① Ya anotado -->
-          <template v-if="userRegistration">
-            <div class="column items-center q-gutter-sm">
-              <q-icon
-                :name="userRegistration.isOnWaitlist ? 'hourglass_empty' : 'check_circle'"
-                :color="userRegistration.isOnWaitlist ? 'orange-8' : 'positive'"
-                size="52px"
-              />
-              <div class="text-subtitle1 text-weight-bold text-center">
-                <span v-if="!userRegistration.isOnWaitlist" class="text-positive">
-                  ¡Sos Titular! &nbsp;·&nbsp; Posición #{{ userRegistration.position }}
-                </span>
-                <span v-else class="text-orange-8">
-                  Lista de espera &nbsp;·&nbsp; Puesto #{{ userRegistration.position - nextMatch.maxPlayers }}
-                </span>
+              <div class="text-right">
+                <div class="text-caption text-weight-bold" :class="getCuposColor(match)">
+                  {{ match.currentPlayers }} / {{ match.maxPlayers }}
+                </div>
+                <q-linear-progress
+                  :value="match.currentPlayers / match.maxPlayers"
+                  :color="getProgressColor(match)"
+                  size="4px"
+                  style="width: 80px"
+                />
               </div>
-              <div class="text-caption text-grey-6 text-center">
-                {{ userRegistration.isOnWaitlist
-                  ? 'Entrás si alguien cancela antes del partido'
-                  : 'Guardá el día en tu agenda 📅' }}
-              </div>
-              <q-btn
-                flat
+              <q-chip
                 dense
-                color="negative"
-                label="Cancelar inscripción"
-                icon="cancel"
+                :color="getStatusColor(match.status)"
+                text-color="white"
+                :label="getStatusLabel(match.status)"
                 size="sm"
-                class="q-mt-xs"
-                :loading="loading"
-                @click="handleLeave"
               />
             </div>
           </template>
 
-          <!-- ② Cuenta regresiva (partido scheduled) -->
-          <template v-else-if="nextMatch.status === 'scheduled' && msUntilOpen(nextMatch) > 0">
-            <div class="column items-center q-gutter-xs">
-              <q-icon name="lock_clock" color="blue-grey-5" size="36px" />
-              <div class="text-caption text-grey-6 text-uppercase text-weight-bold q-mt-xs">
-                La lista abre en
+          <!-- ── Contenido expandido del partido ──────────────────────────── -->
+          <q-separator />
+
+          <q-card-section class="q-pa-lg">
+
+            <!-- Detalles: fecha, hora, formato, ubicación -->
+            <div class="row q-col-gutter-md q-mb-lg text-center">
+              <div class="col-12 col-sm-4">
+                <q-icon name="calendar_today" color="green-9" size="26px" />
+                <div class="text-caption text-grey-6 q-mt-xs">Fecha</div>
+                <div class="text-body2 text-weight-medium">{{ formatMatchDate(match.date) }}</div>
               </div>
-              <div
-                class="text-h3 text-weight-bold text-green-9"
-                style="font-variant-numeric: tabular-nums; letter-spacing: 3px"
-              >
-                {{ countdown }}
+              <div class="col-12 col-sm-4">
+                <q-icon name="schedule" color="green-9" size="26px" />
+                <div class="text-caption text-grey-6 q-mt-xs">Hora</div>
+                <div class="text-body2 text-weight-medium">{{ formatMatchTime(match.date) }}</div>
               </div>
-              <div class="text-caption text-grey-5">hh : mm : ss</div>
+              <div class="col-12 col-sm-4">
+                <q-icon name="sports_soccer" color="green-9" size="26px" />
+                <div class="text-caption text-grey-6 q-mt-xs">Formato</div>
+                <div class="text-body2 text-weight-medium">{{ match.format }}</div>
+              </div>
             </div>
-          </template>
 
-          <!-- ③ Botón ANOTARME -->
-          <q-btn
-            v-else-if="canRegister(nextMatch)"
-            unelevated
-            color="green-9"
-            class="full-width"
-            size="lg"
-            style="font-size: 1.05rem; letter-spacing: 1px"
-            :loading="loading"
-            @click="handleJoin"
-          >
-            <q-icon name="sports_soccer" left />
-            ANOTARME
-          </q-btn>
+            <q-separator class="q-my-md" />
 
-          <!-- ④ Cerrado / finalizado -->
-          <div v-else class="column items-center q-gutter-sm">
-            <div class="row justify-center items-center q-gutter-xs text-grey-5 q-mb-sm">
-              <q-icon name="lock" size="24px" />
-              <span class="text-body2">Inscripción cerrada</span>
+            <!-- Ubicación -->
+            <div class="row q-mb-lg">
+              <q-icon name="place" color="green-9" size="24px" class="q-mr-md" />
+              <div class="col">
+                <div class="text-caption text-grey-6 text-uppercase">Ubicación</div>
+                <div class="text-body2 text-weight-medium">{{ match.location }}</div>
+              </div>
             </div>
-            <!-- Si el jugador estaba anotado puede cargar resultado -->
-            <q-btn
-              v-if="userRegistration && !userRegistration.isOnWaitlist"
-              unelevated
-              color="orange-7"
-              class="full-width"
-              icon="scoreboard"
-              label="Cargar resultado"
-              :to="{ name: 'post-match', params: { id: nextMatch.id } }"
-            />
-          </div>
 
-        </q-card-section>
-      </q-card>
+            <!-- Barra de cupos -->
+            <div class="q-mb-lg">
+              <div class="row justify-between items-center q-mb-xs">
+                <span class="text-caption text-grey-6 text-uppercase">Cupos</span>
+                <span class="text-caption text-weight-bold">
+                  {{ match.currentPlayers }} / {{ match.maxPlayers }}
+                </span>
+              </div>
+              <q-linear-progress
+                :value="match.currentPlayers / match.maxPlayers"
+                :color="getProgressColor(match)"
+                track-color="grey-3"
+                rounded
+                size="8px"
+              />
+            </div>
 
-      <!-- ── Stats del jugador ────────────────────────────────────────────── -->
-      <div class="text-overline text-grey-6 q-mb-sm dash-overline">MIS ESTADÍSTICAS</div>
-      <div class="row q-col-gutter-sm q-mb-lg">
-        <div class="col-4">
-          <q-card flat bordered class="text-center q-pa-sm">
-            <div class="text-h5 text-weight-bold text-green-9">{{ user?.stats?.goals ?? 0 }}</div>
-            <div class="text-caption text-grey-6">Goles</div>
-          </q-card>
-        </div>
-        <div class="col-4">
-          <q-card flat bordered class="text-center q-pa-sm">
-            <div class="text-h5 text-weight-bold text-blue-9">{{ user?.stats?.assists ?? 0 }}</div>
-            <div class="text-caption text-grey-6">Asistencias</div>
-          </q-card>
-        </div>
-        <div class="col-4">
-          <q-card flat bordered class="text-center q-pa-sm">
-            <div class="text-h5 text-weight-bold text-orange-9">{{ user?.stats?.matchesPlayed ?? 0 }}</div>
-            <div class="text-caption text-grey-6">Partidos</div>
-          </q-card>
-        </div>
-      </div>
+            <q-separator class="q-my-md" />
 
-      <!-- ── Lista de inscriptos ──────────────────────────────────────────── -->
-      <div class="text-overline text-grey-6 q-mb-sm dash-overline">
-        ANOTADOS ({{ titulares.length }})
-        <span v-if="suplentes.length > 0"> · SUPLENTES ({{ suplentes.length }})</span>
-      </div>
+            <!-- ── Zona de acción principal ────────────────────────────────── -->
 
-      <q-card flat bordered>
-        <q-list separator>
-
-          <!-- Titulares -->
-          <q-item
-            v-for="reg in titulares"
-            :key="reg.userId"
-            class="q-py-sm"
-            :class="{ 'bg-green-1': reg.userId === user?.uid }"
-          >
-            <q-item-section avatar>
-              <q-avatar size="36px">
-                <img
-                  v-if="reg.photoURL"
-                  :src="reg.photoURL"
-                  :alt="reg.displayName"
-                  referrerpolicy="no-referrer"
-                />
-                <q-icon v-else name="person" />
-              </q-avatar>
-            </q-item-section>
-
-            <q-item-section>
-              <q-item-label>
-                {{ reg.displayName }}
+            <!-- ① Ya anotado -->
+            <template v-if="getUserRegistrationForMatch(match.id)">
+              <div class="column items-center q-gutter-sm">
                 <q-icon
-                  v-if="reg.userId === user?.uid"
-                  name="star"
-                  color="amber-7"
-                  size="14px"
-                  class="q-ml-xs"
+                  :name="getUserRegistrationForMatch(match.id).isOnWaitlist ? 'hourglass_empty' : 'check_circle'"
+                  :color="getUserRegistrationForMatch(match.id).isOnWaitlist ? 'orange-8' : 'positive'"
+                  size="52px"
                 />
-              </q-item-label>
-            </q-item-section>
+                <div class="text-subtitle1 text-weight-bold text-center">
+                  <span v-if="!getUserRegistrationForMatch(match.id).isOnWaitlist" class="text-positive">
+                    ¡Sos Titular! &nbsp;·&nbsp; Posición #{{ getUserRegistrationForMatch(match.id).position }}
+                  </span>
+                  <span v-else class="text-orange-8">
+                    Lista de espera &nbsp;·&nbsp; Puesto #{{ getUserRegistrationForMatch(match.id).position - match.maxPlayers }}
+                  </span>
+                </div>
+                <div class="text-caption text-grey-6 text-center">
+                  {{ getUserRegistrationForMatch(match.id).isOnWaitlist
+                    ? 'Entrás si alguien cancela antes del partido'
+                    : 'Guardá el día en tu agenda 📅' }}
+                </div>
+                <q-btn
+                  flat
+                  dense
+                  color="negative"
+                  label="Cancelar inscripción"
+                  icon="cancel"
+                  size="sm"
+                  class="q-mt-xs"
+                  :loading="loading"
+                  @click="handleLeave(match.id)"
+                />
+              </div>
+            </template>
 
-            <q-item-section side>
-              <q-badge color="green-2" text-color="green-9" :label="`#${reg.position}`" />
-            </q-item-section>
-          </q-item>
+            <!-- ② Cuenta regresiva (partido scheduled) -->
+            <template v-else-if="match.status === 'scheduled' && msUntilOpen(match) > 0">
+              <div class="column items-center q-gutter-xs">
+                <q-icon name="lock_clock" color="blue-grey-5" size="36px" />
+                <div class="text-caption text-grey-6 text-uppercase text-weight-bold q-mt-xs">
+                  La lista abre en
+                </div>
+                <div
+                  class="text-h3 text-weight-bold text-green-9"
+                  style="font-variant-numeric: tabular-nums; letter-spacing: 3px"
+                >
+                  {{ getCountdownForMatch(match.id) }}
+                </div>
+                <div class="text-caption text-grey-5">hh : mm : ss</div>
+              </div>
+            </template>
 
-          <!-- Separador suplentes -->
-          <template v-if="suplentes.length > 0">
-            <q-separator />
-            <q-item-label
-              header
-              class="text-orange-8 text-caption text-uppercase bg-orange-1 q-py-xs q-px-md"
+            <!-- ③ Botón ANOTARME -->
+            <q-btn
+              v-else-if="canRegister(match)"
+              unelevated
+              color="green-9"
+              class="full-width"
+              size="lg"
+              style="font-size: 1.05rem; letter-spacing: 1px"
+              :loading="loading"
+              @click="handleJoin(match.id)"
             >
-              <q-icon name="hourglass_empty" size="xs" class="q-mr-xs" />Lista de espera
-            </q-item-label>
+              <q-icon name="sports_soccer" left />
+              ANOTARME
+            </q-btn>
 
+            <!-- ④ Cerrado / finalizado -->
+            <div v-else class="column items-center q-gutter-sm">
+              <div class="row justify-center items-center q-gutter-xs text-grey-5 q-mb-sm">
+                <q-icon name="lock" size="24px" />
+                <span class="text-body2">Inscripción cerrada</span>
+              </div>
+              <!-- Si el jugador estaba anotado puede cargar resultado -->
+              <q-btn
+                v-if="getUserRegistrationForMatch(match.id) && !getUserRegistrationForMatch(match.id).isOnWaitlist"
+                unelevated
+                color="orange-7"
+                class="full-width"
+                icon="scoreboard"
+                label="Cargar resultado"
+                :to="{ name: 'post-match', params: { id: match.id } }"
+              />
+            </div>
+
+          </q-card-section>
+        </q-expansion-item>
+      </div>
+
+      <!-- ── Seleccionar el match de la expansion actual para los inscritos ──── -->
+
+      <template v-if="selectedMatch">
+
+        <!-- ── Stats del jugador ────────────────────────────────────────────── -->
+        <div class="text-overline text-grey-6 q-mb-sm dash-overline">MIS ESTADÍSTICAS</div>
+        <div class="row q-col-gutter-sm q-mb-lg">
+          <div class="col-4">
+            <q-card flat bordered class="text-center q-pa-sm">
+              <div class="text-h5 text-weight-bold text-green-9">{{ user?.stats?.goals ?? 0 }}</div>
+              <div class="text-caption text-grey-6">Goles</div>
+            </q-card>
+          </div>
+          <div class="col-4">
+            <q-card flat bordered class="text-center q-pa-sm">
+              <div class="text-h5 text-weight-bold text-blue-9">{{ user?.stats?.assists ?? 0 }}</div>
+              <div class="text-caption text-grey-6">Asistencias</div>
+            </q-card>
+          </div>
+          <div class="col-4">
+            <q-card flat bordered class="text-center q-pa-sm">
+              <div class="text-h5 text-weight-bold text-orange-9">{{ user?.stats?.matchesPlayed ?? 0 }}</div>
+              <div class="text-caption text-grey-6">Partidos</div>
+            </q-card>
+          </div>
+        </div>
+
+        <!-- ── Lista de inscriptos ──────────────────────────────────────────── -->
+        <div class="text-overline text-grey-6 q-mb-sm dash-overline">
+          ANOTADOS ({{ titularesSeleccionado.length }})
+          <span v-if="suplentesSelectorado.length > 0"> · SUPLENTES ({{ suplentesSelectorado.length }})</span>
+        </div>
+
+        <q-card flat bordered>
+          <q-list separator>
+
+            <!-- Titulares -->
             <q-item
-              v-for="reg in suplentes"
+              v-for="reg in titularesSeleccionado"
               :key="reg.userId"
               class="q-py-sm"
-              :class="{ 'bg-orange-1': reg.userId === user?.uid }"
+              :class="{ 'bg-green-1': reg.userId === user?.uid }"
             >
               <q-item-section avatar>
                 <q-avatar size="36px">
@@ -277,38 +265,86 @@
               </q-item-section>
 
               <q-item-section>
-                <q-item-label>{{ reg.displayName }}</q-item-label>
+                <q-item-label>
+                  {{ reg.displayName }}
+                  <q-icon
+                    v-if="reg.userId === user?.uid"
+                    name="star"
+                    color="amber-7"
+                    size="14px"
+                    class="q-ml-xs"
+                  />
+                </q-item-label>
               </q-item-section>
 
               <q-item-section side>
-                <q-badge
-                  color="orange-2"
-                  text-color="orange-9"
-                  :label="`Esp. #${reg.position - nextMatch.maxPlayers}`"
-                />
+                <q-badge color="green-2" text-color="green-9" :label="`#${reg.position}`" />
               </q-item-section>
             </q-item>
-          </template>
 
-          <!-- Lista vacía -->
-          <q-item v-if="registrations.length === 0" class="q-py-md">
-            <q-item-section class="text-center text-grey-5">
-              <q-icon name="people_outline" size="28px" class="q-mb-xs" />
-              Nadie anotado todavía — ¡sé el primero!
-            </q-item-section>
-          </q-item>
+            <!-- Separador suplentes -->
+            <template v-if="suplentesSelectorado.length > 0">
+              <q-separator />
+              <q-item-label
+                header
+                class="text-orange-8 text-caption text-uppercase bg-orange-1 q-py-xs q-px-md"
+              >
+                <q-icon name="hourglass_empty" size="xs" class="q-mr-xs" />Lista de espera
+              </q-item-label>
 
-        </q-list>
-      </q-card>
+              <q-item
+                v-for="reg in suplentesSelectorado"
+                :key="reg.userId"
+                class="q-py-sm"
+                :class="{ 'bg-orange-1': reg.userId === user?.uid }"
+              >
+                <q-item-section avatar>
+                  <q-avatar size="36px">
+                    <img
+                      v-if="reg.photoURL"
+                      :src="reg.photoURL"
+                      :alt="reg.displayName"
+                      referrerpolicy="no-referrer"
+                    />
+                    <q-icon v-else name="person" />
+                  </q-avatar>
+                </q-item-section>
 
-      <q-btn
-        flat
-        color="green-9"
-        label="Ver ranking completo"
-        icon-right="arrow_forward"
-        class="full-width q-mt-md"
-        :to="{ name: 'leaderboard' }"
-      />
+                <q-item-section>
+                  <q-item-label>{{ reg.displayName }}</q-item-label>
+                </q-item-section>
+
+                <q-item-section side>
+                  <q-badge
+                    color="orange-2"
+                    text-color="orange-9"
+                    :label="`Esp. #${reg.position - selectedMatch.maxPlayers}`"
+                  />
+                </q-item-section>
+              </q-item>
+            </template>
+
+            <!-- Lista vacía -->
+            <q-item v-if="registrationsSeleccionadas.length === 0" class="q-py-md">
+              <q-item-section class="text-center text-grey-5">
+                <q-icon name="people_outline" size="28px" class="q-mb-xs" />
+                Nadie anotado todavía — ¡sé el primero!
+              </q-item-section>
+            </q-item>
+
+          </q-list>
+        </q-card>
+
+        <q-btn
+          flat
+          color="green-9"
+          label="Ver ranking completo"
+          icon-right="arrow_forward"
+          class="full-width q-mt-md"
+          :to="{ name: 'leaderboard' }"
+        />
+
+      </template>
 
     </template>
   </q-page>
@@ -319,119 +355,180 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 import { useRegistration } from 'src/composables/useRegistration'
-import { useMatch } from 'src/composables/useMatch'
+import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 
 const $q = useQuasar()
 const { user } = useAuth()
-const {
-  registrations,
-  userRegistration,
-  loading,
-  joinMatch,
-  leaveMatch,
-  canRegister,
-  msUntilOpen,
-  subscribeToRegistrations,
-  stopListening,
-} = useRegistration()
+const { joinMatch, leaveMatch, canRegister, msUntilOpen, subscribeToRegistrations, stopListening, loading } = useRegistration()
 const { matches, subscribeToUpcoming: subscribeToMatchesUpcoming } = useMatch()
 
-// ── Próximo partido (desde Firestore) ─────────────────────────────────────────
-const nextMatch = computed(() => {
-  const upcomingMatch = matches.value?.[0]
-  if (!upcomingMatch) return null
-  return {
-    id: upcomingMatch.id,
-    title: upcomingMatch.title,
-    location: upcomingMatch.location,
-    date: upcomingMatch.date,
-    openAt: upcomingMatch.openAt,
-    format: upcomingMatch.format,
-    maxPlayers: upcomingMatch.maxPlayers,
-    currentPlayers: upcomingMatch.currentPlayers ?? 0,
-    status: upcomingMatch.status,
-  }
-})
+// ── Matches próximos ─────────────────────────────────────────────────────────
+const upcomingMatches = computed(() =>
+  matches.value?.map((m) => ({
+    id: m.id,
+    title: m.title,
+    location: m.location,
+    date: m.date,
+    openAt: m.openAt,
+    format: m.format,
+    maxPlayers: m.maxPlayers,
+    currentPlayers: m.currentPlayers ?? 0,
+    status: getEffectiveStatus(m),
+  })) ?? [],
+)
 
-// ── Datos derivados ───────────────────────────────────────────────────────────
+// ── Match seleccionado (expandido) ───────────────────────────────────────────
+const selectedMatchId = ref(null)
+
+const selectedMatch = computed(() =>
+  upcomingMatches.value.find((m) => m.id === selectedMatchId.value),
+)
+
+// ── Registraciones globales ──────────────────────────────────────────────────
+// Un Map<matchId, registraciones[]> para mantener registraciones por match
+const registracionesPorMatch = ref(new Map())
+
+// ── Registraciones del match seleccionado ───────────────────────────────────
+const registrationsSeleccionadas = computed(() =>
+  registracionesPorMatch.value.get(selectedMatchId.value) ?? [],
+)
+
+const titularesSeleccionado = computed(() =>
+  registrationsSeleccionadas.value.filter((r) => !r.isOnWaitlist),
+)
+
+const suplentesSelectorado = computed(() =>
+  registrationsSeleccionadas.value.filter((r) => r.isOnWaitlist),
+)
+
+// ── Datos derivados globales ────────────────────────────────────────────────
 const firstName = computed(() => user.value?.displayName?.split(' ')[0] ?? 'jugador')
 
 const today = computed(() =>
   new Intl.DateTimeFormat('es-AR', {
-    weekday: 'long', day: 'numeric', month: 'long',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
   }).format(new Date()),
 )
 
-const matchDate = computed(() => {
-  const d = nextMatch.value?.date?.toDate?.()
+// ── Formateadores ───────────────────────────────────────────────────────────
+function formatMatchDate(dateTimestamp) {
+  const d = dateTimestamp?.toDate?.()
   return d
     ? new Intl.DateTimeFormat('es-AR', { weekday: 'short', day: 'numeric', month: 'short' }).format(d)
     : '—'
-})
+}
 
-const matchTime = computed(() => {
-  const d = nextMatch.value?.date?.toDate?.()
-  return d
-    ? new Intl.DateTimeFormat('es-AR', { hour: '2-digit', minute: '2-digit' }).format(d)
-    : '—'
-})
+function formatMatchTime(dateTimestamp) {
+  const d = dateTimestamp?.toDate?.()
+  return d ? new Intl.DateTimeFormat('es-AR', { hour: '2-digit', minute: '2-digit' }).format(d) : '—'
+}
 
-const statusColor = computed(() => ({
-  scheduled: 'blue-grey-6',
-  open:       'green-9',
-  closed:     'red-7',
-  finished:   'grey-6',
-}[nextMatch.value?.status] ?? 'grey-6'))
+// ── Status helpers ──────────────────────────────────────────────────────────
+function getStatusColor(status) {
+  return {
+    scheduled: 'blue-grey-6',
+    open: 'green-9',
+    closed: 'red-7',
+    finished: 'grey-6',
+  }[status] ?? 'grey-6'
+}
 
-const statusLabel = computed(() => ({
-  scheduled: 'Programado',
-  open:       'Abierto',
-  closed:     'Cerrado',
-  finished:   'Finalizado',
-}[nextMatch.value?.status] ?? nextMatch.value?.status))
+function getStatusLabel(status) {
+  return {
+    scheduled: 'Programado',
+    open: 'Abierto',
+    closed: 'Cerrado',
+    finished: 'Finalizado',
+  }[status] ?? status
+}
 
-const statusIcon = computed(() => ({
-  scheduled: 'pending',
-  open:       'radio_button_checked',
-  closed:     'lock',
-  finished:   'done_all',
-}[nextMatch.value?.status] ?? 'help'))
+function getStatusIcon(status) {
+  return {
+    scheduled: 'pending',
+    open: 'radio_button_checked',
+    closed: 'lock',
+    finished: 'done_all',
+  }[status] ?? 'help'
+}
 
-const progressColor = computed(() => {
-  const ratio = (nextMatch.value?.currentPlayers ?? 0) / (nextMatch.value?.maxPlayers ?? 1)
+function getHeaderClass(matchId) {
+  return selectedMatchId.value === matchId ? 'bg-green-1' : ''
+}
+
+function getProgressColor(match) {
+  const ratio = (match.currentPlayers ?? 0) / (match.maxPlayers ?? 1)
   return ratio >= 1 ? 'red-7' : ratio >= 0.8 ? 'orange-7' : 'green-9'
-})
+}
 
-const titulares = computed(() => registrations.value.filter(r => !r.isOnWaitlist))
-const suplentes = computed(() => registrations.value.filter(r => r.isOnWaitlist))
+function getCuposColor(match) {
+  const ratio = (match.currentPlayers ?? 0) / (match.maxPlayers ?? 1)
+  return ratio >= 1 ? 'text-red-7' : ratio >= 0.8 ? 'text-orange-7' : 'text-green-9'
+}
 
-// ── Cuenta regresiva ──────────────────────────────────────────────────────────
-const countdown = ref('--:--:--')
-let countdownTimer = null
+// ── Countdowns por match ─────────────────────────────────────────────────────
+const countdownsPerMatch = ref(new Map())
+let countdownTimers = new Map()
 
-function tickCountdown() {
-  const ms = msUntilOpen(nextMatch.value)
+function tickCountdown(matchId) {
+  const match = upcomingMatches.value.find((m) => m.id === matchId)
+  if (!match) return
+
+  const ms = msUntilOpen(match)
   if (ms <= 0) {
-    countdown.value = '00:00:00'
-    clearInterval(countdownTimer)
+    countdownsPerMatch.value.set(matchId, '00:00:00')
+    if (countdownTimers.has(matchId)) {
+      clearInterval(countdownTimers.get(matchId))
+      countdownTimers.delete(matchId)
+    }
     return
   }
+
   const s = Math.floor(ms / 1000)
   const hh = String(Math.floor(s / 3600)).padStart(2, '0')
   const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0')
   const ss = String(s % 60).padStart(2, '0')
-  countdown.value = `${hh}:${mm}:${ss}`
+  countdownsPerMatch.value.set(matchId, `${hh}:${mm}:${ss}`)
 }
 
-// ── Acciones ──────────────────────────────────────────────────────────────────
-async function handleJoin() {
+function getCountdownForMatch(matchId) {
+  return countdownsPerMatch.value.get(matchId) ?? '--:--:--'
+}
+
+function startCountdownForMatch(matchId) {
+  tickCountdown(matchId)
+  if (!countdownTimers.has(matchId)) {
+    const timer = setInterval(() => tickCountdown(matchId), 1000)
+    countdownTimers.set(matchId, timer)
+  }
+}
+
+function stopCountdownForMatch(matchId) {
+  if (countdownTimers.has(matchId)) {
+    clearInterval(countdownTimers.get(matchId))
+    countdownTimers.delete(matchId)
+  }
+}
+
+// ── Obtener registración del usuario para un match específico ────────────────
+function getUserRegistrationForMatch(matchId) {
+  const regs = registracionesPorMatch.value.get(matchId) ?? []
+  return regs.find((r) => r.userId === user.value?.uid)
+}
+
+// ── Acciones ────────────────────────────────────────────────────────────────
+async function handleJoin(matchId) {
+  const match = upcomingMatches.value.find((m) => m.id === matchId)
+  if (!match) return
+
   try {
-    const result = await joinMatch(nextMatch.value.id)
+    const result = await joinMatch(matchId)
     $q.notify({
       type: 'positive',
       icon: result.isOnWaitlist ? 'hourglass_empty' : 'check_circle',
       message: result.isOnWaitlist
-        ? `Estás en lista de espera — puesto #${result.position - nextMatch.value.maxPlayers}`
+        ? `Estás en lista de espera — puesto #${result.position - match.maxPlayers}`
         : `¡Te anotaste! Sos el jugador #${result.position}`,
       timeout: 4500,
     })
@@ -440,16 +537,19 @@ async function handleJoin() {
   }
 }
 
-function handleLeave() {
+function handleLeave(matchId) {
+  const match = upcomingMatches.value.find((m) => m.id === matchId)
+  if (!match) return
+
   $q.dialog({
     title: 'Cancelar inscripción',
-    message: '¿Seguro que querés salir del partido?',
+    message: `¿Seguro que querés salir de "${match.title}"?`,
     cancel: { flat: true, label: 'No, quedarme' },
     ok: { unelevated: true, color: 'negative', label: 'Sí, salir' },
     persistent: true,
   }).onOk(async () => {
     try {
-      await leaveMatch(nextMatch.value.id)
+      await leaveMatch(matchId)
       $q.notify({ type: 'info', message: 'Inscripción cancelada correctamente' })
     } catch (err) {
       $q.notify({ type: 'negative', message: err.message })
@@ -457,28 +557,50 @@ function handleLeave() {
   })
 }
 
-// ── Lifecycle ─────────────────────────────────────────────────────────────────
+// ── Lifecycle ───────────────────────────────────────────────────────────────
 onMounted(() => {
   subscribeToMatchesUpcoming()
 })
 
-// Watcher para partido: cuando hay próximo partido, subscribe a registraciones y inicia countdown
+// Watcher: cuando hay matches, inicializa contadores y suscripciones
 watch(
-  () => nextMatch.value?.id,
-  (matchId) => {
-    clearInterval(countdownTimer)
-    if (matchId) {
-      subscribeToRegistrations(matchId)
-      if (nextMatch.value?.status === 'scheduled') {
-        tickCountdown()
-        countdownTimer = setInterval(tickCountdown, 1000)
+  () => upcomingMatches.value.map((m) => m.id),
+  (matchIds) => {
+    matchIds.forEach((matchId) => {
+      // Si el partido es scheduled, inicia el countdown
+      const match = upcomingMatches.value.find((m) => m.id === matchId)
+      if (match?.status === 'scheduled') {
+        startCountdownForMatch(matchId)
+      } else {
+        stopCountdownForMatch(matchId)
       }
+
+      // Suscríbete a registraciones de este match (si aún no lo has hecho)
+      if (!registracionesPorMatch.value.has(matchId)) {
+        subscribeToRegistrations(matchId, (regs) => {
+          registracionesPorMatch.value.set(matchId, regs)
+        })
+      }
+    })
+  },
+  { immediate: false },
+)
+
+// Watcher: cuando se selecciona un match, cambia las registraciones
+watch(
+  () => selectedMatchId.value,
+  (newMatchId) => {
+    if (newMatchId && !registracionesPorMatch.value.has(newMatchId)) {
+      subscribeToRegistrations(newMatchId, (regs) => {
+        registracionesPorMatch.value.set(newMatchId, regs)
+      })
     }
   },
 )
 
 onUnmounted(() => {
-  clearInterval(countdownTimer)
+  countdownTimers.forEach((timer) => clearInterval(timer))
+  countdownTimers.clear()
   stopListening()
 })
 </script>

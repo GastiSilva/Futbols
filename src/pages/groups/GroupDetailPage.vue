@@ -240,9 +240,9 @@
           <q-item-section side>
             <q-chip
               dense
-              :color="matchStatusColor(match.status)"
+              :color="matchStatusColor(getEffectiveStatus(match))"
               text-color="white"
-              :label="matchStatusLabel(match.status)"
+              :label="matchStatusLabel(getEffectiveStatus(match))"
             />
           </q-item-section>
         </q-item>
@@ -256,7 +256,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useGroups } from 'src/composables/useGroups'
-import { useMatch } from 'src/composables/useMatch'
+import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useAuthStore } from 'src/stores/auth.store'
 import { useQuasar } from 'quasar'
 

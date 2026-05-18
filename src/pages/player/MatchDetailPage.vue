@@ -89,7 +89,7 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { date } from 'quasar'
-import { useMatch } from 'src/composables/useMatch'
+import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 
 const route = useRoute()
 const { currentMatch: match, loading, subscribeToMatch, stopListening } = useMatch()
@@ -110,6 +110,6 @@ const STATUS_MAP = {
   closed:    { label: 'Completo',   color: 'orange-7' },
   finished:  { label: 'Finalizado', color: 'grey-6' },
 }
-const statusLabel = computed(() => STATUS_MAP[match.value?.status]?.label ?? match.value?.status ?? '')
-const statusColor = computed(() => STATUS_MAP[match.value?.status]?.color ?? 'grey')
+const statusLabel = computed(() => STATUS_MAP[getEffectiveStatus(match.value)]?.label ?? match.value?.status ?? '')
+const statusColor = computed(() => STATUS_MAP[getEffectiveStatus(match.value)]?.color ?? 'grey')
 </script>

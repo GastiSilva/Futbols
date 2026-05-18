@@ -43,21 +43,18 @@ export default configure(function (/* ctx */) {
           name: 'inject-firebase-sw-config',
           apply: 'build',
           closeBundle() {
-            const swPath = resolve('dist/pwa/firebase-messaging-sw.js')
+            const swPath = resolve('dist/pwa/sw.js')
             try {
               let content = readFileSync(swPath, 'utf-8')
               content = content
-                .replace(
-                  `self.VITE_FIREBASE_API_KEY || '__REPLACED_AT_BUILD__'`,
-                  `'${process.env.VITE_FIREBASE_API_KEY}'`,
-                )
-                .replace(`authDomain: '__REPLACED_AT_BUILD__'`,        `authDomain: '${process.env.VITE_FIREBASE_AUTH_DOMAIN}'`)
-                .replace(`projectId: '__REPLACED_AT_BUILD__'`,          `projectId: '${process.env.VITE_FIREBASE_PROJECT_ID}'`)
-                .replace(`storageBucket: '__REPLACED_AT_BUILD__'`,      `storageBucket: '${process.env.VITE_FIREBASE_STORAGE_BUCKET}'`)
-                .replace(`messagingSenderId: '__REPLACED_AT_BUILD__'`,  `messagingSenderId: '${process.env.VITE_FIREBASE_MESSAGING_SENDER_ID}'`)
-                .replace(`appId: '__REPLACED_AT_BUILD__'`,              `appId: '${process.env.VITE_FIREBASE_APP_ID}'`)
+                .replace(`'__VITE_FIREBASE_API_KEY__'`,            `'${process.env.VITE_FIREBASE_API_KEY}'`)
+                .replace(`'__VITE_FIREBASE_AUTH_DOMAIN__'`,        `'${process.env.VITE_FIREBASE_AUTH_DOMAIN}'`)
+                .replace(`'__VITE_FIREBASE_PROJECT_ID__'`,         `'${process.env.VITE_FIREBASE_PROJECT_ID}'`)
+                .replace(`'__VITE_FIREBASE_STORAGE_BUCKET__'`,     `'${process.env.VITE_FIREBASE_STORAGE_BUCKET}'`)
+                .replace(`'__VITE_FIREBASE_MESSAGING_SENDER_ID__'`,`'${process.env.VITE_FIREBASE_MESSAGING_SENDER_ID}'`)
+                .replace(`'__VITE_FIREBASE_APP_ID__'`,             `'${process.env.VITE_FIREBASE_APP_ID}'`)
               writeFileSync(swPath, content)
-              console.log('[inject-firebase-sw-config] firebase-messaging-sw.js configurado correctamente')
+              console.log('[inject-firebase-sw-config] sw.js configurado correctamente')
             } catch (e) {
               console.warn('[inject-firebase-sw-config] Error:', e.message)
             }
@@ -99,13 +96,6 @@ export default configure(function (/* ctx */) {
       extendGenerateSWOptions(cfg) {
         cfg.skipWaiting = true
         cfg.clientsClaim = true
-        // No pre-cachea el SW de FCM (ya lo maneja firebase-messaging-sw.js)
-        cfg.globIgnores = [
-          '**/node_modules/**/*',
-          '**/*.map',
-          'manifest.json',
-          'firebase-messaging-sw.js',
-        ]
       },
 
       manifest: {

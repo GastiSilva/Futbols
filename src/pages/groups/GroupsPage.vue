@@ -165,28 +165,42 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGroups } from 'src/composables/useGroups'
 import { useQuasar } from 'quasar'
+import { useAuthStore } from 'src/stores/auth.store'
 
 const router = useRouter()
 const $q = useQuasar()
-const { loading, groups, createGroup, getMyGroups, getGroupMembers } = useGroups()
+const { loading, createGroup, getMyGroups, getGroupMembers } = useGroups()
+const authStore = useAuthStore()
+
+const groups = ref([])
 const groupMembers = ref({})
 const loadError = ref(null)
 const showCreateDialog = ref(false)
 const creating = ref(false)
 const newGroup = ref({ name: '', description: '' })
 
-onMounted(async () => {
-  try {
-    loadError.value = null
-    await getMyGroups()
-  } catch (err) {
-    loadError.value = err.message ?? 'Error al cargar los grupos. Verifica tu conexión.'
-  }
-})
+// El "watch" mágico: Ni bien Pinia detecta tu usuario, va a buscar los grupos.
+watch(
+  () => authStore.user?.uid,
+  async (newUid) => {
+    if (newUid) {
+      try {
+        loadError.value = null
+        groups.value = await getMyGroups()
+      } catch (err) {
+        loadError.value = err.message ?? 'Error al cargar los grupos.'
+        console.error("Error cargando grupos:", err)
+      }
+    } else {
+      groups.value = [] // Si no estás logueado, limpia la lista
+    }
+  },
+  { immediate: true }
+)
 
 async function loadMembers(groupId) {
   if (groupMembers.value[groupId]) return

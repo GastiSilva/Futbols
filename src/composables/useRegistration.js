@@ -46,6 +46,7 @@ import {
 } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
+import { getEffectiveStatus } from 'src/composables/useMatch'
 
 // ── Errores tipados para feedback de UI ───────────────────────────────────────
 export const REGISTRATION_ERRORS = {
@@ -65,18 +66,41 @@ export function useRegistration() {
   const error = ref(null)
 
   let unsubscribe = null
+  let unsubscribes = new Map()  // Para múltiples suscripciones simultaneas
 
   // ── Suscripción en tiempo real a la lista de inscriptos ──────────────────
-  function subscribeToRegistrations(matchId) {
+  function subscribeToRegistrations(matchId, onRegistrationsChange) {
+    // Si ya hay una suscripción para este match, desuscríbete primero
+    if (unsubscribes.has(matchId)) {
+      unsubscribes.get(matchId)()
+      unsubscribes.delete(matchId)
+    }
+
     const regCol = collection(db, 'matches', matchId, 'registrations')
     const q = query(regCol, orderBy('position', 'asc'))
 
-    unsubscribe = onSnapshot(q, (snap) => {
-      registrations.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-      userRegistration.value =
-        registrations.value.find((r) => r.userId === authStore.user?.uid) ?? null
+    const unsub = onSnapshot(q, (snap) => {
+      const regs = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      
+      // Si se proporciona un callback, lo usa
+      if (onRegistrationsChange && typeof onRegistrationsChange === 'function') {
+        onRegistrationsChange(regs)
+      } else {
+        // Si no, mantiene el comportamiento anterior (para compatibilidad)
+        registrations.value = regs
+        userRegistration.value =
+          regs.find((r) => r.userId === authStore.user?.uid) ?? null
+      }
     })
-    return unsubscribe
+
+    // Si hay callback, guarda la suscripción para poder desuscribirse después
+    if (onRegistrationsChange) {
+      unsubscribes.set(matchId, unsub)
+    } else {
+      unsubscribe = unsub
+    }
+
+    return unsub
   }
 
   // ── INSCRIPCIÓN ATÓMICA (corazón del composable) ─────────────────────────
@@ -137,10 +161,10 @@ export function useRegistration() {
         // 4a. Incrementa el contador en el documento del partido
         //     (NO usamos increment() de FieldValue porque dentro de una
         //      transacción debemos leer el valor actual y calcular nosotros)
+        //     NOTA: solo se actualizan campos permitidos por las Firestore Rules
+        //     (currentPlayers + updatedAt). El status lo maneja el Cloud Scheduler.
         transaction.update(matchRef, {
           currentPlayers: newPosition,
-          // Cierra el partido automáticamente si se llenaron los cupos
-          ...(newPosition === match.maxPlayers && { status: 'closed' }),
           updatedAt: serverTimestamp(),
         })
 
@@ -200,11 +224,11 @@ export function useRegistration() {
         const reg = regSnap.data()
         const newCount = Math.max(0, (match.currentPlayers ?? 1) - 1)
 
-        // Decrementa el contador y reabre si estaba cerrado por cupo
+        // Decrementa el contador
+        // NOTA: no se actualiza status aquí — las Firestore Rules no lo permiten
+        // para usuarios regulares. getEffectiveStatus() lo maneja en el cliente.
         transaction.update(matchRef, {
           currentPlayers: newCount,
-          ...(match.status === 'closed' &&
-            newCount < match.maxPlayers && { status: 'open' }),
           updatedAt: serverTimestamp(),
         })
 
@@ -230,7 +254,8 @@ export function useRegistration() {
    */
   function canRegister(match) {
     if (!match) return false
-    if (match.status === 'closed' || match.status === 'finished') return false
+    const effectiveStatus = getEffectiveStatus(match)
+    if (effectiveStatus === 'closed' || effectiveStatus === 'finished') return false
     if (userRegistration.value) return false
 
     const now = Date.now()
@@ -258,6 +283,8 @@ export function useRegistration() {
   function stopListening() {
     unsubscribe?.()
     unsubscribe = null
+    unsubscribes.forEach(unsub => unsub?.())
+    unsubscribes.clear()
   }
 
   return {

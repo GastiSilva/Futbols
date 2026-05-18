@@ -1,31 +1,30 @@
 // public/firebase-messaging-sw.js
 // ─────────────────────────────────────────────────────────────────────────────
 // Service Worker para recibir notificaciones push FCM en segundo plano.
-// Este archivo DEBE estar en la raíz del dominio (/public).
+// La config se inyecta en tiempo de build por el plugin inject-firebase-sw-config.
 // ─────────────────────────────────────────────────────────────────────────────
 importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js')
 importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js')
 
-// Usa los mismos valores de tu firebaseConfig
 firebase.initializeApp({
-  apiKey: self.VITE_FIREBASE_API_KEY || '__REPLACED_AT_BUILD__',
-  authDomain: '__REPLACED_AT_BUILD__',
-  projectId: '__REPLACED_AT_BUILD__',
-  storageBucket: '__REPLACED_AT_BUILD__',
-  messagingSenderId: '__REPLACED_AT_BUILD__',
-  appId: '__REPLACED_AT_BUILD__',
+  apiKey:            '__VITE_FIREBASE_API_KEY__',
+  authDomain:        '__VITE_FIREBASE_AUTH_DOMAIN__',
+  projectId:         '__VITE_FIREBASE_PROJECT_ID__',
+  storageBucket:     '__VITE_FIREBASE_STORAGE_BUCKET__',
+  messagingSenderId: '__VITE_FIREBASE_MESSAGING_SENDER_ID__',
+  appId:             '__VITE_FIREBASE_APP_ID__',
 })
 
 const messaging = firebase.messaging()
 
-// Maneja mensajes en segundo plano (app minimizada o cerrada)
 messaging.onBackgroundMessage((payload) => {
   const { title, body, icon } = payload.notification ?? {}
   self.registration.showNotification(title ?? 'Fútbol App', {
     body: body ?? 'Se abrió la lista del partido.',
     icon: icon ?? '/icons/icon-192x192.png',
-    badge: '/icons/badge-72x72.png',
+    badge: '/icons/icon-128x128.png',
     data: payload.data,
+    requireInteraction: true,
   })
 })
 

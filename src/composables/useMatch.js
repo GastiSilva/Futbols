@@ -38,6 +38,29 @@ export const MATCH_STATUS = {
   FINISHED: 'finished',   // resultados cargados
 }
 
+/**
+ * Calcula el estado efectivo de un partido en el cliente.
+ * No escribe en Firestore — solo para display y lógica UI.
+ *
+ * Reglas:
+ *  - 'finished' siempre es autoritativo
+ *  - 'closed'   siempre es autoritativo
+ *  - Si currentPlayers >= maxPlayers → 'closed'
+ *  - Si 'scheduled' pero openAt ya pasó → 'open'
+ *  - Cualquier otro caso respeta el valor de Firestore
+ */
+export function getEffectiveStatus(match) {
+  if (!match) return null
+  if (match.status === 'finished') return 'finished'
+  if (match.status === 'closed') return 'closed'
+  if ((match.currentPlayers ?? 0) >= (match.maxPlayers ?? Infinity)) return 'closed'
+  if (match.status === 'scheduled') {
+    const openAtMillis = match.openAt?.toMillis?.() ?? 0
+    if (openAtMillis && Date.now() >= openAtMillis) return 'open'
+  }
+  return match.status
+}
+
 export function useMatch() {
   const authStore = useAuthStore()
   const matches = ref([])
