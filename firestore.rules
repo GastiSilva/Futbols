@@ -56,10 +56,19 @@ service cloud.firestore {
 
       allow update: if (
 
-        // Usuario actualiza su perfil (menos stats)
+        // Usuario actualiza su perfil (fcmToken, displayName, etc - menos stats)
         (
           isOwner(userId)
           && !('stats' in request.resource.data.diff(resource.data).affectedKeys())
+        )
+
+        ||
+
+        // Usuario puede actualizar solo su fcmToken y updatedAt
+        (
+          isOwner(userId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['fcmToken', 'updatedAt'])
         )
 
         ||
