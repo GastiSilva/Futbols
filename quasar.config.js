@@ -46,13 +46,19 @@ export default configure(function (/* ctx */) {
             const swPath = resolve('dist/pwa/sw.js')
             try {
               let content = readFileSync(swPath, 'utf-8')
-              content = content
-                .replace(`'__VITE_FIREBASE_API_KEY__'`,            `'${process.env.VITE_FIREBASE_API_KEY}'`)
-                .replace(`'__VITE_FIREBASE_AUTH_DOMAIN__'`,        `'${process.env.VITE_FIREBASE_AUTH_DOMAIN}'`)
-                .replace(`'__VITE_FIREBASE_PROJECT_ID__'`,         `'${process.env.VITE_FIREBASE_PROJECT_ID}'`)
-                .replace(`'__VITE_FIREBASE_STORAGE_BUCKET__'`,     `'${process.env.VITE_FIREBASE_STORAGE_BUCKET}'`)
-                .replace(`'__VITE_FIREBASE_MESSAGING_SENDER_ID__'`,`'${process.env.VITE_FIREBASE_MESSAGING_SENDER_ID}'`)
-                .replace(`'__VITE_FIREBASE_APP_ID__'`,             `'${process.env.VITE_FIREBASE_APP_ID}'`)
+              const replacements = {
+                '__VITE_FIREBASE_API_KEY__':             process.env.VITE_FIREBASE_API_KEY,
+                '__VITE_FIREBASE_AUTH_DOMAIN__':         process.env.VITE_FIREBASE_AUTH_DOMAIN,
+                '__VITE_FIREBASE_PROJECT_ID__':          process.env.VITE_FIREBASE_PROJECT_ID,
+                '__VITE_FIREBASE_STORAGE_BUCKET__':      process.env.VITE_FIREBASE_STORAGE_BUCKET,
+                '__VITE_FIREBASE_MESSAGING_SENDER_ID__': process.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+                '__VITE_FIREBASE_APP_ID__':              process.env.VITE_FIREBASE_APP_ID,
+              }
+              for (const [placeholder, value] of Object.entries(replacements)) {
+                if (value) {
+                  content = content.replace(`'${placeholder}'`, `'${value}'`)
+                }
+              }
               writeFileSync(swPath, content)
               console.log('[inject-firebase-sw-config] sw.js configurado correctamente')
             } catch (e) {
@@ -87,16 +93,13 @@ export default configure(function (/* ctx */) {
 
     // ── PWA ─────────────────────────────────────────────────────────────────
     pwa: {
-      workboxMode: 'GenerateSW',
+      workboxMode: 'injectManifest',
       injectPwaMetaTags: true,
       swFilename: 'sw.js',
       manifestFilename: 'manifest.json',
       useCredentialsForManifestTag: false,
 
-      extendGenerateSWOptions(cfg) {
-        cfg.skipWaiting = true
-        cfg.clientsClaim = true
-      },
+      // skipWaiting y clientsClaim se llaman directamente en custom-service-worker.js
 
       manifest: {
         name: 'Futbols',

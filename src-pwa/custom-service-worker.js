@@ -40,29 +40,32 @@ let messagingInstance = null
 
 try {
   firebase.initializeApp({
-    apiKey:            '__VITE_FIREBASE_API_KEY__',
-    authDomain:        '__VITE_FIREBASE_AUTH_DOMAIN__',
-    projectId:         '__VITE_FIREBASE_PROJECT_ID__',
-    storageBucket:     '__VITE_FIREBASE_STORAGE_BUCKET__',
-    messagingSenderId: '__VITE_FIREBASE_MESSAGING_SENDER_ID__',
-    appId:             '__VITE_FIREBASE_APP_ID__',
+    apiKey:            'AIzaSyAU2RboXYq3ljfBXoho1z9DlLRfaJbFCms',
+    authDomain:        'listasfutbol-23089.firebaseapp.com',
+    projectId:         'listasfutbol-23089',
+    storageBucket:     'listasfutbol-23089.firebasestorage.app',
+    messagingSenderId: '517714259072',
+    appId:             '1:517714259072:web:b05c8932d0d21128e10a65',
   })
   messagingInstance = firebase.messaging()
-  setupBackgroundHandler(messagingInstance)
 } catch (err) {
   console.warn('[FCM] Error initializing Firebase:', err.message)
 }
 
-function setupBackgroundHandler(messaging) {
-  messaging.onBackgroundMessage((payload) => {
-    const { title, body, icon } = payload.notification ?? {}
-    self.registration.showNotification(title ?? 'Fútbol App', {
-      body: body ?? 'Se abrió la lista del partido.',
-      icon: icon ?? '/icons/icon-192x192.png',
-      badge: '/icons/icon-128x128.png',
-      data: payload.data,
-      requireInteraction: true,
-    })
+if (messagingInstance) {
+  messagingInstance.onBackgroundMessage((payload) => {
+    try {
+      const { title, body, icon } = payload.notification ?? {}
+      self.registration.showNotification(title ?? 'Fútbol App', {
+        body:              body ?? 'Se abrió la lista del partido.',
+        icon:              icon ?? '/icons/icon-192x192.png',
+        badge:             '/icons/icon-128x128.png',
+        data:              payload.data ?? {},
+        requireInteraction: true,
+      })
+    } catch (err) {
+      console.error('[FCM] Error showing notification:', err)
+    }
   })
 }
 
@@ -70,5 +73,7 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   const matchId = event.notification.data?.matchId
   const url = matchId ? `/partidos/${matchId}` : '/'
-  event.waitUntil(clients.openWindow(url))
+  event.waitUntil(
+    clients.openWindow(url).catch((err) => console.error('[FCM] Error opening window:', err))
+  )
 })

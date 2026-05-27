@@ -3,7 +3,7 @@ import { boot } from 'quasar/wrappers'
 import { firebaseApp, initMessaging } from 'src/services/firebase'
 import { getToken, onMessage } from 'firebase/messaging'
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, setDoc,serverTimestamp } from 'firebase/firestore'
 import { auth, db } from 'src/services/firebase'
 
 export default boot(({ app }) => {
@@ -88,10 +88,10 @@ async function initFCMInBackground() {
 
         // Guardar token con updatedAt para cumplir con las reglas
         console.log('[FCM:SAVE] ⏳ Guardando token en Firestore...')
-        await updateDoc(doc(db, 'users', user.uid), {
+        await setDoc(doc(db, 'users', user.uid), {
           fcmToken: token,
           updatedAt: serverTimestamp(),
-        })
+        }, { merge: true })
 
         console.log('[FCM:SAVE] ✅ Token guardado exitosamente en Firestore')
       } catch (err) {
