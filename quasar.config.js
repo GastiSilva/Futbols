@@ -1,7 +1,5 @@
 // quasar.config.js
 import { configure } from 'quasar/wrappers'
-import { readFileSync, writeFileSync } from 'fs'
-import { resolve } from 'path'
 
 export default configure(function (/* ctx */) {
   return {
@@ -21,52 +19,7 @@ export default configure(function (/* ctx */) {
 
     // ── Build ───────────────────────────────────────────────────────────────
     build: {
-      target: { browser: ['es2019', 'edge88', 'firefox78', 'chrome87', 'safari13.1'] },
       vueRouterMode: 'history',
-
-      // Expone variables de entorno al cliente
-      env: {
-        VITE_FIREBASE_API_KEY:            process.env.VITE_FIREBASE_API_KEY,
-        VITE_FIREBASE_AUTH_DOMAIN:        process.env.VITE_FIREBASE_AUTH_DOMAIN,
-        VITE_FIREBASE_PROJECT_ID:         process.env.VITE_FIREBASE_PROJECT_ID,
-        VITE_FIREBASE_STORAGE_BUCKET:     process.env.VITE_FIREBASE_STORAGE_BUCKET,
-        VITE_FIREBASE_MESSAGING_SENDER_ID: process.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-        VITE_FIREBASE_APP_ID:             process.env.VITE_FIREBASE_APP_ID,
-        VITE_FIREBASE_MEASUREMENT_ID:     process.env.VITE_FIREBASE_MEASUREMENT_ID,
-        VITE_FIREBASE_VAPID_KEY:          process.env.VITE_FIREBASE_VAPID_KEY,
-      },
-
-      // Inyecta la config de Firebase real en el SW de FCM después del build
-      extendViteConf(viteConf) {
-        viteConf.plugins = viteConf.plugins ?? []
-        viteConf.plugins.push({
-          name: 'inject-firebase-sw-config',
-          apply: 'build',
-          closeBundle() {
-            const swPath = resolve('dist/pwa/sw.js')
-            try {
-              let content = readFileSync(swPath, 'utf-8')
-              const replacements = {
-                '__VITE_FIREBASE_API_KEY__':             process.env.VITE_FIREBASE_API_KEY,
-                '__VITE_FIREBASE_AUTH_DOMAIN__':         process.env.VITE_FIREBASE_AUTH_DOMAIN,
-                '__VITE_FIREBASE_PROJECT_ID__':          process.env.VITE_FIREBASE_PROJECT_ID,
-                '__VITE_FIREBASE_STORAGE_BUCKET__':      process.env.VITE_FIREBASE_STORAGE_BUCKET,
-                '__VITE_FIREBASE_MESSAGING_SENDER_ID__': process.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-                '__VITE_FIREBASE_APP_ID__':              process.env.VITE_FIREBASE_APP_ID,
-              }
-              for (const [placeholder, value] of Object.entries(replacements)) {
-                if (value) {
-                  content = content.replace(`'${placeholder}'`, `'${value}'`)
-                }
-              }
-              writeFileSync(swPath, content)
-              console.log('[inject-firebase-sw-config] sw.js configurado correctamente')
-            } catch (e) {
-              console.warn('[inject-firebase-sw-config] Error:', e.message)
-            }
-          },
-        })
-      },
     },
 
     // ── Dev server ──────────────────────────────────────────────────────────
@@ -93,7 +46,7 @@ export default configure(function (/* ctx */) {
 
     // ── PWA ─────────────────────────────────────────────────────────────────
     pwa: {
-      workboxMode: 'injectManifest',
+      workboxMode: 'InjectManifest',
       injectPwaMetaTags: true,
       swFilename: 'sw.js',
       manifestFilename: 'manifest.json',
