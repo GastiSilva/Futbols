@@ -1,9 +1,10 @@
-// src/boot/firebase.js
+﻿// src/boot/firebase.js
 import { boot } from 'quasar/wrappers'
+import { Notify } from 'quasar'
 import { firebaseApp, initMessaging } from 'src/services/firebase'
 import { getToken, onMessage } from 'firebase/messaging'
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, setDoc,serverTimestamp } from 'firebase/firestore'
+import { doc, setDoc, serverTimestamp, arrayUnion } from 'firebase/firestore'
 import { auth, db } from 'src/services/firebase'
 
 export default boot(({ app }) => {
@@ -35,7 +36,7 @@ async function initFCMInBackground() {
     console.log('[FCM:INIT] ✓ Service Worker listo:', swReg.scope)
 
     // Registrar handler para mensajes en FOREGROUND
-    onMessage((payload) => {
+    onMessage(messagingInstance, (payload) => {
       console.log('[FCM:MSG] 📨 Mensaje en foreground:', payload)
       const { title, body } = payload.notification ?? {}
       if (swReg.active) {
@@ -73,32 +74,55 @@ async function initFCMInBackground() {
           return
         }
 
+        
         console.log('[FCM:TOKEN] ⏳ Obteniendo FCM token...')
         const token = await getToken(messagingInstance, {
           vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
           serviceWorkerRegistration: swReg,
         })
+                // const registration = await navigator.serviceWorker.getRegistration();
+        // console.log('[FCM:TOKEN] ⏳ Obteniendo FCM token...')
+        // const token = await getToken(messagingInstance, {
+        //   vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
+        //   serviceWorkerRegistration: registration,
+        // })
+
 
         if (!token) {
           console.error('[FCM:TOKEN] ❌ getToken() retornó vacío/null')
           return
         }
 
-        console.log('[FCM:TOKEN] ✓ Token obtenido:', token.substring(0, 30) + '...')
+        console.log('[FCM:TOKEN] ✓ Token FCM obtenido (completo):', token)
 
         // Guardar token con updatedAt para cumplir con las reglas
         console.log('[FCM:SAVE] ⏳ Guardando token en Firestore...')
         await setDoc(doc(db, 'users', user.uid), {
           fcmToken: token,
+          fcmTokens: arrayUnion(token),
           updatedAt: serverTimestamp(),
         }, { merge: true })
 
         console.log('[FCM:SAVE] ✅ Token guardado exitosamente en Firestore')
+        Notify.create({
+          type: 'positive',
+          message: '🔔 Notificaciones activadas',
+          caption: 'Recibirás avisos de partidos',
+          timeout: 4000,
+          position: 'top',
+        })
       } catch (err) {
         console.error('[FCM:ERROR] ❌ Error completo:', {
           message: err.message,
           code: err.code,
           stack: err.stack,
+        })
+        Notify.create({
+          type: 'warning',
+          message: '⚠️ No se pudo activar notificaciones',
+          caption: err.message,
+          timeout: 6000,
+          position: 'top',
         })
       }
     })

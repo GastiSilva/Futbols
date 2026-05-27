@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <q-page padding>
     <div class="row justify-center">
       <div class="col-12 col-md-7 col-lg-6">
@@ -210,6 +210,7 @@ async function handleSubmit() {
           await scheduleReminder({
             matchId,
             notifyAt: new Date(form.value.notifyAt).toISOString(),
+            openAt: new Date(form.value.openAt).toISOString(),
             matchTitle: form.value.title,
           })
         } catch (notifErr) {

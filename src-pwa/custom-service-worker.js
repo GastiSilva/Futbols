@@ -1,5 +1,4 @@
-/* eslint-env serviceworker */
-/* global firebase */
+﻿/* eslint-env serviceworker */
 /*
  * This file (which will be your service worker)
  * is picked up by the build system ONLY if
@@ -19,7 +18,6 @@ precacheAndRoute(self.__WB_MANIFEST)
 cleanupOutdatedCaches()
 
 // Non-SSR fallback to index.html
-// Production SSR fallback to offline.html (except for dev)
 if (process.env.MODE !== 'ssr' || process.env.PROD) {
   registerRoute(
     new NavigationRoute(
@@ -29,51 +27,39 @@ if (process.env.MODE !== 'ssr' || process.env.PROD) {
   )
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Firebase Cloud Messaging (FCM) para notificaciones push en segundo plano
-// ────────────────────────────────────────────────────────────────────────────
+// ── Push notifications — sin CDN, maxima compatibilidad movil ────────────────
 
-importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js')
-importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js')
+self.addEventListener('push', (event) => {
+  if (!event.data) return
 
-let messagingInstance = null
+  let title = '⚽ Futbols'
+  let body  = 'Tenes un nuevo mensaje'
+  let data  = {}
 
-try {
-  firebase.initializeApp({
-    apiKey:            'AIzaSyAU2RboXYq3ljfBXoho1z9DlLRfaJbFCms',
-    authDomain:        'listasfutbol-23089.firebaseapp.com',
-    projectId:         'listasfutbol-23089',
-    storageBucket:     'listasfutbol-23089.firebasestorage.app',
-    messagingSenderId: '517714259072',
-    appId:             '1:517714259072:web:b05c8932d0d21128e10a65',
-  })
-  messagingInstance = firebase.messaging()
-} catch (err) {
-  console.warn('[FCM] Error initializing Firebase:', err.message)
-}
+  try {
+    const payload = event.data.json()
+    title = payload.notification?.title ?? payload.data?.title ?? title
+    body  = payload.notification?.body  ?? payload.data?.body  ?? body
+    data  = payload.data ?? {}
+  } catch {
+    // payload no es JSON valido, usamos defaults
+  }
 
-if (messagingInstance) {
-  messagingInstance.onBackgroundMessage((payload) => {
-    try {
-      const { title, body, icon } = payload.notification ?? {}
-      self.registration.showNotification(title ?? 'Fútbol App', {
-        body:              body ?? 'Se abrió la lista del partido.',
-        icon:              icon ?? '/icons/icon-192x192.png',
-        badge:             '/icons/icon-128x128.png',
-        data:              payload.data ?? {},
-        requireInteraction: true,
-      })
-    } catch (err) {
-      console.error('[FCM] Error showing notification:', err)
-    }
-  })
-}
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon:  '/icons/icon-192x192.png',
+      badge: '/icons/icon-128x128.png',
+      data,
+    })
+  )
+})
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   const matchId = event.notification.data?.matchId
   const url = matchId ? `/partidos/${matchId}` : '/'
   event.waitUntil(
-    clients.openWindow(url).catch((err) => console.error('[FCM] Error opening window:', err))
+    clients.openWindow(url).catch((err) => console.error('[SW] Error opening window:', err))
   )
 })
