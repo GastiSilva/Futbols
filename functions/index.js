@@ -87,6 +87,14 @@ exports.processMatchOpenQueue = onSchedule(
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       })
       logger.info(`Partido abierto por scheduler: ${matchId}`)
+
+      // Encolar notificación (mismo patrón que recordatorios)
+      await db.collection('_matchOpenNotificationQueue').add({
+        matchId,
+        matchTitle,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        processed: false,
+      })
     }
   },
 )
@@ -168,7 +176,41 @@ exports.processMatchReminderQueue = onSchedule(
   },
 )
 
-// ── 5. Callable: asignar claim admin ─────────────────────────────────────────
+// ── 5. Scheduled: procesar cola de notificaciones de apertura ────────────────
+exports.processMatchOpenNotificationQueue = onSchedule(
+  { region: LOCATION, schedule: 'every 1 minutes' },
+  async () => {
+    const db = admin.firestore()
+
+    const snap = await db
+      .collection('_matchOpenNotificationQueue')
+      .where('processed', '==', false)
+      .get()
+
+    if (snap.empty) return
+
+    const writeBatch = db.batch()
+    const toProcess = []
+
+    snap.docs.forEach((docSnap) => {
+      writeBatch.update(docSnap.ref, { processed: true })
+      toProcess.push(docSnap.data())
+    })
+
+    await writeBatch.commit()
+
+    for (const { matchId, matchTitle } of toProcess) {
+      await sendFCMToAllUsers(
+        '⚽ ¡Se abrió la lista!',
+        `Ya podés anotarte al partido: "${matchTitle}"`,
+        { matchId, type: 'match_open' },
+      )
+      logger.info(`Notificación de apertura enviada: ${matchId}`)
+    }
+  },
+)
+
+// ── 6. Callable: asignar claim admin ─────────────────────────────────────────
 exports.setAdminClaim = onCall(
   { region: LOCATION, invoker: 'public' },
   async (request) => {
@@ -187,7 +229,7 @@ exports.setAdminClaim = onCall(
   },
 )
 
-// ── 6. Callable: asignar rol a un usuario ────────────────────────────────────
+// ── 7. Callable: asignar rol a un usuario ────────────────────────────────────
 exports.setUserRole = onCall(
   { region: LOCATION, invoker: 'public' },
   async (request) => {
@@ -219,26 +261,42 @@ exports.setUserRole = onCall(
 )
 
 
-// -- Trigger: notificar cuando se abre un partido
+// ── 8. Trigger: notificar cuando se abre un partido
 exports.onMatchOpened = onDocumentUpdated(
   { region: LOCATION, document: 'matches/{matchId}' },
   async (event) => {
-    const before = event.data.before.data()
-    const after = event.data.after.data()
-    if (before.status === 'open') return
-    if (after.status !== 'open') return
-    const matchId = event.params.matchId
-    const title = after.title || 'un partido'
-    await sendFCMToAllUsers(
-      '⚽ ¡Se abrió la lista!',
-      'Ya podés anotarte al partido: ' + title,
-      { matchId: matchId, type: 'match_open' },
-    )
-    logger.info('Notificacion de apertura: ' + matchId)
+    try {
+      const before = event.data.before.data()
+      const after = event.data.after.data()
+
+      if (!after) {
+        logger.warn('onMatchOpened: after data es null/undefined')
+        return
+      }
+
+      const beforeStatus = before?.status
+      const afterStatus = after?.status
+
+      if (beforeStatus === 'open') return
+      if (afterStatus !== 'open') return
+
+      const matchId = event.params.matchId
+      const title = after.title || 'un partido'
+
+      logger.info(`onMatchOpened: Enviando notificación para ${matchId}`)
+      await sendFCMToAllUsers(
+        '⚽ ¡Se abrió la lista!',
+        'Ya podés anotarte al partido: ' + title,
+        { matchId: matchId, type: 'match_open' },
+      )
+      logger.info(`onMatchOpened: Notificación enviada para ${matchId}`)
+    } catch (error) {
+      logger.error(`onMatchOpened: Error en trigger`, error)
+    }
   },
 )
 
-// Helper: enviar FCM a todos los usuarios
+// ── 9. Helper: enviar FCM a todos los usuarios
 async function sendFCMToAllUsers(title, body, data) {
   const db = admin.firestore()
   const usersSnap = await db.collection('users').select('fcmToken', 'fcmTokens').get()
@@ -306,24 +364,4 @@ async function sendFCMToAllUsers(title, body, data) {
     await cleanupBatch.commit()
     logger.info(`Tokens invalidos eliminados: ${invalidTokens.length}`)
   }
-
-// -- Trigger: notificar cuando se abre un partido
-exports.onMatchOpened = onDocumentUpdated(
-  { region: LOCATION, document: 'matches/{matchId}' },
-  async (event) => {
-    const before = event.data.before.data()
-    const after = event.data.after.data()
-    if (before.status === 'open') return
-    if (after.status !== 'open') return
-    const matchId = event.params.matchId
-    const title = after.title || "un partido"
-    await sendFCMToAllUsers(
-      '⚽ ¡Se abrió la lista!',
-      'Ya podés anotarte al partido: ' + title,
-      { matchId: matchId, type: 'match_open' },
-    )
-    logger.info('Notificacion de apertura: ' + matchId)
-  },
-)
-
 }

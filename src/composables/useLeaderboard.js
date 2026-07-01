@@ -1,45 +1,24 @@
 // src/composables/useLeaderboard.js
 // ─────────────────────────────────────────────────────────────────────────────
-// Composable para el ranking global y por grupo de goleadores y asistidores.
+// Composable para el ranking de goleadores y asistidores POR GRUPO.
+// El ranking siempre requiere un grupo: cada grupo lleva su propio conteo
+// de goles/asistencias (statsByGroup.{groupId}) independiente del total
+// individual del jugador.
 // ─────────────────────────────────────────────────────────────────────────────
 import { ref } from 'vue'
-import { collection, query, orderBy, limit, onSnapshot, getDocs, where, documentId } from 'firebase/firestore'
+import { collection, query, getDocs, where, documentId } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 
 export function useLeaderboard() {
-  const scorers = ref([])
-  const assisters = ref([])
   const groupScorers = ref([])
   const groupAssisters = ref([])
   const loadingGroup = ref(false)
-  let unsubScorers = null
-  let unsubAssisters = null
-
-  function subscribeScorers(top = 20) {
-    const q = query(
-      collection(db, 'users'),
-      orderBy('stats.goals', 'desc'),
-      limit(top),
-    )
-    unsubScorers = onSnapshot(q, (snap) => {
-      scorers.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-    })
-  }
-
-  function subscribeAssisters(top = 20) {
-    const q = query(
-      collection(db, 'users'),
-      orderBy('stats.assists', 'desc'),
-      limit(top),
-    )
-    unsubAssisters = onSnapshot(q, (snap) => {
-      assisters.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-    })
-  }
 
   // ── Ranking filtrado por miembros de un grupo ─────────────────────────────
-  async function fetchGroupRanking(memberIds) {
-    if (!memberIds || memberIds.length === 0) {
+  // Usa las estadísticas específicas de ESE grupo (statsByGroup.{groupId}),
+  // no el acumulado individual total — cada grupo lleva su propio conteo.
+  async function fetchGroupRanking(memberIds, groupId) {
+    if (!memberIds || memberIds.length === 0 || !groupId) {
       groupScorers.value = []
       groupAssisters.value = []
       return
@@ -62,10 +41,16 @@ export function useLeaderboard() {
         users.push(...snap.docs.map((d) => ({ id: d.id, ...d.data() })))
       }
 
-      groupScorers.value = [...users].sort(
+      // Normaliza: cada jugador expone sus stats DE ESTE GRUPO en `.stats`
+      const usersWithGroupStats = users.map((u) => ({
+        ...u,
+        stats: u.statsByGroup?.[groupId] ?? { goals: 0, assists: 0, matchesPlayed: 0 },
+      }))
+
+      groupScorers.value = [...usersWithGroupStats].sort(
         (a, b) => (b.stats?.goals ?? 0) - (a.stats?.goals ?? 0),
       )
-      groupAssisters.value = [...users].sort(
+      groupAssisters.value = [...usersWithGroupStats].sort(
         (a, b) => (b.stats?.assists ?? 0) - (a.stats?.assists ?? 0),
       )
     } finally {
@@ -78,21 +63,11 @@ export function useLeaderboard() {
     groupAssisters.value = []
   }
 
-  function stopListening() {
-    unsubScorers?.()
-    unsubAssisters?.()
-  }
-
   return {
-    scorers,
-    assisters,
     groupScorers,
     groupAssisters,
     loadingGroup,
-    subscribeScorers,
-    subscribeAssisters,
     fetchGroupRanking,
     clearGroupRanking,
-    stopListening,
   }
 }

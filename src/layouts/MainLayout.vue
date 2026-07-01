@@ -2,7 +2,7 @@
   <q-layout view="lHh Lpr lFf">
 
     <!-- ── Header ────────────────────────────────────────────────────────── -->
-    <q-header elevated class="bg-green-9 text-white">
+    <q-header elevated class="grass-bg text-white">
       <q-toolbar>
         <q-btn flat dense round icon="menu" aria-label="Menú" @click="drawer = !drawer" />
 
@@ -11,14 +11,14 @@
         </q-toolbar-title>
 
         <!-- Avatar del usuario en el header -->
-        <q-avatar size="34px" class="cursor-pointer" @click="drawer = true">
+        <!-- <q-avatar size="34px" class="cursor-pointer" @click="drawer = true">
           <img
             :src="user?.photoURL ?? 'icons/icon-128x128.png'"
             :alt="user?.displayName ?? 'usuario'"
             referrerpolicy="no-referrer"
           />
           <q-tooltip>{{ user?.displayName }}</q-tooltip>
-        </q-avatar>
+        </q-avatar> -->
       </q-toolbar>
     </q-header>
 
@@ -28,7 +28,7 @@
       <div class="column full-height">
 
         <!-- ── Perfil del usuario ─────────────────────────────────────────── -->
-        <div class="bg-green-9 text-white q-pa-md column items-center q-gutter-sm">
+        <div class="grass-bg text-white q-pa-md column items-center q-gutter-sm">
           <q-avatar size="64px" class="shadow-4">
             <img
               :src="user?.photoURL ?? 'icons/icon-128x128.png'"

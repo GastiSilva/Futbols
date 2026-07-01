@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+functions/node_modules/
+
+# Build outputs
+dist/
+.quasar/
+
+# Firebase generated / cache
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+
+# Binary / icon assets
+public/icons/
+public/favicon.ico
+
+# Credentials (should never be read by Claude)
+serviceAccount.json
+.env.local
+.env.*.local
+
+# Git internals
+.git/

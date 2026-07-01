@@ -18,9 +18,20 @@ const UserSchema = {
   role:        "'admin' | 'og' | 'player'", // Rol del usuario (default: 'player')
 
   stats: {
-    goals:         'number',      // Goles acumulados en todos los partidos
-    assists:       'number',      // Asistencias acumuladas
-    matchesPlayed: 'number',      // Partidos jugados
+    goals:         'number',      // Goles acumulados en TODOS los partidos (total individual)
+    assists:       'number',      // Asistencias acumuladas (total individual)
+    matchesPlayed: 'number',      // Partidos jugados (total individual)
+  },
+
+  // Desglose de las mismas estadísticas, pero separadas por grupo.
+  // Se actualiza junto con `stats` en el mismo writeBatch (ver usePlayerStats.js)
+  // únicamente cuando el partido tiene un groupId asociado.
+  statsByGroup: {
+    '[groupId]': {
+      goals:         'number',
+      assists:       'number',
+      matchesPlayed: 'number',
+    },
   },
 
   createdAt:   'Timestamp',
@@ -132,6 +143,7 @@ const GroupSchema = {
   name:        'string',          // Nombre visible del grupo
   nameLower:   'string',          // Nombre en minúsculas (para búsqueda por prefijo)
   description: 'string',          // Descripción opcional
+  photoURL:    'string | null',   // Foto de perfil del grupo (URL externa, ej: Imgur/Drive)
 
   inviteCode:  'string',          // Código de 8 chars para compartir enlace de invitación
   createdBy:   'string',          // uid del creador

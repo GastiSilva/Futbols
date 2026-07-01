@@ -91,20 +91,15 @@ export function useGroups() {
     error.value = null
     try {
       const uid = authStore.user?.uid
-      console.log("1. Buscando grupos para el UID:", uid)
 
       if (!uid) {
-        console.error("🚨 ERROR: No hay UID al momento de buscar los grupos.")
         return []
       }
 
       const q = query(collectionGroup(db, 'members'), where('userId', '==', uid))
       const snaps = await getDocs(q)
-      
-      console.log("2. Cantidad de documentos members encontrados:", snaps.size)
 
       const groupIds = snaps.docs.map(d => d.ref.parent.parent.id)
-      console.log("3. IDs de los grupos extraídos:", groupIds)
 
       if (groupIds.length === 0) {
         groups.value = []
@@ -123,7 +118,32 @@ export function useGroups() {
       return result
     } catch (err) {
       error.value = err.message
-      console.error("🚨 Error en getMyGroups:", err)
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // ── Cambiar la foto de perfil de un grupo (URL externa) ───────────────────
+  async function setGroupPhotoURL(groupId, photoURL) {
+    loading.value = true
+    error.value = null
+    try {
+      const trimmedURL = photoURL.trim()
+
+      await updateDoc(doc(db, 'groups', groupId), {
+        photoURL: trimmedURL || null,
+        updatedAt: serverTimestamp(),
+      })
+
+      // Actualizar estado reactivo al instante
+      groups.value = groups.value.map((g) =>
+        g.id === groupId ? { ...g, photoURL: trimmedURL || null } : g,
+      )
+
+      return trimmedURL || null
+    } catch (err) {
+      error.value = err.message
       throw err
     } finally {
       loading.value = false
@@ -374,6 +394,7 @@ export function useGroups() {
     error,
     groups,
     createGroup,
+    setGroupPhotoURL,
     getMyGroups,
     getGroup,
     getGroupMembers,

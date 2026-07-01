@@ -5,7 +5,7 @@
       Ranking
     </div>
 
-    <!-- Filtro por grupo -->
+    <!-- Filtro por grupo (obligatorio: sin grupo no hay ranking que mostrar) -->
     <q-select
       v-model="selectedGroup"
       :options="groupOptions"
@@ -13,35 +13,41 @@
       option-value="id"
       emit-value
       map-options
-      label="Filtrar por grupo"
+      label="Elegí un grupo *"
+      hint="El ranking se calcula por grupo"
       outlined
       dense
-      clearable
       class="q-mb-md"
       style="max-width: 320px"
+      :rules="[v => !!v || 'Tenés que elegir un grupo']"
       @update:model-value="onGroupChange"
     >
       <template #prepend>
         <q-icon name="group" />
       </template>
-      <template #selected-item="scope">
-        <span>{{ scope.opt.name ?? 'General' }}</span>
-      </template>
     </q-select>
 
-    <q-tabs v-model="tab" align="left" active-color="green-8" indicator-color="green-8">
-      <q-tab name="goals" label="Goleadores" icon="sports_soccer" />
-      <q-tab name="assists" label="Asistidores" icon="assistant" />
-    </q-tabs>
-
-    <q-separator />
-
-    <!-- Loading grupo -->
-    <div v-if="loadingGroup" class="row justify-center q-mt-lg">
-      <q-spinner-dots color="green-9" size="40px" />
+    <!-- Sin grupo seleccionado todavía -->
+    <div v-if="!selectedGroup" class="column items-center q-mt-xl text-grey-5 q-gutter-sm">
+      <q-icon name="emoji_events" size="64px" />
+      <div class="text-h6">Elegí un grupo para ver el ranking</div>
+      <div class="text-body2">Cada grupo tiene sus propias estadísticas</div>
     </div>
 
-    <q-tab-panels v-else v-model="tab" animated>
+    <template v-else>
+      <q-tabs v-model="tab" align="left" active-color="green-8" indicator-color="green-8">
+        <q-tab name="goals" label="Goleadores" icon="sports_soccer" />
+        <q-tab name="assists" label="Asistidores" icon="assistant" />
+      </q-tabs>
+
+      <q-separator />
+
+      <!-- Loading grupo -->
+      <div v-if="loadingGroup" class="row justify-center q-mt-lg">
+        <q-spinner-dots color="green-9" size="40px" />
+      </div>
+
+      <q-tab-panels v-else v-model="tab" animated>
       <!-- ── Goleadores ──────────────────────────────────────────────── -->
       <q-tab-panel name="goals" class="q-pa-none">
         <q-list separator>
@@ -131,12 +137,13 @@
           </q-item>
         </q-list>
       </q-tab-panel>
-    </q-tab-panels>
+      </q-tab-panels>
+    </template>
   </q-page>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useLeaderboard } from 'src/composables/useLeaderboard'
 import { useGroups } from 'src/composables/useGroups'
 
@@ -145,29 +152,22 @@ const selectedGroup = ref(null)
 const groupOptions = ref([])
 
 const {
-  scorers, assisters,
-  groupScorers, groupAssisters, loadingGroup,
-  subscribeScorers, subscribeAssisters,
-  fetchGroupRanking, clearGroupRanking,
-  stopListening,
+  groupScorers: activeScorers,
+  groupAssisters: activeAssisters,
+  loadingGroup,
+  fetchGroupRanking,
+  clearGroupRanking,
 } = useLeaderboard()
 
 const { getMyGroups, getGroupMembers } = useGroups()
 
-const activeScorers = computed(() => selectedGroup.value ? groupScorers.value : scorers.value)
-const activeAssisters = computed(() => selectedGroup.value ? groupAssisters.value : assisters.value)
-
 onMounted(async () => {
-  subscribeScorers(30)
-  subscribeAssisters(30)
   try {
     groupOptions.value = await getMyGroups()
   } catch {
     groupOptions.value = []
   }
 })
-
-onUnmounted(() => stopListening())
 
 async function onGroupChange(groupId) {
   if (!groupId) {
@@ -177,7 +177,7 @@ async function onGroupChange(groupId) {
   try {
     const members = await getGroupMembers(groupId)
     const memberIds = members.map((m) => m.userId)
-    await fetchGroupRanking(memberIds)
+    await fetchGroupRanking(memberIds, groupId)
   } catch {
     clearGroupRanking()
   }

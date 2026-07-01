@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-center bg-green-9" style="min-height: 100vh">
+  <div class="flex flex-center grass-bg" style="min-height: 100vh">
     <div class="text-center q-pa-xl">
       <!-- Logo -->
       <div class="q-mb-lg">

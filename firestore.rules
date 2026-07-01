@@ -82,11 +82,11 @@ service cloud.firestore {
 
         ||
 
-        // SOLO admins u OG modifican stats
+        // SOLO admins u OG modifican stats (total y por grupo)
         (
           (isAdmin() || isOG())
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['stats', 'updatedAt'])
+               .hasOnly(['stats', 'statsByGroup', 'updatedAt'])
         )
       );
 

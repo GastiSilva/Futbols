@@ -215,6 +215,33 @@
 
         <!-- ── Stats del jugador ────────────────────────────────────────────── -->
         <div class="text-overline text-grey-6 q-mb-sm dash-overline">MIS ESTADÍSTICAS</div>
+
+        <!-- En el grupo de este partido (si pertenece a uno) -->
+        <template v-if="selectedMatchGroupStats">
+          <div class="text-caption text-weight-bold text-green-9 q-mb-xs">EN ESTE GRUPO</div>
+          <div class="row q-col-gutter-sm q-mb-md">
+            <div class="col-4">
+              <q-card flat bordered class="text-center q-pa-sm">
+                <div class="text-h5 text-weight-bold text-green-9">{{ selectedMatchGroupStats.goals ?? 0 }}</div>
+                <div class="text-caption text-grey-6">Goles</div>
+              </q-card>
+            </div>
+            <div class="col-4">
+              <q-card flat bordered class="text-center q-pa-sm">
+                <div class="text-h5 text-weight-bold text-blue-9">{{ selectedMatchGroupStats.assists ?? 0 }}</div>
+                <div class="text-caption text-grey-6">Asistencias</div>
+              </q-card>
+            </div>
+            <div class="col-4">
+              <q-card flat bordered class="text-center q-pa-sm">
+                <div class="text-h5 text-weight-bold text-orange-9">{{ selectedMatchGroupStats.matchesPlayed ?? 0 }}</div>
+                <div class="text-caption text-grey-6">Partidos</div>
+              </q-card>
+            </div>
+          </div>
+          <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">TOTAL INDIVIDUAL (TODOS LOS GRUPOS)</div>
+        </template>
+
         <div class="row q-col-gutter-sm q-mb-lg">
           <div class="col-4">
             <q-card flat bordered class="text-center q-pa-sm">
@@ -374,8 +401,16 @@ const upcomingMatches = computed(() =>
     maxPlayers: m.maxPlayers,
     currentPlayers: m.currentPlayers ?? 0,
     status: getEffectiveStatus(m),
+    groupId: m.groupId ?? null,
   })) ?? [],
 )
+
+// ── Stats del grupo del match seleccionado (si pertenece a uno) ─────────────
+const selectedMatchGroupStats = computed(() => {
+  const groupId = selectedMatch.value?.groupId
+  if (!groupId) return null
+  return user.value?.statsByGroup?.[groupId] ?? { goals: 0, assists: 0, matchesPlayed: 0 }
+})
 
 // ── Match seleccionado (expandido) ───────────────────────────────────────────
 const selectedMatchId = ref(null)

@@ -25,11 +25,14 @@ export function usePlayerStats() {
   /**
    * Guarda las estadísticas individuales de un partido y acumula en 'users'.
    * Usa writeBatch para garantizar atomicidad (todo o nada).
+   * Acumula tanto el total individual (stats) como el desglose por grupo
+   * (statsByGroup.{groupId}), si el partido pertenece a un grupo.
    *
    * @param {string} matchId
    * @param {Array<{ userId, displayName, goals, assists, team }>} statsArray
+   * @param {string | null} groupId
    */
-  async function savePlayerStats(matchId, statsArray) {
+  async function savePlayerStats(matchId, statsArray, groupId = null) {
     loading.value = true
     error.value = null
 
@@ -52,12 +55,21 @@ export function usePlayerStats() {
 
         // 2. Incrementa las estadísticas acumuladas en el perfil del usuario
         const userRef = doc(db, 'users', entry.userId)
-        batch.update(userRef, {
+        const updates = {
           'stats.goals': increment(entry.goals ?? 0),
           'stats.assists': increment(entry.assists ?? 0),
           'stats.matchesPlayed': increment(1),
           updatedAt: serverTimestamp(),
-        })
+        }
+
+        // 3. Además, acumula el desglose por grupo (si el partido es de un grupo)
+        if (groupId) {
+          updates[`statsByGroup.${groupId}.goals`] = increment(entry.goals ?? 0)
+          updates[`statsByGroup.${groupId}.assists`] = increment(entry.assists ?? 0)
+          updates[`statsByGroup.${groupId}.matchesPlayed`] = increment(1)
+        }
+
+        batch.update(userRef, updates)
       }
 
       await batch.commit()

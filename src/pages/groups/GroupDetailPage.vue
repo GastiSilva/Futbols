@@ -16,6 +16,61 @@
       <!-- Cabecera -->
       <div class="row items-center q-mb-md no-wrap">
         <q-btn flat round icon="arrow_back" @click="$router.back()" />
+
+        <!-- Foto de perfil del grupo -->
+        <div class="relative-position q-ml-sm">
+          <q-avatar size="56px" color="green-9" text-color="white">
+            <img v-if="group.photoURL" :src="group.photoURL" :alt="group.name" referrerpolicy="no-referrer" />
+            <q-icon v-else name="sports_soccer" size="28px" />
+          </q-avatar>
+          <q-btn
+            v-if="myRole === 'owner' || myRole === 'admin'"
+            round
+            dense
+            size="sm"
+            color="green-9"
+            icon="photo_camera"
+            class="absolute"
+            style="bottom: -4px; right: -4px"
+            @click="openPhotoDialog"
+          >
+            <q-tooltip>Cambiar foto del grupo</q-tooltip>
+          </q-btn>
+        </div>
+
+        <!-- ── Dialog: cambiar foto del grupo (URL externa) ───────────────── -->
+        <q-dialog v-model="showPhotoDialog">
+          <q-card style="min-width: 320px; max-width: 480px; width: 100%">
+            <q-card-section>
+              <div class="text-h6">Foto del grupo</div>
+            </q-card-section>
+
+            <q-form @submit.prevent="handleSavePhoto">
+              <q-card-section class="q-pt-none">
+                <q-input
+                  v-model="photoURLInput"
+                  label="URL de la imagen"
+                  hint="Pegá el enlace de una imagen (ej: de Google Drive, Imgur, etc.)"
+                  outlined
+                  clearable
+                  autofocus
+                />
+              </q-card-section>
+
+              <q-card-actions align="right" class="q-pb-md q-px-md">
+                <q-btn flat label="Cancelar" @click="showPhotoDialog = false" :disable="savingPhoto" />
+                <q-btn
+                  unelevated
+                  color="green-9"
+                  label="Guardar"
+                  type="submit"
+                  :loading="savingPhoto"
+                />
+              </q-card-actions>
+            </q-form>
+          </q-card>
+        </q-dialog>
+
         <div class="col q-ml-sm">
           <div class="text-h5 text-weight-bold ellipsis">{{ group.name }}</div>
           <div class="text-caption text-grey-6">
@@ -276,6 +331,7 @@ const {
   promoteToAdmin,
   getMyRole,
   regenerateInviteCode,
+  setGroupPhotoURL,
 } = useGroups()
 
 const { matches, subscribeToGroupMatches, stopListening } = useMatch()
@@ -287,6 +343,9 @@ const joinRequests = ref([])
 const myRole = ref(null)
 const loadingGroup = ref(true)
 const processingId = ref(null)
+const showPhotoDialog = ref(false)
+const photoURLInput = ref('')
+const savingPhoto = ref(false)
 
 const inviteLink = computed(() => {
   if (!group.value) return ''
@@ -438,6 +497,26 @@ function handleRegenerateCode() {
       $q.notify({ type: 'negative', message: err.message })
     }
   })
+}
+
+// ── Foto de perfil del grupo (URL externa) ──────────────────────────────────
+function openPhotoDialog() {
+  photoURLInput.value = group.value?.photoURL ?? ''
+  showPhotoDialog.value = true
+}
+
+async function handleSavePhoto() {
+  savingPhoto.value = true
+  try {
+    const photoURL = await setGroupPhotoURL(groupId, photoURLInput.value ?? '')
+    group.value.photoURL = photoURL
+    showPhotoDialog.value = false
+    $q.notify({ type: 'positive', message: 'Foto del grupo actualizada' })
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    savingPhoto.value = false
+  }
 }
 
 // ── Helpers de partidos ────────────────────────────────────────────────────

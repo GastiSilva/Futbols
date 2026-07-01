@@ -59,7 +59,8 @@
           >
             <div class="row items-center no-wrap">
               <q-avatar color="green-9" text-color="white" size="48px" class="q-mr-md">
-                <q-icon name="sports_soccer" />
+                <img v-if="group.photoURL" :src="group.photoURL" :alt="group.name" referrerpolicy="no-referrer" />
+                <q-icon v-else name="sports_soccer" />
               </q-avatar>
               <div class="col">
                 <div class="text-subtitle1 text-weight-bold ellipsis">{{ group.name }}</div>

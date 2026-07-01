@@ -72,6 +72,7 @@ export function useAuth() {
             fcmToken: null,
             role: 'player',
             stats: defaultStats(),
+            statsByGroup: {},
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           })
@@ -87,6 +88,7 @@ export function useAuth() {
           isAdmin: tokenResult.claims.admin === true,
           role: userData.role ?? 'player',
           stats: userData.stats ?? defaultStats(),
+          statsByGroup: userData.statsByGroup ?? {},
         })
       } else {
         authStore.clearUser()
@@ -109,6 +111,7 @@ export function useAuth() {
         fcmToken: null,
         role: 'player',
         stats: defaultStats(),
+        statsByGroup: {},
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       })

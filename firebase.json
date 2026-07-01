@@ -1,6 +1,6 @@
 {
   "projects": {
-    "default": "tu-proyecto-firebase"
+    "default": "listasfutbol-23089"
   },
   "hosting": {
     "public": "dist/pwa",

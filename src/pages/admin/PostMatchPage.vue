@@ -172,7 +172,7 @@ async function handleSave() {
   saving.value = true
   try {
     await saveMatchResult(matchId, { scoreA: scoreA.value, scoreB: scoreB.value })
-    await savePlayerStats(matchId, playerRows.value)
+    await savePlayerStats(matchId, playerRows.value, match.value.groupId ?? null)
 
     $q.notify({ type: 'positive', message: 'Resultado guardado correctamente.' })
     router.push({ name: 'admin-dashboard' })
