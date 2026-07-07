@@ -61,9 +61,10 @@
                 <q-btn flat label="Cancelar" @click="showPhotoDialog = false" :disable="savingPhoto" />
                 <q-btn
                   unelevated
-                  color="green-9"
+                  color="primary"
                   label="Guardar"
                   type="submit"
+                  class="pill-btn"
                   :loading="savingPhoto"
                 />
               </q-card-actions>
@@ -219,6 +220,15 @@
                 :color="roleColor(member.role)"
                 :label="roleLabel(member.role)"
               />
+              <q-badge
+                v-if="member.og"
+                color="blue-8"
+                text-color="white"
+                label="OG"
+                class="q-ml-xs"
+              >
+                <q-tooltip>Accede a las listas 30 min antes</q-tooltip>
+              </q-badge>
             </q-item-label>
           </q-item-section>
 
@@ -237,6 +247,19 @@
                       <q-icon name="admin_panel_settings" color="blue-7" />
                     </q-item-section>
                     <q-item-section>Hacer administrador</q-item-section>
+                  </q-item>
+
+                  <q-item
+                    clickable
+                    v-close-popup
+                    @click="handleToggleOG(member)"
+                  >
+                    <q-item-section avatar>
+                      <q-icon :name="member.og ? 'star_border' : 'star'" color="blue-8" />
+                    </q-item-section>
+                    <q-item-section>
+                      {{ member.og ? 'Quitar OG (acceso anticipado)' : 'Hacer OG (acceso 30 min antes)' }}
+                    </q-item-section>
                   </q-item>
 
                   <q-item
@@ -269,8 +292,21 @@
       </div>
 
       <!-- ── Partidos del grupo ─────────────────────────────────────────── -->
-      <div class="text-subtitle1 text-weight-bold q-mt-xl q-mb-sm">
-        <q-icon name="sports_soccer" class="q-mr-xs text-green-9" />Partidos
+      <div class="row items-center justify-between q-mt-xl q-mb-sm">
+        <div class="text-subtitle1 text-weight-bold">
+          <q-icon name="sports_soccer" class="q-mr-xs text-green-9" />Partidos
+        </div>
+        <q-btn
+          v-if="myRole === 'owner' || myRole === 'admin'"
+          unelevated
+          dense
+          color="green-9"
+          icon="add"
+          label="Crear partido"
+          size="sm"
+          class="pill-btn"
+          :to="{ name: 'create-group-match', params: { id: groupId } }"
+        />
       </div>
 
       <div v-if="matches.length === 0" class="text-center text-grey-5 q-py-lg">
@@ -329,6 +365,7 @@ const {
   leaveGroup,
   removeMember,
   promoteToAdmin,
+  setMemberOG,
   getMyRole,
   regenerateInviteCode,
   setGroupPhotoURL,
@@ -476,6 +513,24 @@ async function handlePromote(member) {
     const idx = members.value.findIndex(m => m.userId === member.userId)
     if (idx !== -1) members.value[idx] = { ...members.value[idx], role: 'admin' }
     $q.notify({ type: 'positive', message: `${member.displayName} es ahora administrador` })
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  }
+}
+
+// ── Marcar / desmarcar OG ──────────────────────────────────────────────────
+async function handleToggleOG(member) {
+  const nextOG = !member.og
+  try {
+    await setMemberOG(groupId, member.userId, nextOG)
+    const idx = members.value.findIndex(m => m.userId === member.userId)
+    if (idx !== -1) members.value[idx] = { ...members.value[idx], og: nextOG }
+    $q.notify({
+      type: 'positive',
+      message: nextOG
+        ? `${member.displayName} ahora es OG (accede 30 min antes)`
+        : `${member.displayName} ya no es OG`,
+    })
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message })
   }

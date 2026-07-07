@@ -10,7 +10,16 @@ import {
   onAuthStateChanged,
   getIdTokenResult,
 } from 'firebase/auth'
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore'
+import {
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  collectionGroup,
+  query,
+  where,
+  serverTimestamp,
+} from 'firebase/firestore'
 import { auth, googleProvider, db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
 
@@ -90,10 +99,32 @@ export function useAuth() {
           stats: userData.stats ?? defaultStats(),
           statsByGroup: userData.statsByGroup ?? {},
         })
+
+        // Carga los grupos donde el usuario es OG (acceso anticipado por grupo)
+        await loadOgGroups(firebaseUser.uid)
       } else {
         authStore.clearUser()
       }
     })
+  }
+
+  // ── Grupos donde el usuario tiene rol OG ───────────────────────────────────
+  // Una sola query collectionGroup sobre members filtrando por userId; el flag
+  // `og` se filtra en cliente para no requerir un índice compuesto.
+  async function loadOgGroups(uid) {
+    try {
+      const snaps = await getDocs(
+        query(collectionGroup(db, 'members'), where('userId', '==', uid)),
+      )
+      const ogIds = snaps.docs
+        .filter((d) => d.data().og === true)
+        .map((d) => d.ref.parent.parent.id)
+      authStore.setOgGroups(ogIds)
+    } catch (err) {
+      // No bloquea el login si falla; simplemente no hay acceso OG
+      authStore.setOgGroups([])
+      console.error('No se pudieron cargar los grupos OG:', err)
+    }
   }
 
   // ── Sincroniza / crea el perfil en Firestore ───────────────────────────────

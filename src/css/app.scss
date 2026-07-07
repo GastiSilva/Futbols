@@ -1,7 +1,8 @@
 // app global css in SCSS form
-
-// Quasar overrides (opcional)
-// Puedes agregar estilos globales aquí
+//
+// Tema visual: "cancha de noche" — fondo casi negro con acento verde césped
+// neón, tarjetas redondeadas y botones tipo píldora. Inspirado en apps de
+// estilo dark-mode premium, adaptado a fútbol.
 
 // Evita el warning de Chrome "non-passive touchstart event listener".
 // touch-action: manipulation le dice al navegador que puede manejar
@@ -10,13 +11,134 @@
   touch-action: manipulation;
 }
 
-// Fondo de césped — reemplaza el verde plano por la textura de una cancha real.
-// El overlay oscuro mantiene el contraste del texto blanco encima.
+// ── Fondo global con leve resplandor ambiental ──────────────────────────────
+body {
+  background: radial-gradient(circle at 50% -10%, #14261c 0%, #0a0f0d 45%) fixed !important;
+}
+
+// ── Fondo de césped (login / header) ────────────────────────────────────────
+// Overlay oscuro alineado a la paleta dark del theme, para que la textura de
+// cancha se sienta integrada en vez de un verde plano que desentona.
 .grass-bg {
   background-image:
-    linear-gradient(rgba(8, 38, 12, 0.55), rgba(8, 38, 12, 0.55)),
+    linear-gradient(180deg, rgba(6, 12, 9, 0.82) 0%, rgba(6, 12, 9, 0.62) 60%, rgba(10, 15, 13, 0.9) 100%),
     url('/icons/cesped1.jpg');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
+}
+
+// ── Redondeo generalizado ───────────────────────────────────────────────────
+.q-card,
+.q-dialog .q-card,
+.q-banner,
+.q-menu,
+.q-item.rounded-borders {
+  border-radius: 18px;
+}
+
+.q-chip {
+  border-radius: 999px;
+}
+
+// ── Botón tipo píldora (CTA principal, estilo "Save" / "Checkout") ─────────
+.pill-btn {
+  border-radius: 999px !important;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+// Resplandor sutil en botones primarios rellenos, para el efecto "neón".
+.q-btn--unelevated.bg-primary,
+.q-btn--unelevated.bg-green-8,
+.q-btn--unelevated.bg-green-9 {
+  box-shadow: 0 6px 20px rgba(74, 222, 128, 0.35);
+}
+
+// Texto oscuro sobre fondos verde-neón para mantener contraste legible
+// (blanco sobre verde brillante se lee mal).
+.bg-primary.text-white,
+.bg-green-7.text-white,
+.bg-green-8.text-white,
+.bg-green-9.text-white {
+  color: #06170f !important;
+}
+
+// ── Retinte de la paleta "verde oscuro" heredada del tema claro ────────────
+// En el tema claro original, green-8/9 hacían de color de marca. Ahora que
+// el acento de marca es el verde césped neón (primary), estas clases pasan
+// a heredar el mismo verde para no tener que tocar cada página.
+.text-green-7,
+.text-green-8,
+.text-green-9,
+.text-green-10 {
+  color: var(--q-primary) !important;
+}
+
+.bg-green-7,
+.bg-green-8,
+.bg-green-9 {
+  background: var(--q-primary) !important;
+}
+
+// Franjas / secciones destacadas en verde (antes bg-green-1 pastel) →
+// tinte translúcido sobre superficie oscura.
+.bg-green-1 {
+  background: rgba(74, 222, 128, 0.14) !important;
+}
+
+.bg-orange-1 {
+  background: rgba(255, 167, 38, 0.16) !important;
+}
+
+.bg-amber-1 {
+  background: rgba(255, 193, 7, 0.16) !important;
+}
+
+.bg-blue-1 {
+  background: rgba(56, 189, 248, 0.16) !important;
+}
+
+// Secciones que antes usaban gris muy claro como fondo (bg-grey-1) — ahora
+// una superficie apenas más clara que el fondo, para dar jerarquía sin
+// romper el tema oscuro.
+.bg-grey-1 {
+  background: rgba(255, 255, 255, 0.045) !important;
+}
+
+.bg-grey-3 {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+// Textos grises secundarios: en el tema claro iban de sutil (grey-5) a
+// remarcado (grey-7). Se mapean a blancos translúcidos manteniendo ese
+// mismo orden de énfasis sobre fondo oscuro.
+.text-grey-5 {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+.text-grey-6 {
+  color: rgba(255, 255, 255, 0.58) !important;
+}
+
+.text-grey-7 {
+  color: rgba(255, 255, 255, 0.72) !important;
+}
+
+// Azules oscuros (blue-7/8/9) pierden legibilidad sobre fondo casi negro —
+// se homologan al celeste "info" de la paleta nueva.
+.text-blue-7,
+.text-blue-8,
+.text-blue-9 {
+  color: var(--q-info) !important;
+}
+
+// Rojo apagado (red-7) → el nuevo tono "negative", más vivo sobre oscuro.
+.text-red-7 {
+  color: var(--q-negative) !important;
+}
+
+// ── Utilidades varias ────────────────────────────────────────────────────
+.dash-overline {
+  letter-spacing: 0.08em;
 }

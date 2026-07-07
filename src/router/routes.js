@@ -53,6 +53,13 @@ const routes = [
         component: () => import('src/pages/groups/GroupDetailPage.vue'),
         meta: { requiresAuth: true },
       },
+      {
+        // Crear partido dentro de un grupo (owner/admin del grupo, sin ser admin global)
+        path: 'grupos/:id/crear-partido',
+        name: 'create-group-match',
+        component: () => import('src/pages/admin/CreateMatchPage.vue'),
+        meta: { requiresAuth: true },
+      },
 
       // Admin
       {

@@ -81,21 +81,53 @@
           </div>
         </q-card-section>
       </q-card>
+
+      <!-- Cargar / editar resultado (miembros del grupo o admin) -->
+      <q-btn
+        v-if="canLoadResult"
+        unelevated
+        color="orange-7"
+        class="full-width pill-btn q-mt-sm"
+        icon="scoreboard"
+        :label="match.status === 'finished' ? 'Editar resultado' : 'Cargar resultado'"
+        :to="{ name: 'post-match', params: { id: match.id } }"
+      />
     </template>
   </q-page>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { date } from 'quasar'
 import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
+import { useGroups } from 'src/composables/useGroups'
+import { useAuthStore } from 'src/stores/auth.store'
 
 const route = useRoute()
 const { currentMatch: match, loading, subscribeToMatch, stopListening } = useMatch()
+const { getMyRole } = useGroups()
+const authStore = useAuthStore()
 
 onMounted(() => subscribeToMatch(route.params.id))
 onUnmounted(() => stopListening())
+
+// ── ¿Puede cargar el resultado? (miembro del grupo del partido, o admin) ─────
+const myGroupRole = ref(null)
+watch(
+  () => match.value?.groupId,
+  async (gid) => {
+    if (!gid) { myGroupRole.value = null; return }
+    try { myGroupRole.value = await getMyRole(gid) } catch { myGroupRole.value = null }
+  },
+  { immediate: true },
+)
+
+const canLoadResult = computed(() => {
+  const st = getEffectiveStatus(match.value)
+  const done = st === 'closed' || st === 'finished'
+  return done && (authStore.isAdmin || !!myGroupRole.value)
+})
 
 const matchDate = computed(() =>
   match.value?.date ? date.formatDate(match.value.date.toDate(), 'DD/MM/YYYY') : '',

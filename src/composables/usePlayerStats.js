@@ -8,7 +8,6 @@ import {
   doc,
   collection,
   writeBatch,
-  increment,
   serverTimestamp,
   getDocs,
 } from 'firebase/firestore'
@@ -16,17 +15,22 @@ import { db } from 'src/services/firebase'
 
 // Esquema de una entrada de estadísticas individuales:
 // matches/{matchId}/playerStats/{userId}
-// { userId, displayName, goals, assists, team: 'A'|'B' }
+// { userId, displayName, goals, assists, team: 'A'|'B'|null, groupId }
+//
+// IMPORTANTE: el acumulador en users/{uid} (stats + statsByGroup) lo actualiza
+// la Cloud Function `onPlayerStatsWritten` por DIFERENCIA (idempotente). El
+// cliente NUNCA escribe el perfil de otro usuario — así cualquier miembro del
+// grupo puede cargar el resultado sin poder inflar stats ajenas ni duplicar
+// al re-guardar.
 
 export function usePlayerStats() {
   const loading = ref(false)
   const error = ref(null)
 
   /**
-   * Guarda las estadísticas individuales de un partido y acumula en 'users'.
-   * Usa writeBatch para garantizar atomicidad (todo o nada).
-   * Acumula tanto el total individual (stats) como el desglose por grupo
-   * (statsByGroup.{groupId}), si el partido pertenece a un grupo.
+   * Guarda las estadísticas individuales de un partido dentro del propio partido.
+   * Solo se escriben jugadores con cuenta (userId presente); los invitados no
+   * acumulan stats porque no tienen perfil.
    *
    * @param {string} matchId
    * @param {Array<{ userId, displayName, goals, assists, team }>} statsArray
@@ -38,38 +42,21 @@ export function usePlayerStats() {
 
     try {
       // Firestore Batch: máximo 500 operaciones por batch
-      // Si statsArray > 250 jugadores deberías dividirlo (poco probable en fútbol amateur)
       const batch = writeBatch(db)
 
       for (const entry of statsArray) {
-        // 1. Escribe el documento de stats dentro del partido
+        if (!entry.userId) continue // invitados sin cuenta: no acumulan
+
         const statRef = doc(db, 'matches', matchId, 'playerStats', entry.userId)
         batch.set(statRef, {
           userId: entry.userId,
-          displayName: entry.displayName,
+          displayName: entry.displayName ?? null,
           goals: entry.goals ?? 0,
           assists: entry.assists ?? 0,
           team: entry.team ?? null,
+          groupId: groupId ?? null,
           savedAt: serverTimestamp(),
         })
-
-        // 2. Incrementa las estadísticas acumuladas en el perfil del usuario
-        const userRef = doc(db, 'users', entry.userId)
-        const updates = {
-          'stats.goals': increment(entry.goals ?? 0),
-          'stats.assists': increment(entry.assists ?? 0),
-          'stats.matchesPlayed': increment(1),
-          updatedAt: serverTimestamp(),
-        }
-
-        // 3. Además, acumula el desglose por grupo (si el partido es de un grupo)
-        if (groupId) {
-          updates[`statsByGroup.${groupId}.goals`] = increment(entry.goals ?? 0)
-          updates[`statsByGroup.${groupId}.assists`] = increment(entry.assists ?? 0)
-          updates[`statsByGroup.${groupId}.matchesPlayed`] = increment(1)
-        }
-
-        batch.update(userRef, updates)
       }
 
       await batch.commit()

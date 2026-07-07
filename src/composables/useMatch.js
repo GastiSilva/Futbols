@@ -24,6 +24,7 @@ export const FORMAT_OPTIONS = [
   { label: '5 vs 5  (10 jugadores)', value: '5v5', maxPlayers: 10 },
   { label: '7 vs 7  (14 jugadores)', value: '7v7', maxPlayers: 14 },
   { label: '8 vs 8  (16 jugadores)', value: '8v8', maxPlayers: 16 },
+  { label: '11 vs 11  (22 jugadores)', value: '11v11', maxPlayers: 22 },
 ]
 
 export function getMaxPlayers(format) {

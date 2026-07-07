@@ -41,8 +41,6 @@ import {
   query,
   orderBy,
   serverTimestamp,
-  deleteDoc,
-  getDoc,
 } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
@@ -105,14 +103,21 @@ export function useRegistration() {
 
   // ── INSCRIPCIÓN ATÓMICA (corazón del composable) ─────────────────────────
   /**
-   * Inscribe al usuario autenticado en el partido de forma atómica.
+   * Registra a una persona en el partido de forma atómica.
    * Usa runTransaction para evitar condiciones de carrera bajo alta concurrencia.
    *
-   * @param {string} matchId - ID del partido
-   * @returns {{ position: number, isOnWaitlist: boolean }} resultado de la inscripción
+   * Soporta tres casos:
+   *   - El propio usuario (joinMatch)
+   *   - Un invitado sin cuenta (addGuestToMatch) → docId autogenerado, userId null
+   *   - Otro miembro existente (addMemberToMatch) → docId = uid del anotado
+   *
+   * @param {string} matchId
+   * @param {{ targetUserId: string|null, isGuest: boolean, guestName: string|null,
+   *           displayName: string, photoURL: string|null }} entry
+   * @returns {{ position: number, isOnWaitlist: boolean }}
    * @throws Error con mensaje tipado de REGISTRATION_ERRORS
    */
-  async function joinMatch(matchId) {
+  async function registerEntry(matchId, entry) {
     loading.value = true
     error.value = null
 
@@ -120,23 +125,28 @@ export function useRegistration() {
     if (!user) throw new Error('Usuario no autenticado')
 
     const matchRef = doc(db, 'matches', matchId)
-    const regRef = doc(db, 'matches', matchId, 'registrations', user.uid)
+    // Invitado → docId autogenerado; usuario/miembro → docId = uid (1 por persona)
+    const regRef = entry.isGuest
+      ? doc(collection(db, 'matches', matchId, 'registrations'))
+      : doc(db, 'matches', matchId, 'registrations', entry.targetUserId)
 
     try {
       const result = await runTransaction(db, async (transaction) => {
         // ── 1. LECTURAS (siempre primero en una transacción de Firestore) ──
         const matchSnap = await transaction.get(matchRef)
-        const regSnap = await transaction.get(regRef)
+        const regSnap = entry.isGuest ? null : await transaction.get(regRef)
 
-      // ── 2. VALIDACIONES ───────────────────────────────────────────────
+        // ── 2. VALIDACIONES ───────────────────────────────────────────────
         if (!matchSnap.exists()) throw new Error(REGISTRATION_ERRORS.MATCH_NOT_FOUND)
 
         const match = matchSnap.data()
 
-        // Validación 100% por reloj — el status no bloquea la inscripción
+        // Validación 100% por reloj — el status no bloquea la inscripción.
+        // El acceso anticipado del anotador (OG del grupo) vale para todos los
+        // que anote (a sí mismo, invitados o miembros).
         const now = Date.now()
         const openAtMillis = match.openAt?.toMillis() ?? 0
-        const isOG = authStore.user?.role === 'og'
+        const isOG = authStore.isOgInGroup(match.groupId)
         const threshold = isOG ? openAtMillis - (30 * 60 * 1000) : openAtMillis
         if (now < threshold) {
           throw new Error(REGISTRATION_ERRORS.MATCH_NOT_OPEN)
@@ -145,34 +155,29 @@ export function useRegistration() {
         if (match.status === 'closed' || match.status === 'finished') {
           throw new Error(REGISTRATION_ERRORS.MATCH_CLOSED)
         }
-        if (regSnap.exists()) {
+        if (regSnap && regSnap.exists()) {
           throw new Error(REGISTRATION_ERRORS.ALREADY_REGISTERED)
         }
 
         // ── 3. CÁLCULO DE POSICIÓN ────────────────────────────────────────
-        //  currentPlayers es el contador atómico en el documento del partido.
-        //  Siempre lo leemos desde la transacción para garantizar consistencia.
         const currentCount = match.currentPlayers ?? 0
         const newPosition = currentCount + 1
         const isOnWaitlist = newPosition > match.maxPlayers
 
         // ── 4. ESCRITURAS ATÓMICAS ────────────────────────────────────────
-
-        // 4a. Incrementa el contador en el documento del partido
-        //     (NO usamos increment() de FieldValue porque dentro de una
-        //      transacción debemos leer el valor actual y calcular nosotros)
-        //     NOTA: solo se actualizan campos permitidos por las Firestore Rules
-        //     (currentPlayers + updatedAt). El status lo maneja el Cloud Scheduler.
         transaction.update(matchRef, {
           currentPlayers: newPosition,
           updatedAt: serverTimestamp(),
         })
 
-        // 4b. Crea el documento de inscripción del usuario
         transaction.set(regRef, {
-          userId: user.uid,
-          displayName: user.displayName,
-          photoURL: user.photoURL,
+          userId: entry.isGuest ? null : entry.targetUserId,
+          displayName: entry.displayName,
+          photoURL: entry.photoURL ?? null,
+          isGuest: !!entry.isGuest,
+          guestName: entry.isGuest ? entry.guestName : null,
+          addedBy: user.uid,
+          addedByName: user.displayName ?? null,
           registeredAt: serverTimestamp(),
           position: newPosition,
           isOnWaitlist,
@@ -193,6 +198,44 @@ export function useRegistration() {
     }
   }
 
+  // Inscribe al usuario autenticado.
+  function joinMatch(matchId) {
+    const user = authStore.user
+    if (!user) throw new Error('Usuario no autenticado')
+    return registerEntry(matchId, {
+      targetUserId: user.uid,
+      isGuest: false,
+      guestName: null,
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+    })
+  }
+
+  // Anota a un invitado sin cuenta (solo un nombre).
+  function addGuestToMatch(matchId, guestName) {
+    const name = (guestName ?? '').trim()
+    if (!name) throw new Error('El nombre del invitado es obligatorio.')
+    return registerEntry(matchId, {
+      targetUserId: null,
+      isGuest: true,
+      guestName: name,
+      displayName: name,
+      photoURL: null,
+    })
+  }
+
+  // Anota a otro miembro existente de la app.
+  function addMemberToMatch(matchId, member) {
+    if (!member?.userId) throw new Error('Miembro inválido.')
+    return registerEntry(matchId, {
+      targetUserId: member.userId,
+      isGuest: false,
+      guestName: null,
+      displayName: member.displayName,
+      photoURL: member.photoURL ?? null,
+    })
+  }
+
   // ── DESINSCRIPCIÓN ────────────────────────────────────────────────────────
   /**
    * Cancela la inscripción del usuario en el partido.
@@ -201,13 +244,12 @@ export function useRegistration() {
    *
    * @param {string} matchId
    */
-  async function leaveMatch(matchId) {
+  async function removeRegistration(matchId, registrationId) {
     loading.value = true
     error.value = null
 
-    const user = authStore.user
     const matchRef = doc(db, 'matches', matchId)
-    const regRef = doc(db, 'matches', matchId, 'registrations', user.uid)
+    const regRef = doc(db, 'matches', matchId, 'registrations', registrationId)
 
     try {
       await runTransaction(db, async (transaction) => {
@@ -221,7 +263,6 @@ export function useRegistration() {
         }
 
         const match = matchSnap.data()
-        const reg = regSnap.data()
         const newCount = Math.max(0, (match.currentPlayers ?? 1) - 1)
 
         // Decrementa el contador
@@ -247,6 +288,13 @@ export function useRegistration() {
     }
   }
 
+  // Cancela la inscripción del propio usuario (docId = su uid).
+  function leaveMatch(matchId) {
+    const user = authStore.user
+    if (!user) throw new Error('Usuario no autenticado')
+    return removeRegistration(matchId, user.uid)
+  }
+
   // ── Estado del botón "Anotarme" ───────────────────────────────────────────
   /**
    * Determina si el botón de inscripción debe estar habilitado.
@@ -260,11 +308,11 @@ export function useRegistration() {
 
     const now = Date.now()
     const openAt = match.openAt?.toMillis?.() ?? 0
-    const isOG = authStore.user?.role === 'og'
-    
-    // Si es OG, el umbral es 30 mins antes. Si no, es la hora normal.
+    const isOG = authStore.isOgInGroup(match.groupId)
+
+    // Si es OG del grupo del partido, el umbral es 30 mins antes.
     const threshold = isOG ? openAt - (30 * 60 * 1000) : openAt
-    
+
     return now >= threshold
   }
 
@@ -274,9 +322,9 @@ export function useRegistration() {
    */
   function msUntilOpen(match) {
     const openAt = match?.openAt?.toMillis?.() ?? 0
-    const isOG = authStore.user?.role === 'og'
+    const isOG = authStore.isOgInGroup(match?.groupId)
     const threshold = isOG ? openAt - (30 * 60 * 1000) : openAt
-    
+
     return Math.max(0, threshold - Date.now())
   }
 
@@ -293,7 +341,10 @@ export function useRegistration() {
     loading,
     error,
     joinMatch,
+    addGuestToMatch,
+    addMemberToMatch,
     leaveMatch,
+    removeRegistration,
     canRegister,
     msUntilOpen,
     subscribeToRegistrations,

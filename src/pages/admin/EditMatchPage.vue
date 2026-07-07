@@ -52,36 +52,101 @@
 
               <!-- Fecha y hora del partido -->
               <q-input
-                v-model="form.date"
+                :model-value="formatDateDisplay(form.date)"
                 label="Fecha y hora del partido"
                 outlined
-                type="datetime-local"
-                hint="Podés dejarlo vacío si todavía no está confirmado"
+                readonly
                 clearable
-              />
+                hint="Podés dejarlo vacío si todavía no está confirmado"
+                @clear="form.date = ''"
+              >
+                <template #append>
+                  <q-icon name="event" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-date v-model="form.date" mask="YYYY-MM-DDTHH:mm" today-btn>
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-date>
+                    </q-popup-proxy>
+                  </q-icon>
+                  <q-icon name="schedule" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-time v-model="form.date" mask="YYYY-MM-DDTHH:mm" format24h>
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-time>
+                    </q-popup-proxy>
+                  </q-icon>
+                </template>
+              </q-input>
 
               <!-- Hora de apertura de lista -->
               <q-input
-                v-model="form.openAt"
+                :model-value="formatDateDisplay(form.openAt)"
                 label="Hora de inicio de lista (apertura de inscripción)"
                 outlined
-                type="datetime-local"
-                hint="Cuándo se habilita el botón 'Anotarme'"
+                readonly
                 clearable
+                hint="Cuándo se habilita el botón 'Anotarme'"
                 :rules="[validateOpenAt]"
-                @update:model-value="syncNotifyAt"
-              />
+                @clear="form.openAt = ''"
+              >
+                <template #append>
+                  <q-icon name="event" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-date v-model="form.openAt" mask="YYYY-MM-DDTHH:mm" today-btn @update:model-value="syncNotifyAt">
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-date>
+                    </q-popup-proxy>
+                  </q-icon>
+                  <q-icon name="schedule" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-time v-model="form.openAt" mask="YYYY-MM-DDTHH:mm" format24h @update:model-value="syncNotifyAt">
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-time>
+                    </q-popup-proxy>
+                  </q-icon>
+                </template>
+              </q-input>
 
               <!-- Primera notificación -->
               <q-input
-                v-model="form.notifyAt"
+                :model-value="formatDateDisplay(form.notifyAt)"
                 label="Primera notificación"
                 outlined
-                type="datetime-local"
-                hint="Notificación recordatoria (por defecto 3 h antes)"
+                readonly
                 clearable
+                hint="Notificación recordatoria (por defecto 3 h antes)"
                 :rules="[validateNotifyAt]"
-              />
+                @clear="form.notifyAt = ''"
+              >
+                <template #append>
+                  <q-icon name="event" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-date v-model="form.notifyAt" mask="YYYY-MM-DDTHH:mm" today-btn>
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-date>
+                    </q-popup-proxy>
+                  </q-icon>
+                  <q-icon name="schedule" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-time v-model="form.notifyAt" mask="YYYY-MM-DDTHH:mm" format24h>
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-time>
+                    </q-popup-proxy>
+                  </q-icon>
+                </template>
+              </q-input>
 
               <!-- Formato del partido -->
               <q-select
@@ -132,10 +197,10 @@
                 <q-btn
                   type="submit"
                   label="Guardar cambios"
-                  color="green-8"
+                  color="primary"
                   unelevated
                   size="lg"
-                  class="col"
+                  class="col pill-btn"
                   :loading="saving"
                   icon="save"
                 />
@@ -201,6 +266,15 @@ function toDatetimeLocal(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// Muestra "DD-MM - HH:mm" en el input en vez del ISO crudo (YYYY-MM-DDTHH:mm)
+function formatDateDisplay(iso) {
+  if (!iso) return ''
+  const [datePart, timePart] = iso.split('T')
+  if (!datePart) return ''
+  const [, month, day] = datePart.split('-')
+  return timePart ? `${day}-${month} - ${timePart}` : `${day}-${month}`
+}
+
 onMounted(async () => {
   try {
     ;[groups.value] = await Promise.all([getMyGroups()])
@@ -237,12 +311,14 @@ function syncNotifyAt(newOpenAt) {
   form.value.notifyAt = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-function validateOpenAt(val) {
+function validateOpenAt() {
+  const val = form.value.openAt
   if (!val || !form.value.date) return true
   return new Date(val) < new Date(form.value.date) || 'La apertura debe ser antes del partido'
 }
 
-function validateNotifyAt(val) {
+function validateNotifyAt() {
+  const val = form.value.notifyAt
   if (!val || !form.value.openAt) return true
   return new Date(val) < new Date(form.value.openAt) || 'La notificación debe ser antes de la apertura'
 }

@@ -1,15 +1,15 @@
 <template>
-  <div class="flex flex-center grass-bg" style="min-height: 100vh">
-    <div class="text-center q-pa-xl">
+  <div class="flex flex-center grass-bg q-pa-md" style="min-height: 100vh">
+    <div class="text-center full-width" style="max-width: 400px">
       <!-- Logo -->
       <div class="q-mb-lg">
-        <q-icon name="sports_soccer" size="80px" color="white" />
+        <q-icon name="sports_soccer" size="72px" color="primary" />
         <div class="text-h4 text-white text-weight-bold q-mt-sm">Futbols</div>
         <div class="text-subtitle2 text-green-3">Organizá tus partidos de fútbol amateur</div>
       </div>
 
       <!-- Card de login -->
-      <q-card style="min-width: 320px; max-width: 400px" class="q-pa-lg">
+      <q-card class="q-pa-lg" style="width: 100%">
         <q-card-section>
           <div class="text-h6 text-weight-bold q-mb-xs">Iniciar sesión</div>
           <div class="text-body2 text-grey-6 q-mb-lg">
@@ -17,15 +17,14 @@
           </div>
 
           <q-btn
-            color="white"
-            text-color="grey-9"
+            color="primary"
             unelevated
             size="lg"
-            class="full-width"
+            class="full-width pill-btn"
             :loading="loading"
             @click="handleLogin"
           >
-            <q-avatar size="24px" class="q-mr-sm">
+            <q-avatar size="24px" class="q-mr-sm bg-white">
               <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
             </q-avatar>
             Continuar con Google

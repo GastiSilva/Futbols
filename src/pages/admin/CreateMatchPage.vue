@@ -21,8 +21,10 @@
                 map-options
                 label="Grupo"
                 outlined
-                clearable
-                hint="Grupo al que pertenece este partido (opcional)"
+                :clearable="!presetGroupId && authStore.isAdmin"
+                :disable="!!presetGroupId"
+                :rules="authStore.isAdmin ? [] : [val => !!val || 'Elegí un grupo']"
+                :hint="presetGroupId ? 'Partido de este grupo' : 'Grupo al que pertenece este partido' + (authStore.isAdmin ? ' (opcional)' : '')"
               >
                 <template #prepend>
                   <q-icon name="group" />
@@ -47,36 +49,101 @@
 
               <!-- Fecha y hora del partido -->
               <q-input
-                v-model="form.date"
+                :model-value="formatDateDisplay(form.date)"
                 label="Fecha y hora del partido"
                 outlined
-                type="datetime-local"
-                hint="Podés completarlo después"
+                readonly
                 clearable
-              />
+                hint="Podés completarlo después"
+                @clear="form.date = ''"
+              >
+                <template #append>
+                  <q-icon name="event" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-date v-model="form.date" mask="YYYY-MM-DDTHH:mm" today-btn>
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-date>
+                    </q-popup-proxy>
+                  </q-icon>
+                  <q-icon name="schedule" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-time v-model="form.date" mask="YYYY-MM-DDTHH:mm" format24h>
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-time>
+                    </q-popup-proxy>
+                  </q-icon>
+                </template>
+              </q-input>
 
               <!-- Hora de apertura de lista -->
               <q-input
-                v-model="form.openAt"
+                :model-value="formatDateDisplay(form.openAt)"
                 label="Hora de inicio de lista (apertura de inscripción)"
                 outlined
-                type="datetime-local"
-                hint="Cuándo se habilita el botón 'Anotarme' (opcional)"
+                readonly
                 clearable
+                hint="Cuándo se habilita el botón 'Anotarme' (opcional)"
                 :rules="[validateOpenAt]"
-                @update:model-value="syncNotifyAt"
-              />
+                @clear="form.openAt = ''"
+              >
+                <template #append>
+                  <q-icon name="event" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-date v-model="form.openAt" mask="YYYY-MM-DDTHH:mm" today-btn @update:model-value="syncNotifyAt">
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-date>
+                    </q-popup-proxy>
+                  </q-icon>
+                  <q-icon name="schedule" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-time v-model="form.openAt" mask="YYYY-MM-DDTHH:mm" format24h @update:model-value="syncNotifyAt">
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-time>
+                    </q-popup-proxy>
+                  </q-icon>
+                </template>
+              </q-input>
 
               <!-- Primera notificación -->
               <q-input
-                v-model="form.notifyAt"
+                :model-value="formatDateDisplay(form.notifyAt)"
                 label="Primera notificación"
                 outlined
-                type="datetime-local"
-                hint="Notificación recordatoria (por defecto 3 h antes de la apertura)"
+                readonly
                 clearable
+                hint="Notificación recordatoria (por defecto 3 h antes de la apertura)"
                 :rules="[validateNotifyAt]"
-              />
+                @clear="form.notifyAt = ''"
+              >
+                <template #append>
+                  <q-icon name="event" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-date v-model="form.notifyAt" mask="YYYY-MM-DDTHH:mm" today-btn>
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-date>
+                    </q-popup-proxy>
+                  </q-icon>
+                  <q-icon name="schedule" class="cursor-pointer">
+                    <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                      <q-time v-model="form.notifyAt" mask="YYYY-MM-DDTHH:mm" format24h>
+                        <div class="row items-center justify-end">
+                          <q-btn v-close-popup label="Cerrar" color="primary" flat />
+                        </div>
+                      </q-time>
+                    </q-popup-proxy>
+                  </q-icon>
+                </template>
+              </q-input>
 
               <!-- Formato del partido -->
               <q-select
@@ -110,10 +177,10 @@
               <q-btn
                 type="submit"
                 label="Crear Partido"
-                color="green-8"
+                color="primary"
                 unelevated
                 size="lg"
-                class="full-width"
+                class="full-width pill-btn"
                 :loading="loading"
                 icon="sports_soccer"
               />
@@ -126,23 +193,30 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useMatch, FORMAT_OPTIONS } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
+import { useAuthStore } from 'src/stores/auth.store'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from 'src/services/firebase'
 
 const $q = useQuasar()
 const router = useRouter()
+const route = useRoute()
+const authStore = useAuthStore()
 const { createMatch, loading } = useMatch()
 const { getMyGroups } = useGroups()
 
 const groups = ref([])
 
+// Si se entra desde un grupo (grupos/:id/crear-partido), el partido queda fijado
+// a ese grupo (para admins de grupo que no son admin global).
+const presetGroupId = route.params.id ?? null
+
 const form = ref({
-  groupId: null,
+  groupId: presetGroupId,
   title: '',
   location: '',
   date: '',
@@ -157,6 +231,7 @@ onMounted(async () => {
   } catch {
     groups.value = []
   }
+  if (presetGroupId) form.value.groupId = presetGroupId
 })
 
 const selectedFormat = computed(() =>
@@ -177,12 +252,23 @@ function toDatetimeLocal(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-function validateOpenAt(val) {
+// Muestra "DD-MM - HH:mm" en el input en vez del ISO crudo (YYYY-MM-DDTHH:mm)
+function formatDateDisplay(iso) {
+  if (!iso) return ''
+  const [datePart, timePart] = iso.split('T')
+  if (!datePart) return ''
+  const [, month, day] = datePart.split('-')
+  return timePart ? `${day}-${month} - ${timePart}` : `${day}-${month}`
+}
+
+function validateOpenAt() {
+  const val = form.value.openAt
   if (!val || !form.value.date) return true
   return new Date(val) < new Date(form.value.date) || 'La apertura debe ser antes del partido'
 }
 
-function validateNotifyAt(val) {
+function validateNotifyAt() {
+  const val = form.value.notifyAt
   if (!val || !form.value.openAt) return true
   return new Date(val) < new Date(form.value.openAt) || 'La notificación debe ser antes de la apertura de lista'
 }
@@ -225,7 +311,11 @@ async function handleSubmit() {
       icon: 'check_circle',
     })
 
-    router.push({ name: 'admin-dashboard' })
+    router.push(
+      presetGroupId
+        ? { name: 'group-detail', params: { id: presetGroupId } }
+        : { name: 'admin-dashboard' },
+    )
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message })
   }

@@ -21,8 +21,9 @@
       <template #action>
         <q-btn
           unelevated
-          color="green-9"
+          color="primary"
           label="Aceptar invitación"
+          class="pill-btn"
           :loading="joiningByLink"
           @click="handleJoinByLink"
         />
@@ -75,9 +76,10 @@
           <q-btn
             v-if="!requestedIds.has(group.id)"
             unelevated
-            color="green-9"
+            color="primary"
             label="Solicitar"
             size="sm"
+            class="pill-btn"
             :loading="requestingId === group.id"
             @click="handleRequestJoin(group)"
           />

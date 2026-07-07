@@ -70,18 +70,18 @@
           <q-card-section class="q-pa-lg">
 
             <!-- Detalles: fecha, hora, formato, ubicación -->
-            <div class="row q-col-gutter-md q-mb-lg text-center">
-              <div class="col-12 col-sm-4">
+            <div class="row q-col-gutter-sm q-mb-lg text-center">
+              <div class="col-4">
                 <q-icon name="calendar_today" color="green-9" size="26px" />
                 <div class="text-caption text-grey-6 q-mt-xs">Fecha</div>
                 <div class="text-body2 text-weight-medium">{{ formatMatchDate(match.date) }}</div>
               </div>
-              <div class="col-12 col-sm-4">
+              <div class="col-4">
                 <q-icon name="schedule" color="green-9" size="26px" />
                 <div class="text-caption text-grey-6 q-mt-xs">Hora</div>
                 <div class="text-body2 text-weight-medium">{{ formatMatchTime(match.date) }}</div>
               </div>
-              <div class="col-12 col-sm-4">
+              <div class="col-4">
                 <q-icon name="sports_soccer" color="green-9" size="26px" />
                 <div class="text-caption text-grey-6 q-mt-xs">Formato</div>
                 <div class="text-body2 text-weight-medium">{{ match.format }}</div>
@@ -176,8 +176,8 @@
             <q-btn
               v-else-if="canRegister(match)"
               unelevated
-              color="green-9"
-              class="full-width"
+              color="primary"
+              class="full-width pill-btn"
               size="lg"
               style="font-size: 1.05rem; letter-spacing: 1px"
               :loading="loading"
@@ -198,7 +198,7 @@
                 v-if="getUserRegistrationForMatch(match.id) && !getUserRegistrationForMatch(match.id).isOnWaitlist"
                 unelevated
                 color="orange-7"
-                class="full-width"
+                class="full-width pill-btn"
                 icon="scoreboard"
                 label="Cargar resultado"
                 :to="{ name: 'post-match', params: { id: match.id } }"
@@ -213,56 +213,6 @@
 
       <template v-if="selectedMatch">
 
-        <!-- ── Stats del jugador ────────────────────────────────────────────── -->
-        <div class="text-overline text-grey-6 q-mb-sm dash-overline">MIS ESTADÍSTICAS</div>
-
-        <!-- En el grupo de este partido (si pertenece a uno) -->
-        <template v-if="selectedMatchGroupStats">
-          <div class="text-caption text-weight-bold text-green-9 q-mb-xs">EN ESTE GRUPO</div>
-          <div class="row q-col-gutter-sm q-mb-md">
-            <div class="col-4">
-              <q-card flat bordered class="text-center q-pa-sm">
-                <div class="text-h5 text-weight-bold text-green-9">{{ selectedMatchGroupStats.goals ?? 0 }}</div>
-                <div class="text-caption text-grey-6">Goles</div>
-              </q-card>
-            </div>
-            <div class="col-4">
-              <q-card flat bordered class="text-center q-pa-sm">
-                <div class="text-h5 text-weight-bold text-blue-9">{{ selectedMatchGroupStats.assists ?? 0 }}</div>
-                <div class="text-caption text-grey-6">Asistencias</div>
-              </q-card>
-            </div>
-            <div class="col-4">
-              <q-card flat bordered class="text-center q-pa-sm">
-                <div class="text-h5 text-weight-bold text-orange-9">{{ selectedMatchGroupStats.matchesPlayed ?? 0 }}</div>
-                <div class="text-caption text-grey-6">Partidos</div>
-              </q-card>
-            </div>
-          </div>
-          <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">TOTAL INDIVIDUAL (TODOS LOS GRUPOS)</div>
-        </template>
-
-        <div class="row q-col-gutter-sm q-mb-lg">
-          <div class="col-4">
-            <q-card flat bordered class="text-center q-pa-sm">
-              <div class="text-h5 text-weight-bold text-green-9">{{ user?.stats?.goals ?? 0 }}</div>
-              <div class="text-caption text-grey-6">Goles</div>
-            </q-card>
-          </div>
-          <div class="col-4">
-            <q-card flat bordered class="text-center q-pa-sm">
-              <div class="text-h5 text-weight-bold text-blue-9">{{ user?.stats?.assists ?? 0 }}</div>
-              <div class="text-caption text-grey-6">Asistencias</div>
-            </q-card>
-          </div>
-          <div class="col-4">
-            <q-card flat bordered class="text-center q-pa-sm">
-              <div class="text-h5 text-weight-bold text-orange-9">{{ user?.stats?.matchesPlayed ?? 0 }}</div>
-              <div class="text-caption text-grey-6">Partidos</div>
-            </q-card>
-          </div>
-        </div>
-
         <!-- ── Lista de inscriptos ──────────────────────────────────────────── -->
         <div class="text-overline text-grey-6 q-mb-sm dash-overline">
           ANOTADOS ({{ titularesSeleccionado.length }})
@@ -275,7 +225,7 @@
             <!-- Titulares -->
             <q-item
               v-for="reg in titularesSeleccionado"
-              :key="reg.userId"
+              :key="reg.id"
               class="q-py-sm"
               :class="{ 'bg-green-1': reg.userId === user?.uid }"
             >
@@ -287,7 +237,7 @@
                     :alt="reg.displayName"
                     referrerpolicy="no-referrer"
                   />
-                  <q-icon v-else name="person" />
+                  <q-icon v-else :name="reg.isGuest ? 'person_outline' : 'person'" />
                 </q-avatar>
               </q-item-section>
 
@@ -302,10 +252,21 @@
                     class="q-ml-xs"
                   />
                 </q-item-label>
+                <q-item-label v-if="regSubtitle(reg)" caption>{{ regSubtitle(reg) }}</q-item-label>
               </q-item-section>
 
               <q-item-section side>
-                <q-badge color="green-2" text-color="green-9" :label="`#${reg.position}`" />
+                <div class="row items-center no-wrap q-gutter-xs">
+                  <q-badge color="primary" text-color="dark" :label="`#${reg.position}`" />
+                  <q-btn
+                    v-if="canRemoveReg(reg)"
+                    flat round dense size="sm"
+                    icon="close"
+                    color="grey-6"
+                    :loading="loading"
+                    @click="handleRemoveReg(reg)"
+                  />
+                </div>
               </q-item-section>
             </q-item>
 
@@ -321,7 +282,7 @@
 
               <q-item
                 v-for="reg in suplentesSelectorado"
-                :key="reg.userId"
+                :key="reg.id"
                 class="q-py-sm"
                 :class="{ 'bg-orange-1': reg.userId === user?.uid }"
               >
@@ -333,20 +294,31 @@
                       :alt="reg.displayName"
                       referrerpolicy="no-referrer"
                     />
-                    <q-icon v-else name="person" />
+                    <q-icon v-else :name="reg.isGuest ? 'person_outline' : 'person'" />
                   </q-avatar>
                 </q-item-section>
 
                 <q-item-section>
                   <q-item-label>{{ reg.displayName }}</q-item-label>
+                  <q-item-label v-if="regSubtitle(reg)" caption>{{ regSubtitle(reg) }}</q-item-label>
                 </q-item-section>
 
                 <q-item-section side>
-                  <q-badge
-                    color="orange-2"
-                    text-color="orange-9"
-                    :label="`Esp. #${reg.position - selectedMatch.maxPlayers}`"
-                  />
+                  <div class="row items-center no-wrap q-gutter-xs">
+                    <q-badge
+                      color="orange-8"
+                      text-color="white"
+                      :label="`Esp. #${reg.position - selectedMatch.maxPlayers}`"
+                    />
+                    <q-btn
+                      v-if="canRemoveReg(reg)"
+                      flat round dense size="sm"
+                      icon="close"
+                      color="grey-6"
+                      :loading="loading"
+                      @click="handleRemoveReg(reg)"
+                    />
+                  </div>
                 </q-item-section>
               </q-item>
             </template>
@@ -362,16 +334,93 @@
           </q-list>
         </q-card>
 
+        <!-- ── Anotar a otra persona (invitado o miembro del grupo) ──────────── -->
+        <q-btn
+          v-if="canAddOthers(selectedMatch)"
+          outline
+          color="green-9"
+          icon="person_add"
+          label="Anotar a otra persona"
+          class="full-width q-mt-md pill-btn"
+          @click="openAddDialog"
+        />
+
         <q-btn
           flat
           color="green-9"
-          label="Ver ranking completo"
+          label="Ver estadísticas del grupo"
           icon-right="arrow_forward"
           class="full-width q-mt-md"
           :to="{ name: 'leaderboard' }"
         />
 
       </template>
+
+      <!-- ── Dialog: anotar a otra persona ──────────────────────────────────── -->
+      <q-dialog v-model="showAddDialog">
+        <q-card style="min-width: 320px; max-width: 480px; width: 100%">
+          <q-card-section class="text-h6">Anotar a otra persona</q-card-section>
+
+          <q-card-section class="q-pt-none">
+            <q-btn-toggle
+              v-if="addModeOptions.length > 1"
+              v-model="addMode"
+              spread
+              no-caps
+              unelevated
+              toggle-color="green-9"
+              color="grey-3"
+              text-color="grey-8"
+              :options="addModeOptions"
+              class="q-mb-md"
+            />
+
+            <template v-if="addMode === 'guest'">
+              <q-input
+                v-model="guestName"
+                label="Nombre del invitado"
+                hint="Alguien que no usa la app"
+                outlined
+                autofocus
+                maxlength="40"
+                @keyup.enter="handleAddPerson"
+              />
+            </template>
+
+            <template v-else>
+              <q-select
+                v-model="selectedMember"
+                :options="availableMembers"
+                option-label="displayName"
+                option-value="userId"
+                emit-value
+                map-options
+                label="Elegí un miembro del grupo"
+                outlined
+                :loading="loadingMembers"
+              />
+              <div
+                v-if="!loadingMembers && availableMembers.length === 0"
+                class="text-caption text-grey-6 q-mt-sm"
+              >
+                Todos los miembros del grupo ya están anotados.
+              </div>
+            </template>
+          </q-card-section>
+
+          <q-card-actions align="right" class="q-pb-md q-px-md">
+            <q-btn flat label="Cancelar" v-close-popup :disable="loading" />
+            <q-btn
+              unelevated
+              color="primary"
+              class="pill-btn"
+              label="Anotar"
+              :loading="loading"
+              @click="handleAddPerson"
+            />
+          </q-card-actions>
+        </q-card>
+      </q-dialog>
 
     </template>
   </q-page>
@@ -383,11 +432,24 @@ import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 import { useRegistration } from 'src/composables/useRegistration'
 import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
+import { useGroups } from 'src/composables/useGroups'
 
 const $q = useQuasar()
-const { user } = useAuth()
-const { joinMatch, leaveMatch, canRegister, msUntilOpen, subscribeToRegistrations, stopListening, loading } = useRegistration()
+const { user, isAdmin } = useAuth()
+const {
+  joinMatch,
+  addGuestToMatch,
+  addMemberToMatch,
+  leaveMatch,
+  removeRegistration,
+  canRegister,
+  msUntilOpen,
+  subscribeToRegistrations,
+  stopListening,
+  loading,
+} = useRegistration()
 const { matches, subscribeToUpcoming: subscribeToMatchesUpcoming } = useMatch()
+const { getGroupMembers } = useGroups()
 
 // ── Matches próximos ─────────────────────────────────────────────────────────
 const upcomingMatches = computed(() =>
@@ -404,13 +466,6 @@ const upcomingMatches = computed(() =>
     groupId: m.groupId ?? null,
   })) ?? [],
 )
-
-// ── Stats del grupo del match seleccionado (si pertenece a uno) ─────────────
-const selectedMatchGroupStats = computed(() => {
-  const groupId = selectedMatch.value?.groupId
-  if (!groupId) return null
-  return user.value?.statsByGroup?.[groupId] ?? { goals: 0, assists: 0, matchesPlayed: 0 }
-})
 
 // ── Match seleccionado (expandido) ───────────────────────────────────────────
 const selectedMatchId = ref(null)
@@ -586,6 +641,129 @@ function handleLeave(matchId) {
     try {
       await leaveMatch(matchId)
       $q.notify({ type: 'info', message: 'Inscripción cancelada correctamente' })
+    } catch (err) {
+      $q.notify({ type: 'negative', message: err.message })
+    }
+  })
+}
+
+// ── Anotar a otra persona (invitado o miembro del grupo) ─────────────────────
+const showAddDialog = ref(false)
+const addMode = ref('guest')
+const guestName = ref('')
+const selectedMember = ref(null)
+const groupMembers = ref([])
+const loadingMembers = ref(false)
+
+// ¿La ventana de inscripción está abierta para anotar gente?
+function canAddOthers(match) {
+  if (!match) return false
+  if (match.status === 'closed' || match.status === 'finished') return false
+  return msUntilOpen(match) === 0
+}
+
+const addModeOptions = computed(() => {
+  const opts = [{ label: 'Invitado', value: 'guest' }]
+  if (selectedMatch.value?.groupId) opts.push({ label: 'Del grupo', value: 'member' })
+  return opts
+})
+
+// Miembros del grupo que todavía no están anotados
+const availableMembers = computed(() => {
+  const registeredUids = new Set(
+    registrationsSeleccionadas.value.map((r) => r.userId).filter(Boolean),
+  )
+  return groupMembers.value.filter((m) => !registeredUids.has(m.userId))
+})
+
+async function openAddDialog() {
+  guestName.value = ''
+  selectedMember.value = null
+  addMode.value = 'guest'
+  showAddDialog.value = true
+
+  const gid = selectedMatch.value?.groupId
+  if (gid) {
+    loadingMembers.value = true
+    try {
+      groupMembers.value = await getGroupMembers(gid)
+    } catch {
+      groupMembers.value = []
+    } finally {
+      loadingMembers.value = false
+    }
+  } else {
+    groupMembers.value = []
+  }
+}
+
+async function handleAddPerson() {
+  const matchId = selectedMatchId.value
+  if (!matchId) return
+
+  try {
+    let result
+    if (addMode.value === 'guest') {
+      if (!guestName.value.trim()) {
+        $q.notify({ type: 'warning', message: 'Ingresá un nombre.' })
+        return
+      }
+      result = await addGuestToMatch(matchId, guestName.value)
+    } else {
+      const member = groupMembers.value.find((m) => m.userId === selectedMember.value)
+      if (!member) {
+        $q.notify({ type: 'warning', message: 'Elegí un miembro del grupo.' })
+        return
+      }
+      result = await addMemberToMatch(matchId, member)
+    }
+
+    showAddDialog.value = false
+    $q.notify({
+      type: 'positive',
+      icon: result.isOnWaitlist ? 'hourglass_empty' : 'check_circle',
+      message: result.isOnWaitlist
+        ? 'Persona agregada a la lista de espera'
+        : '¡Persona anotada!',
+    })
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  }
+}
+
+// Subtítulo de una inscripción (invitado / anotado por otro)
+function regSubtitle(reg) {
+  if (reg.isGuest) {
+    return reg.addedByName ? `Invitado · lo anotó ${reg.addedByName}` : 'Invitado'
+  }
+  if (reg.addedBy && reg.addedBy !== reg.userId) {
+    return reg.addedByName ? `Lo anotó ${reg.addedByName}` : null
+  }
+  return null
+}
+
+// ¿Puedo quitar esta inscripción? (quien lo anotó, o admin)
+function canRemoveReg(reg) {
+  const uid = user.value?.uid
+  if (!uid) return false
+  // A vos mismo te sacás con "Cancelar inscripción" (arriba)
+  if (!reg.isGuest && reg.userId === uid) return false
+  return reg.addedBy === uid || isAdmin.value
+}
+
+function handleRemoveReg(reg) {
+  const matchId = selectedMatchId.value
+  if (!matchId) return
+
+  $q.dialog({
+    title: 'Quitar de la lista',
+    message: `¿Sacar a ${reg.displayName} del partido?`,
+    cancel: { flat: true, label: 'No' },
+    ok: { unelevated: true, color: 'negative', label: 'Sí, sacar' },
+  }).onOk(async () => {
+    try {
+      await removeRegistration(matchId, reg.id)
+      $q.notify({ type: 'info', message: `${reg.displayName} fue sacado de la lista` })
     } catch (err) {
       $q.notify({ type: 'negative', message: err.message })
     }

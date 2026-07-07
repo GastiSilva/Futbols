@@ -7,7 +7,7 @@
         <q-btn flat dense round icon="menu" aria-label="Menú" @click="drawer = !drawer" />
 
         <q-toolbar-title class="text-weight-bold q-pl-xs">
-          <q-icon name="sports_soccer" size="22px" class="q-mr-xs" />Partidos de fútbol
+          <q-icon name="sports_soccer" size="22px" class="text-primary q-mr-xs" />Partidos de fútbol
         </q-toolbar-title>
 
         <!-- Avatar del usuario en el header -->
@@ -55,51 +55,53 @@
 
         <!-- ── Navegación (scrollable) ──────────────────────────────────── -->
         <q-scroll-area class="col">
-          <q-list padding>
+          <q-list class="drawer-nav q-py-md">
 
             <!-- Jugador -->
-            <q-item-label header class="text-grey-7 text-uppercase text-caption q-pt-md">
+            <q-item-label header class="drawer-section-label q-pt-sm">
               Jugador
             </q-item-label>
 
             <q-item
               clickable
               v-ripple
+              class="drawer-item"
               :to="{ name: 'player-dashboard' }"
-              active-class="text-green-9 bg-green-1"
+              active-class="drawer-item--active"
             >
               <q-item-section avatar>
-                <q-icon name="home" />
+                <q-icon name="home" size="22px" />
               </q-item-section>
-              <q-item-section>Dashboard</q-item-section>
+              <q-item-section>Partidos</q-item-section>
             </q-item>
 
             <q-item
               clickable
               v-ripple
+              class="drawer-item"
               :to="{ name: 'leaderboard' }"
-              active-class="text-green-9 bg-green-1"
+              active-class="drawer-item--active"
             >
               <q-item-section avatar>
-                <q-icon name="emoji_events" />
+                <q-icon name="emoji_events" size="22px" />
               </q-item-section>
-              <q-item-section>Ranking</q-item-section>
+              <q-item-section>Estadísticas</q-item-section>
             </q-item>
 
             <!-- Grupos -->
-            <q-separator class="q-my-sm" />
-            <q-item-label header class="text-grey-7 text-uppercase text-caption">
+            <q-item-label header class="drawer-section-label">
               Grupos
             </q-item-label>
 
             <q-item
               clickable
               v-ripple
+              class="drawer-item"
               :to="{ name: 'groups' }"
-              active-class="text-green-9 bg-green-1"
+              active-class="drawer-item--active"
             >
               <q-item-section avatar>
-                <q-icon name="group" />
+                <q-icon name="group" size="22px" />
               </q-item-section>
               <q-item-section>Mis Grupos</q-item-section>
             </q-item>
@@ -107,30 +109,31 @@
             <q-item
               clickable
               v-ripple
+              class="drawer-item"
               :to="{ name: 'join-group' }"
-              active-class="text-green-9 bg-green-1"
+              active-class="drawer-item--active"
             >
               <q-item-section avatar>
-                <q-icon name="person_add" />
+                <q-icon name="person_add" size="22px" />
               </q-item-section>
               <q-item-section>Buscar Grupo</q-item-section>
             </q-item>
 
             <!-- Admin (solo visible si isAdmin) -->
             <template v-if="isAdmin">
-              <q-separator class="q-my-sm" />
-              <q-item-label header class="text-grey-7 text-uppercase text-caption">
+              <q-item-label header class="drawer-section-label">
                 Admin
               </q-item-label>
 
               <q-item
                 clickable
                 v-ripple
+                class="drawer-item"
                 :to="{ name: 'admin-dashboard' }"
-                active-class="text-green-9 bg-green-1"
+                active-class="drawer-item--active"
               >
                 <q-item-section avatar>
-                  <q-icon name="admin_panel_settings" />
+                  <q-icon name="admin_panel_settings" size="22px" />
                 </q-item-section>
                 <q-item-section>Panel Admin</q-item-section>
               </q-item>
@@ -138,11 +141,12 @@
               <q-item
                 clickable
                 v-ripple
+                class="drawer-item"
                 :to="{ name: 'create-match' }"
-                active-class="text-green-9 bg-green-1"
+                active-class="drawer-item--active"
               >
                 <q-item-section avatar>
-                  <q-icon name="add_circle" />
+                  <q-icon name="add_circle" size="22px" />
                 </q-item-section>
                 <q-item-section>Crear Partido</q-item-section>
               </q-item>
@@ -153,16 +157,15 @@
 
         <!-- ── Cerrar sesión (fijo al fondo) ──────────────────────────────── -->
         <div>
-          <q-separator />
           <q-item
             clickable
             v-ripple
-            class="q-my-xs"
+            class="drawer-item q-my-xs"
             :disable="loggingOut"
             @click="handleLogout"
           >
             <q-item-section avatar>
-              <q-icon name="logout" color="negative" />
+              <q-icon name="logout" color="negative" size="22px" />
             </q-item-section>
             <q-item-section class="text-negative text-weight-medium">
               Cerrar sesión
@@ -221,5 +224,35 @@ async function handleLogout() {
 .q-avatar:focus-visible {
   outline: 2px solid rgba(255, 255, 255, 0.6);
   outline-offset: 2px;
+}
+
+/* Lista de navegación estilo minimal (menos "cajita", más aire entre items) */
+.drawer-section-label {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  margin-top: 20px;
+  margin-bottom: 2px;
+}
+
+.drawer-item {
+  min-height: 50px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  border-left: 3px solid transparent;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.drawer-item :deep(.q-icon) {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.drawer-item--active {
+  border-left-color: var(--q-primary);
+  color: var(--q-primary);
+}
+
+.drawer-item--active :deep(.q-icon) {
+  color: var(--q-primary);
 }
 </style>

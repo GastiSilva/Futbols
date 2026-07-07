@@ -2,7 +2,7 @@
   <q-page padding>
     <div class="text-h5 text-weight-bold q-mb-md">
       <q-icon name="emoji_events" color="amber-7" class="q-mr-sm" />
-      Ranking
+      Estadísticas
     </div>
 
     <!-- Filtro por grupo (obligatorio: sin grupo no hay ranking que mostrar) -->

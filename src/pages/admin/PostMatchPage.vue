@@ -64,7 +64,7 @@
                   <span class="text-body2 ellipsis">{{ player.displayName }}</span>
                 </div>
 
-                <!-- Equipo -->
+                <!-- Equipo (opcional: los equipos se definen fuera de la app) -->
                 <div class="col-4 col-sm-2">
                   <q-select
                     v-model="player.team"
@@ -72,6 +72,7 @@
                     label="Equipo"
                     outlined
                     dense
+                    clearable
                   />
                 </div>
 
@@ -105,10 +106,10 @@
           <!-- ── Guardar ───────────────────────────────────────────────── -->
           <q-btn
             label="Guardar resultado"
-            color="green-8"
+            color="primary"
             unelevated
             size="lg"
-            class="full-width"
+            class="full-width pill-btn"
             icon="save"
             :loading="saving"
             @click="handleSave"
@@ -151,18 +152,31 @@ onMounted(async () => {
     if (match.value.scoreA != null) scoreA.value = match.value.scoreA
     if (match.value.scoreB != null) scoreB.value = match.value.scoreB
 
-    // Carga la lista de inscriptos para cargar las stats individuales
+    // Carga la lista de inscriptos (titulares con cuenta) para las stats.
+    // Los invitados sin cuenta (userId null) no acumulan stats → se excluyen.
     const snap = await getDocs(collection(db, 'matches', matchId, 'registrations'))
     playerRows.value = snap.docs
-      .filter((d) => !d.data().isOnWaitlist)
+      .filter((d) => !d.data().isOnWaitlist && d.data().userId)
       .map((d) => ({
         userId: d.data().userId,
         displayName: d.data().displayName,
         photoURL: d.data().photoURL,
-        team: d.data().team ?? 'A',
+        team: d.data().team ?? null,
         goals: 0,
         assists: 0,
       }))
+
+    // Si ya había stats cargadas, pre-rellena para poder corregir sin duplicar
+    const statsSnap = await getDocs(collection(db, 'matches', matchId, 'playerStats'))
+    if (!statsSnap.empty) {
+      const byId = new Map(statsSnap.docs.map((d) => [d.id, d.data()]))
+      playerRows.value = playerRows.value.map((p) => {
+        const prev = byId.get(p.userId)
+        return prev
+          ? { ...p, goals: prev.goals ?? 0, assists: prev.assists ?? 0, team: prev.team ?? p.team }
+          : p
+      })
+    }
   } finally {
     loadingMatch.value = false
   }
@@ -175,7 +189,7 @@ async function handleSave() {
     await savePlayerStats(matchId, playerRows.value, match.value.groupId ?? null)
 
     $q.notify({ type: 'positive', message: 'Resultado guardado correctamente.' })
-    router.push({ name: 'admin-dashboard' })
+    router.push({ name: 'match-detail', params: { id: matchId } })
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message })
   } finally {

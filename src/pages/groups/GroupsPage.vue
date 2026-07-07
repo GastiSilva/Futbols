@@ -7,9 +7,10 @@
       </div>
       <q-btn
         unelevated
-        color="green-9"
+        color="primary"
         icon="add"
         label="Crear grupo"
+        class="pill-btn"
         @click="showCreateDialog = true"
       />
     </div>
@@ -153,9 +154,10 @@
             <q-btn flat label="Cancelar" @click="closeCreateDialog" :disable="creating" />
             <q-btn
               unelevated
-              color="green-9"
+              color="primary"
               label="Crear"
               type="submit"
+              class="pill-btn"
               :loading="creating"
             />
           </q-card-actions>

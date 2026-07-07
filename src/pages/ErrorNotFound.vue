@@ -6,9 +6,10 @@
       <div class="text-h6 text-grey-7 q-mb-lg">Página no encontrada</div>
       <q-btn
         unelevated
-        color="green-9"
+        color="primary"
         label="Volver al inicio"
         icon="home"
+        class="pill-btn"
         :to="{ name: 'player-dashboard' }"
       />
     </div>

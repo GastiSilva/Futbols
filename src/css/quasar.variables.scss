@@ -12,14 +12,19 @@
 // to match your app's branding.
 // Tip: Use the "Theme Builder" on Quasar's documentation website.
 
-$primary   : #2e7d32;
-$secondary : #558b2f;
-$accent    : #f9a825;
+// Tema "cancha de noche": fondo casi negro + verde césped neón como acento.
+$primary   : #4ADE80;
+$secondary : #16A34A;
+$accent    : #FBBF24;
 
-$dark      : #1d1d1d;
-$dark-page : #121212;
+$dark      : #141B17;
+$dark-page : #0A0F0D;
 
-$positive  : #21ba45;
-$negative  : #c10015;
-$info      : #31ccec;
-$warning   : #f2c037;
+$positive  : #4ADE80;
+$negative  : #FF5470;
+$info      : #38BDF8;
+$warning   : #FBBF24;
+
+// Redondeo general (cards, banners, inputs) — look más "sporty/soft" acorde
+// a la referencia de diseño (tarjetas y campos bien redondeados).
+$generic-border-radius: 14px;

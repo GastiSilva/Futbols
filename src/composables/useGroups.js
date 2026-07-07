@@ -371,6 +371,11 @@ export function useGroups() {
     await updateDoc(doc(db, 'groups', groupId, 'members', userId), { role: 'admin' })
   }
 
+  // ── Marcar / desmarcar OG (acceso anticipado 30 min a las listas) ──────────
+  async function setMemberOG(groupId, userId, og) {
+    await updateDoc(doc(db, 'groups', groupId, 'members', userId), { og: !!og })
+  }
+
   // ── Obtener mi rol en el grupo ─────────────────────────────────────────────
   async function getMyRole(groupId) {
     const uid = authStore.user.uid
@@ -407,6 +412,7 @@ export function useGroups() {
     leaveGroup,
     removeMember,
     promoteToAdmin,
+    setMemberOG,
     getMyRole,
     regenerateInviteCode,
   }

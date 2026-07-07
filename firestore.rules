@@ -27,9 +27,31 @@ service cloud.firestore {
         && stats.matchesPlayed is int && stats.matchesPlayed >= 0;
     }
 
-    function isOG() {
-      return isAuthenticated() &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'og';
+    // OG por grupo: el usuario es OG en el grupo al que pertenece el partido.
+    function isOgInGroup(groupId) {
+      return isAuthenticated()
+        && groupId != null
+        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.get('og', false) == true;
+    }
+
+    function isOgInMatchGroup(matchId) {
+      return isOgInGroup(
+        get(/databases/$(database)/documents/matches/$(matchId)).data.get('groupId', null)
+      );
+    }
+
+    // Membresía de grupo: el usuario pertenece al grupo.
+    function isMemberOfGroup(groupId) {
+      return isAuthenticated()
+        && groupId != null
+        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+
+    function isMemberOfMatchGroup(matchId) {
+      return isMemberOfGroup(
+        get(/databases/$(database)/documents/matches/$(matchId)).data.get('groupId', null)
+      );
     }
 
     function isGroupAdmin(groupId) {
@@ -82,9 +104,11 @@ service cloud.firestore {
 
         ||
 
-        // SOLO admins u OG modifican stats (total y por grupo)
+        // Stats (total y por grupo): el acumulador lo escribe la Cloud Function
+        // onPlayerStatsWritten (admin SDK, ignora estas reglas). Desde el cliente
+        // solo un admin global puede tocarlas manualmente.
         (
-          (isAdmin() || isOG())
+          isAdmin()
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['stats', 'statsByGroup', 'updatedAt'])
         )
@@ -109,8 +133,14 @@ service cloud.firestore {
 
       allow read: if isAuthenticated();
 
-      // Solo admins crean partidos
-      allow create: if isAdmin();
+      // Crean partidos: admins globales, o el owner/admin del grupo del partido
+      allow create: if
+        isAdmin()
+        || (
+          request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.groupId != null
+          && isGroupAdmin(request.resource.data.groupId)
+        );
 
       // ── UPDATE MATCH ──────────────────────────────────────────────────────
       allow update: if
@@ -129,9 +159,9 @@ service cloud.firestore {
 
         ||
 
-        // SOLO admins y OG pueden cargar resultados
+        // Cargar el resultado: cualquier miembro del grupo del partido (o admin)
         (
-          (isAdmin() || isOG())
+          (isAdmin() || isMemberOfMatchGroup(matchId))
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['scoreA', 'scoreB', 'status', 'updatedAt'])
         );
@@ -145,34 +175,61 @@ service cloud.firestore {
 
         allow read: if isAuthenticated();
 
-        // Usuario se anota a sí mismo
+        // ── ALTA ──────────────────────────────────────────────────────────
+        // Se puede anotar: a uno mismo, a un invitado sin cuenta, o a otro
+        // miembro existente. En los tres casos debe estar abierta la ventana.
         allow create: if
-          isOwner(userId)
+          isAuthenticated()
 
-          && request.resource.data.userId == request.auth.uid
-
-          // Partido abierto por tiempo
+          // Ventana abierta (o 30 min antes si el anotador es OG del grupo)
           && (
             request.time >=
             get(/databases/$(database)/documents/matches/$(matchId)).data.openAt
 
             ||
 
-            // OG entra 30 mins antes
             (
-              isOG()
+              isOgInMatchGroup(matchId)
               &&
               request.time >=
               get(/databases/$(database)/documents/matches/$(matchId)).data.openAt
               - duration.value(30, 'm')
+            )
+          )
+
+          && (
+            // (a) me anoto yo mismo (docId = mi uid)
+            (
+              isOwner(userId)
+              && request.resource.data.userId == request.auth.uid
+            )
+
+            ||
+
+            // (b) anoto a un invitado sin cuenta (docId autogenerado)
+            (
+              request.resource.data.isGuest == true
+              && request.resource.data.addedBy == request.auth.uid
+            )
+
+            ||
+
+            // (c) anoto a otro miembro existente (docId = uid del anotado)
+            (
+              request.resource.data.isGuest == false
+              && request.resource.data.userId == userId
+              && request.resource.data.addedBy == request.auth.uid
             )
           );
 
         // Admin o dueño modifica inscripción
         allow update: if isAdmin() || isOwner(userId);
 
-        // Cancelar inscripción
-        allow delete: if isOwner(userId) || isAdmin();
+        // Cancelar inscripción: uno mismo, admin, o quien lo anotó (invitado/miembro)
+        allow delete: if
+          isOwner(userId)
+          || isAdmin()
+          || resource.data.get('addedBy', '') == request.auth.uid;
       }
 
       // ──────────────────────────────────────────────────────────────────────
@@ -182,8 +239,10 @@ service cloud.firestore {
 
         allow read: if isAuthenticated();
 
-        // SOLO admin u OG pueden cargar stats
-        allow write: if isAdmin() || isOG();
+        // Cargar stats individuales: cualquier miembro del grupo del partido (o admin).
+        // El acumulador en users/{uid} lo escribe la Cloud Function onPlayerStatsWritten
+        // (admin SDK), no el cliente.
+        allow write: if isAdmin() || isMemberOfMatchGroup(matchId);
       }
     }
 

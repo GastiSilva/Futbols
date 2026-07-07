@@ -28,15 +28,18 @@ export default configure(function (/* ctx */) {
     // ── Quasar plugins & componentes ────────────────────────────────────────
     framework: {
       config: {
+        // Tema oscuro tipo "pitch at night": fondo casi negro + acento verde césped neón.
+        dark: true,
         brand: {
-          primary:   '#2e7d32',  // green-8
-          secondary: '#558b2f',
-          accent:    '#f9a825',
-          dark:      '#1d1d1d',
-          positive:  '#21ba45',
-          negative:  '#c10015',
-          info:      '#31ccec',
-          warning:   '#f2c037',
+          primary:   '#4ADE80',  // verde césped neón — acento principal (CTAs, activo, íconos)
+          secondary: '#16A34A',  // verde más profundo — apoyo secundario
+          accent:    '#FBBF24',  // dorado — medallas / destacados
+          dark:      '#141B17',  // superficie de componentes (cards, drawer, dialogs)
+          'dark-page': '#0A0F0D', // fondo de página
+          positive:  '#4ADE80',
+          negative:  '#FF5470',
+          info:      '#38BDF8',
+          warning:   '#FBBF24',
         },
         notify: { position: 'top', timeout: 3000 },
         loading: {},
@@ -60,14 +63,14 @@ export default configure(function (/* ctx */) {
         description: 'Organizá tus partidos de fútbol con amigos',
         display: 'standalone',
         orientation: 'portrait',
-        background_color: '#ffffff',
-        theme_color: '#2e7d32',
+        background_color: '#0A0F0D',
+        theme_color: '#0A0F0D',
         icons: [
           { src: 'icons/icon-128x128.png', sizes: '128x128', type: 'image/png' },
-          { src: 'icons/icon-192x192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'icons/icon-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
           { src: 'icons/icon-256x256.png', sizes: '256x256', type: 'image/png' },
           { src: 'icons/icon-384x384.png', sizes: '384x384', type: 'image/png' },
-          { src: 'icons/icon-512x512.png', sizes: '512x512', type: 'image/png' },
+          { src: 'icons/icon-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
         ],
       },
     },
