@@ -38,6 +38,7 @@
       <q-tabs v-model="tab" align="left" active-color="green-8" indicator-color="green-8">
         <q-tab name="goals" label="Goleadores" icon="sports_soccer" />
         <q-tab name="assists" label="Asistidores" icon="assistant" />
+        <q-tab name="mvps" label="MVPs" icon="military_tech" />
       </q-tabs>
 
       <q-separator />
@@ -137,6 +138,51 @@
           </q-item>
         </q-list>
       </q-tab-panel>
+
+      <!-- ── MVPs ────────────────────────────────────────────────────── -->
+      <q-tab-panel name="mvps" class="q-pa-none">
+        <q-list separator>
+          <q-item v-if="activeMvps.length === 0" class="text-grey-6 text-center q-pa-lg">
+            <q-item-section>Sin datos</q-item-section>
+          </q-item>
+          <q-item
+            v-for="(player, idx) in activeMvps"
+            :key="player.id"
+            :class="idx < 3 ? 'bg-orange-1' : ''"
+          >
+            <q-item-section avatar>
+              <q-avatar
+                :color="medalColor(idx)"
+                text-color="white"
+                size="36px"
+                font-size="16px"
+              >
+                {{ idx < 3 ? ['🥇', '🥈', '🥉'][idx] : idx + 1 }}
+              </q-avatar>
+            </q-item-section>
+
+            <q-item-section avatar>
+              <q-avatar size="40px">
+                <img :src="player.photoURL" :alt="player.displayName" referrerpolicy="no-referrer" />
+              </q-avatar>
+            </q-item-section>
+
+            <q-item-section>
+              <q-item-label class="text-weight-bold">{{ player.displayName }}</q-item-label>
+              <q-item-label caption>{{ player.stats?.matchesPlayed ?? 0 }} partidos</q-item-label>
+            </q-item-section>
+
+            <q-item-section side>
+              <div class="column items-end">
+                <span class="text-h6 text-weight-bold text-amber-8">
+                  {{ player.stats?.mvps ?? 0 }}
+                </span>
+                <span class="text-caption text-grey-6">MVPs</span>
+              </div>
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </q-tab-panel>
       </q-tab-panels>
     </template>
   </q-page>
@@ -154,6 +200,7 @@ const groupOptions = ref([])
 const {
   groupScorers: activeScorers,
   groupAssisters: activeAssisters,
+  groupMvps: activeMvps,
   loadingGroup,
   fetchGroupRanking,
   clearGroupRanking,

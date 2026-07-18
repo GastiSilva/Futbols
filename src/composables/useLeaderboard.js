@@ -12,6 +12,7 @@ import { db } from 'src/services/firebase'
 export function useLeaderboard() {
   const groupScorers = ref([])
   const groupAssisters = ref([])
+  const groupMvps = ref([])
   const loadingGroup = ref(false)
 
   // ── Ranking filtrado por miembros de un grupo ─────────────────────────────
@@ -21,6 +22,7 @@ export function useLeaderboard() {
     if (!memberIds || memberIds.length === 0 || !groupId) {
       groupScorers.value = []
       groupAssisters.value = []
+      groupMvps.value = []
       return
     }
     loadingGroup.value = true
@@ -44,7 +46,7 @@ export function useLeaderboard() {
       // Normaliza: cada jugador expone sus stats DE ESTE GRUPO en `.stats`
       const usersWithGroupStats = users.map((u) => ({
         ...u,
-        stats: u.statsByGroup?.[groupId] ?? { goals: 0, assists: 0, matchesPlayed: 0 },
+        stats: u.statsByGroup?.[groupId] ?? { goals: 0, assists: 0, matchesPlayed: 0, mvps: 0 },
       }))
 
       groupScorers.value = [...usersWithGroupStats].sort(
@@ -52,6 +54,9 @@ export function useLeaderboard() {
       )
       groupAssisters.value = [...usersWithGroupStats].sort(
         (a, b) => (b.stats?.assists ?? 0) - (a.stats?.assists ?? 0),
+      )
+      groupMvps.value = [...usersWithGroupStats].sort(
+        (a, b) => (b.stats?.mvps ?? 0) - (a.stats?.mvps ?? 0),
       )
     } finally {
       loadingGroup.value = false
@@ -61,11 +66,13 @@ export function useLeaderboard() {
   function clearGroupRanking() {
     groupScorers.value = []
     groupAssisters.value = []
+    groupMvps.value = []
   }
 
   return {
     groupScorers,
     groupAssisters,
+    groupMvps,
     loadingGroup,
     fetchGroupRanking,
     clearGroupRanking,

@@ -38,7 +38,7 @@ async function initFCMInBackground() {
       // Mostrar notificación
       swReg.showNotification(title ?? '⚽ Futbols', {
         body: body ?? 'Tienes un nuevo mensaje',
-        icon: '/icons/icon-192x192.png',
+        icon: '/icons/brazuca.png',       // pelota de futbol
         badge: '/icons/icon-128x128.png',
         data: payload.data,
       })

@@ -33,6 +33,20 @@ const routes = [
         component: () => import('src/pages/player/LeaderboardPage.vue'),
         meta: { requiresAuth: true },
       },
+      {
+        // Perfil propio del usuario (cada uno ve solo el suyo)
+        path: 'perfil',
+        name: 'profile',
+        component: () => import('src/pages/player/ProfilePage.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
+        // Sedes / canchas donde se juegan los partidos
+        path: 'sedes',
+        name: 'venues',
+        component: () => import('src/pages/venues/VenuesPage.vue'),
+        meta: { requiresAuth: true },
+      },
 
       // Grupos
       {

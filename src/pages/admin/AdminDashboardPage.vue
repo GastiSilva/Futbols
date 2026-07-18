@@ -16,6 +16,26 @@
         </q-card>
       </div>
 
+      <!-- Recalcular estadísticas -->
+      <div class="col-12 col-sm-6 col-md-4">
+        <q-card
+          flat
+          bordered
+          class="cursor-pointer"
+          :class="{ 'bg-grey-2': recalculating }"
+          @click="handleRecalcStats"
+        >
+          <q-card-section class="text-center q-pa-lg">
+            <q-spinner-dots v-if="recalculating" size="48px" color="orange-8" />
+            <q-icon v-else name="calculate" size="48px" color="orange-8" />
+            <div class="text-subtitle1 text-weight-bold q-mt-sm">Recalcular estadísticas</div>
+            <div class="text-caption text-grey-6">
+              Reconstruye goles/asistencias/MVPs de todos los perfiles
+            </div>
+          </q-card-section>
+        </q-card>
+      </div>
+
       <!-- Lista de partidos activos -->
       <div class="col-12">
         <div class="text-subtitle1 text-weight-bold q-mb-sm">Partidos activos</div>
@@ -220,6 +240,37 @@ onMounted(async () => {
 })
 onUnmounted(() => stopListening())
 
+// ── Recalcular estadísticas de todos los usuarios ────────────────────────────
+const recalculating = ref(false)
+
+function handleRecalcStats() {
+  if (recalculating.value) return
+  $q.dialog({
+    title: 'Recalcular estadísticas',
+    message:
+      'Se van a reconstruir los goles, asistencias, partidos jugados y MVPs de TODOS los usuarios a partir de los resultados guardados. ¿Continuar?',
+    cancel: { flat: true, label: 'Cancelar' },
+    ok: { unelevated: true, color: 'orange-8', label: 'Recalcular' },
+    persistent: true,
+  }).onOk(async () => {
+    recalculating.value = true
+    try {
+      const fn = httpsCallable(functions, 'recalcAllStats')
+      const { data } = await fn()
+      $q.notify({
+        type: 'positive',
+        icon: 'check_circle',
+        message: `Estadísticas recalculadas: ${data.playerStats} registros → ${data.users} usuarios.`,
+        timeout: 6000,
+      })
+    } catch (err) {
+      $q.notify({ type: 'negative', message: `Error al recalcular: ${err.message}` })
+    } finally {
+      recalculating.value = false
+    }
+  })
+}
+
 async function setRole(u, newRole) {
   if (u.role === newRole) return
   settingRoleFor.value = u.id
@@ -279,12 +330,12 @@ function formatDate(ts) {
 }
 
 function statusLabel(s) {
-  const map = { scheduled: 'Programado', open: 'Abierto', closed: 'Completo', finished: 'Finalizado' }
+  const map = { scheduled: 'Programado', open: 'Abierto', full: 'Completo', closed: 'Cerrado', finished: 'Finalizado' }
   return map[s] ?? s
 }
 
 function statusColor(s) {
-  const map = { scheduled: 'blue-grey-6', open: 'green-7', closed: 'orange-7', finished: 'grey-6' }
+  const map = { scheduled: 'blue-grey-6', open: 'green-7', full: 'orange-7', closed: 'red-7', finished: 'grey-6' }
   return map[s] ?? 'grey'
 }
 </script>

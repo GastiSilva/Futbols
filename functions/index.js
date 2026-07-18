@@ -1,7 +1,7 @@
 ﻿// functions/index.js
 const { onCall, HttpsError } = require('firebase-functions/v2/https')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
-const { onDocumentUpdated, onDocumentWritten } = require('firebase-functions/v2/firestore')
+const { onDocumentUpdated, onDocumentWritten, onDocumentDeleted } = require('firebase-functions/v2/firestore')
 const logger = require('firebase-functions/logger')
 const admin = require('firebase-admin')
 
@@ -228,10 +228,12 @@ exports.processMatchReminderQueue = onSchedule(
       const timeStr = openAt
         ? new Date(openAt).toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit' })
         : 'en breve'
+      const alreadyRegistered = await getRegisteredUserIds(matchId)
       await sendFCMToAllUsers(
         '⏰ ¡La lista abre pronto!',
         `La lista para "${matchTitle}" se abre a las ${timeStr}. ¡Anotáte!`,
         { matchId, type: 'match_reminder' },
+        alreadyRegistered,
       )
       logger.info(`Recordatorio enviado por scheduler: ${matchId}`)
     }
@@ -262,10 +264,12 @@ exports.processMatchOpenNotificationQueue = onSchedule(
     await writeBatch.commit()
 
     for (const { matchId, matchTitle } of toProcess) {
+      const alreadyRegistered = await getRegisteredUserIds(matchId)
       await sendFCMToAllUsers(
         '⚽ ¡Se abrió la lista!',
         `Ya podés anotarte al partido: "${matchTitle}"`,
         { matchId, type: 'match_open' },
+        alreadyRegistered,
       )
       logger.info(`Notificación de apertura enviada: ${matchId}`)
     }
@@ -346,10 +350,12 @@ exports.onMatchOpened = onDocumentUpdated(
       const title = after.title || 'un partido'
 
       logger.info(`onMatchOpened: Enviando notificación para ${matchId}`)
+      const alreadyRegistered = await getRegisteredUserIds(matchId)
       await sendFCMToAllUsers(
         '⚽ ¡Se abrió la lista!',
         'Ya podés anotarte al partido: ' + title,
         { matchId: matchId, type: 'match_open' },
+        alreadyRegistered,
       )
       logger.info(`onMatchOpened: Notificación enviada para ${matchId}`)
     } catch (error) {
@@ -377,8 +383,19 @@ exports.onPlayerStatsWritten = onDocumentWritten(
       const dGoals = (after?.goals ?? 0) - (before?.goals ?? 0)
       const dAssists = (after?.assists ?? 0) - (before?.assists ?? 0)
       const dPlayed = (after ? 1 : 0) - (before ? 1 : 0)
+      const dMvps = (after?.mvp === true ? 1 : 0) - (before?.mvp === true ? 1 : 0)
+      // Resultado del jugador (W/E/L) guardado en la fila → contadores por diferencia
+      const countRes = (row, code) => (row?.result === code ? 1 : 0)
+      const dWins = countRes(after, 'W') - countRes(before, 'W')
+      const dDraws = countRes(after, 'E') - countRes(before, 'E')
+      const dLosses = countRes(after, 'L') - countRes(before, 'L')
 
-      if (dGoals === 0 && dAssists === 0 && dPlayed === 0) return
+      if (
+        dGoals === 0 && dAssists === 0 && dPlayed === 0 && dMvps === 0 &&
+        dWins === 0 && dDraws === 0 && dLosses === 0
+      ) {
+        return
+      }
 
       const groupId = after?.groupId ?? before?.groupId ?? null
       const inc = admin.firestore.FieldValue.increment
@@ -387,20 +404,204 @@ exports.onPlayerStatsWritten = onDocumentWritten(
         'stats.goals': inc(dGoals),
         'stats.assists': inc(dAssists),
         'stats.matchesPlayed': inc(dPlayed),
+        'stats.mvps': inc(dMvps),
+        'stats.wins': inc(dWins),
+        'stats.draws': inc(dDraws),
+        'stats.losses': inc(dLosses),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }
       if (groupId) {
         updates[`statsByGroup.${groupId}.goals`] = inc(dGoals)
         updates[`statsByGroup.${groupId}.assists`] = inc(dAssists)
         updates[`statsByGroup.${groupId}.matchesPlayed`] = inc(dPlayed)
+        updates[`statsByGroup.${groupId}.mvps`] = inc(dMvps)
+        updates[`statsByGroup.${groupId}.wins`] = inc(dWins)
+        updates[`statsByGroup.${groupId}.draws`] = inc(dDraws)
+        updates[`statsByGroup.${groupId}.losses`] = inc(dLosses)
       }
 
       // update() (no set/merge): las claves con punto son PATHS anidados.
       // increment() inicializa el campo si no existía. Los users siempre existen.
       await admin.firestore().collection('users').doc(userId).update(updates)
-      logger.info(`Stats acumuladas para ${userId} (Δg=${dGoals}, Δa=${dAssists}, Δp=${dPlayed})`)
+      logger.info(`Stats acumuladas para ${userId} (Δg=${dGoals}, Δa=${dAssists}, Δp=${dPlayed}, Δmvp=${dMvps})`)
     } catch (error) {
       logger.error('onPlayerStatsWritten: error', error)
+    }
+  },
+)
+
+// ── 12. Callable: RECALCULAR todas las estadísticas desde cero (solo admin) ──
+// El acumulador onPlayerStatsWritten suma por DIFERENCIA, así que los
+// resultados cargados cuando la función no estaba desplegada quedaron sin
+// acumular (y re-guardarlos da diferencia 0). Esta función reconstruye
+// stats/statsByGroup de TODOS los usuarios a partir de los playerStats
+// guardados en los partidos. Es idempotente: se puede correr las veces
+// que haga falta.
+exports.recalcAllStats = onCall(
+  { region: LOCATION, invoker: 'public' },
+  async (request) => {
+    if (!request.auth?.token?.admin) {
+      throw new HttpsError('permission-denied', 'Solo admins pueden recalcular estadísticas.')
+    }
+
+    const db = admin.firestore()
+    const zero = () => ({
+      goals: 0, assists: 0, matchesPlayed: 0, mvps: 0, wins: 0, draws: 0, losses: 0,
+    })
+
+    // 1. Agregar todos los playerStats de todos los partidos
+    const statsSnap = await db.collectionGroup('playerStats').get()
+    const byUser = new Map()
+
+    statsSnap.docs.forEach((d) => {
+      const s = d.data()
+      if (!s.userId) return // invitados sin cuenta no acumulan
+
+      const agg = byUser.get(s.userId) ?? { stats: zero(), byGroup: {} }
+      const apply = (t) => {
+        t.goals += Number(s.goals) || 0
+        t.assists += Number(s.assists) || 0
+        t.matchesPlayed += 1
+        t.mvps += s.mvp === true ? 1 : 0
+        t.wins += s.result === 'W' ? 1 : 0
+        t.draws += s.result === 'E' ? 1 : 0
+        t.losses += s.result === 'L' ? 1 : 0
+      }
+      apply(agg.stats)
+      if (s.groupId) {
+        agg.byGroup[s.groupId] = agg.byGroup[s.groupId] ?? zero()
+        apply(agg.byGroup[s.groupId])
+      }
+      byUser.set(s.userId, agg)
+    })
+
+    // 2. Sobrescribir los acumuladores de TODOS los usuarios (los que no
+    //    tienen stats quedan en cero, corrigiendo restos viejos)
+    const usersSnap = await db.collection('users').get()
+    let batch = db.batch()
+    let ops = 0
+
+    for (const userDoc of usersSnap.docs) {
+      const agg = byUser.get(userDoc.id) ?? { stats: zero(), byGroup: {} }
+      batch.update(userDoc.ref, {
+        stats: agg.stats,
+        statsByGroup: agg.byGroup,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      ops += 1
+      if (ops >= 450) {
+        await batch.commit()
+        batch = db.batch()
+        ops = 0
+      }
+    }
+    if (ops > 0) await batch.commit()
+
+    logger.info(
+      `recalcAllStats: ${statsSnap.size} playerStats → ${usersSnap.size} usuarios actualizados`,
+    )
+    return { success: true, playerStats: statsSnap.size, users: usersSnap.size }
+  },
+)
+
+// ── 11. Trigger: al borrarse una inscripción, re-numerar y promover suplentes ─
+// Cuando alguien se baja (o lo sacan) de un partido:
+//  1. Re-numera las posiciones de todas las inscripciones (1..N, sin huecos).
+//  2. Recalcula isOnWaitlist (position > maxPlayers).
+//  3. Si un suplente pasó a titular, le manda una notificación FCM.
+exports.onRegistrationDeleted = onDocumentDeleted(
+  { region: LOCATION, document: 'matches/{matchId}/registrations/{regId}' },
+  async (event) => {
+    try {
+      const { matchId } = event.params
+      const db = admin.firestore()
+      const matchRef = db.collection('matches').doc(matchId)
+
+      // Datos de la inscripción que se borró (para avisar quién se bajó)
+      const deletedReg = event.data?.data() ?? {}
+      const leaverName = deletedReg.displayName || deletedReg.guestName || 'Alguien'
+      const leaverUserId = deletedReg.userId ?? null
+
+      const info = await db.runTransaction(async (tx) => {
+        const matchSnap = await tx.get(matchRef)
+        if (!matchSnap.exists) return null
+
+        const match = matchSnap.data()
+        // En partidos terminados no tiene sentido promover ni avisar
+        if (match.status === 'finished') return null
+
+        const maxPlayers = match.maxPlayers ?? 0
+        const regsSnap = await tx.get(
+          matchRef.collection('registrations').orderBy('position', 'asc'),
+        )
+
+        const promotedUsers = []
+        const registeredUserIds = []
+        let pos = 0
+        regsSnap.docs.forEach((docSnap) => {
+          pos += 1
+          const reg = docSnap.data()
+          const isOnWaitlist = pos > maxPlayers
+
+          if (reg.position !== pos || reg.isOnWaitlist !== isOnWaitlist) {
+            tx.update(docSnap.ref, { position: pos, isOnWaitlist })
+          }
+          if (reg.userId) registeredUserIds.push(reg.userId)
+
+          // Estaba en lista de espera y ahora entra como titular
+          if (reg.isOnWaitlist === true && !isOnWaitlist && reg.userId) {
+            promotedUsers.push(reg.userId)
+          }
+        })
+
+        return {
+          matchTitle: match.title ?? 'un partido',
+          promoted: promotedUsers,
+          createdBy: match.createdBy ?? null,
+          status: match.status ?? null,
+          // ¿Quedó un lugar libre de verdad? (lista abierta y cupo sin llenar,
+          // es decir sin suplentes que tapen el hueco)
+          spotOpen: match.status === 'open' && regsSnap.size < maxPlayers,
+          registeredUserIds,
+        }
+      })
+
+      if (!info) return
+      const { matchTitle, promoted, createdBy, spotOpen, registeredUserIds } = info
+
+      // 1) Suplentes que ascendieron a titular: aviso personal
+      for (const userId of promoted) {
+        await sendFCMToUser(
+          userId,
+          '🎉 ¡Entraste a la lista!',
+          `Se liberó un lugar en "${matchTitle}" y pasaste de suplente a titular.`,
+          { matchId, type: 'waitlist_promoted' },
+        )
+        logger.info(`Suplente promovido y notificado: ${userId} (partido ${matchId})`)
+      }
+
+      if (promoted.length === 0 && spotOpen) {
+        // 2) No había suplentes y quedó lugar → avisar a TODOS (menos los anotados)
+        await sendFCMToAllUsers(
+          '⚽ ¡Se liberó un lugar!',
+          `Se bajó ${leaverName} de "${matchTitle}". ¡Hay lugar, anotáte!`,
+          { matchId, type: 'spot_available' },
+          registeredUserIds,
+        )
+        logger.info(`Lugar libre en ${matchId}: broadcast a todos (se bajó ${leaverName})`)
+      } else if (createdBy && createdBy !== leaverUserId) {
+        // 3) El lugar se tapó con un suplente (o la lista no está abierta):
+        //    solo avisamos al organizador que alguien se bajó.
+        await sendFCMToUser(
+          createdBy,
+          '📋 Se bajó un jugador',
+          `${leaverName} se bajó de "${matchTitle}".`,
+          { matchId, type: 'registration_left' },
+        )
+        logger.info(`Organizador ${createdBy} notificado: se bajó ${leaverName} (${matchId})`)
+      }
+    } catch (error) {
+      logger.error('onRegistrationDeleted: error', error)
     }
   },
 )
@@ -458,7 +659,7 @@ async function dispatchFCM(tokens, title, body, data) {
       data,
       webpush: {
         notification: {
-          icon: '/icons/icon-192x192.png',
+          icon: '/icons/brazuca.png',
           badge: '/icons/icon-128x128.png',
           requireInteraction: true,
         },
@@ -483,25 +684,30 @@ async function dispatchFCM(tokens, title, body, data) {
   return invalidTokens
 }
 
-// ── 9c. Helper: enviar FCM solo a los OG de un grupo ─────────────────────────
+// ── 9c. Helper: enviar FCM a los miembros con ACCESO ANTICIPADO de un grupo ──
+// Acceso anticipado = OG (og == true) u owner/admin del grupo.
 async function sendFCMToGroupOGs(groupId, title, body, data) {
   if (!groupId) return
   const db = admin.firestore()
+  const membersCol = db.collection('groups').doc(groupId).collection('members')
 
-  const ogMembersSnap = await db
-    .collection('groups').doc(groupId)
-    .collection('members')
-    .where('og', '==', true)
-    .get()
+  const [ogSnap, managersSnap] = await Promise.all([
+    membersCol.where('og', '==', true).get(),
+    membersCol.where('role', 'in', ['owner', 'admin']).get(),
+  ])
 
-  const ogUserIds = ogMembersSnap.docs.map((d) => d.data().userId).filter(Boolean)
-  logger.info(`[FCM] sendFCMToGroupOGs(${groupId}) → OGs: ${ogUserIds.length}`)
-  if (ogUserIds.length === 0) return
+  const userIdSet = new Set()
+  ogSnap.docs.forEach((d) => d.data().userId && userIdSet.add(d.data().userId))
+  managersSnap.docs.forEach((d) => d.data().userId && userIdSet.add(d.data().userId))
+  const earlyUserIds = [...userIdSet]
+
+  logger.info(`[FCM] sendFCMToGroupOGs(${groupId}) → acceso anticipado: ${earlyUserIds.length}`)
+  if (earlyUserIds.length === 0) return
 
   // Firestore limita `in` a 30 elementos → leer en tandas
   const userDocs = []
-  for (let i = 0; i < ogUserIds.length; i += 30) {
-    const chunk = ogUserIds.slice(i, i + 30)
+  for (let i = 0; i < earlyUserIds.length; i += 30) {
+    const chunk = earlyUserIds.slice(i, i + 30)
     const usersSnap = await db
       .collection('users')
       .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
@@ -514,12 +720,50 @@ async function sendFCMToGroupOGs(groupId, title, body, data) {
   await dispatchFCM(tokens, title, body, data)
 }
 
-// ── 9. Helper: enviar FCM a todos los usuarios
-async function sendFCMToAllUsers(title, body, data) {
+// ── 9d. Helper: enviar FCM a UN usuario puntual ──────────────────────────────
+async function sendFCMToUser(userId, title, body, data) {
+  if (!userId) return
   const db = admin.firestore()
+  const userSnap = await db.collection('users').doc(userId).get()
+  if (!userSnap.exists) return
+
+  const tokens = collectTokensFromUserDocs([userSnap])
+  logger.info(`[FCM] sendFCMToUser(${userId}) → tokens: ${tokens.length}`)
+  if (tokens.length === 0) return
+
+  await dispatchFCM(tokens, title, body, data)
+}
+
+// ── 9e. Helper: IDs de usuarios ya anotados a un partido ─────────────────────
+// (los invitados/guests tienen userId === null, así que quedan afuera solos)
+async function getRegisteredUserIds(matchId) {
+  if (!matchId) return []
+  const db = admin.firestore()
+  const snap = await db
+    .collection('matches')
+    .doc(matchId)
+    .collection('registrations')
+    .select('userId')
+    .get()
+  const ids = []
+  snap.docs.forEach((d) => {
+    const uid = d.data().userId
+    if (uid) ids.push(uid)
+  })
+  return ids
+}
+
+// ── 9. Helper: enviar FCM a todos los usuarios
+// `excludeUserIds`: uids que NO deben recibir la notificación (p. ej. ya anotados)
+async function sendFCMToAllUsers(title, body, data, excludeUserIds = []) {
+  const db = admin.firestore()
+  const excludeSet = new Set(excludeUserIds)
   const usersSnap = await db.collection('users').select('fcmToken', 'fcmTokens').get()
-  const tokens = collectTokensFromUserDocs(usersSnap.docs)
-  logger.info(`[FCM] sendFCMToAllUsers → tokens encontrados: ${tokens.length}`)
+  const includedDocs = usersSnap.docs.filter((d) => !excludeSet.has(d.id))
+  const tokens = collectTokensFromUserDocs(includedDocs)
+  logger.info(
+    `[FCM] sendFCMToAllUsers → tokens: ${tokens.length} (excluidos ${excludeSet.size} usuarios)`,
+  )
   if (tokens.length === 0) return
 
   const invalidTokens = await dispatchFCM(tokens, title, body, data)

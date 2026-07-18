@@ -103,7 +103,7 @@
         {{ group.description }}
       </div>
 
-      <!-- ── Enlace de invitación ──────────────────────────────────────────── -->
+      <!-- ── Enlace de invitación (visible para todos los miembros) ────────── -->
       <q-card flat bordered class="q-mb-md">
         <q-card-section>
           <div class="text-subtitle2 text-weight-bold q-mb-sm">
@@ -130,7 +130,7 @@
 
       <!-- ── Solicitudes pendientes (solo admins/owner) ──────────────────────── -->
       <q-expansion-item
-        v-if="(myRole === 'owner' || myRole === 'admin') && joinRequests.length > 0"
+        v-if="canManageGroup && joinRequests.length > 0"
         icon="person_add"
         :label="`Solicitudes pendientes (${joinRequests.length})`"
         header-class="bg-orange-1 text-orange-9 text-weight-bold rounded-borders"
@@ -291,13 +291,13 @@
         />
       </div>
 
-      <!-- ── Partidos del grupo ─────────────────────────────────────────── -->
+      <!-- ── Partidos del grupo (visibles para todos; crear: solo owner/admin) ── -->
       <div class="row items-center justify-between q-mt-xl q-mb-sm">
         <div class="text-subtitle1 text-weight-bold">
           <q-icon name="sports_soccer" class="q-mr-xs text-green-9" />Partidos
         </div>
         <q-btn
-          v-if="myRole === 'owner' || myRole === 'admin'"
+          v-if="canManageGroup"
           unelevated
           dense
           color="green-9"
@@ -389,18 +389,28 @@ const inviteLink = computed(() => {
   return `${window.location.origin}/grupos/unirse?code=${group.value.inviteCode}`
 })
 
+// ¿Puede GESTIONAR el grupo? (aceptar/expulsar miembros, crear partidos,
+// regenerar código, cambiar foto). Todos los miembros ven el enlace, los
+// miembros y los partidos; la gestión queda para owner/admin (o admin global).
+const canManageGroup = computed(
+  () => authStore.isAdmin || myRole.value === 'owner' || myRole.value === 'admin',
+)
+
 onMounted(async () => {
   try {
-    const [g, mems, reqs, role] = await Promise.all([
+    const [g, mems, role] = await Promise.all([
       getGroup(groupId),
       getGroupMembers(groupId),
-      getJoinRequests(groupId),
       getMyRole(groupId),
     ])
     group.value = g
     members.value = mems
-    joinRequests.value = reqs
     myRole.value = role
+
+    // Las solicitudes solo las pueden leer owner/admin (las reglas lo exigen)
+    if (canManageGroup.value) {
+      joinRequests.value = await getJoinRequests(groupId).catch(() => [])
+    }
   } finally {
     loadingGroup.value = false
   }
@@ -586,6 +596,7 @@ function matchStatusLabel(status) {
   return {
     scheduled: 'Programado',
     open: 'Abierto',
+    full: 'Completo',
     closed: 'Cerrado',
     finished: 'Finalizado',
   }[status] ?? status
@@ -595,7 +606,8 @@ function matchStatusColor(status) {
   return {
     scheduled: 'blue-grey-5',
     open: 'green-8',
-    closed: 'orange-7',
+    full: 'orange-7',
+    closed: 'red-7',
     finished: 'grey-6',
   }[status] ?? 'grey-5'
 }

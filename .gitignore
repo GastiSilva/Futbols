@@ -32,5 +32,3 @@ firebase-debug.*.log
 
 serviceAccount.json
 
-quasar*
-package-lock*

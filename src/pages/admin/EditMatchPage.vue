@@ -42,12 +42,41 @@
                 :rules="[val => !!val || 'Campo requerido']"
               />
 
+              <!-- Sede (de la lista, o escrita a mano con el tilde) -->
+              <q-select
+                v-model="form.venueId"
+                :options="venues"
+                option-label="name"
+                option-value="id"
+                emit-value
+                map-options
+                label="Sede"
+                outlined
+                clearable
+                :disable="manualLocation"
+                :hint="manualLocation ? 'Desactivado: estás escribiendo el lugar a mano' : 'Elegí una sede guardada (opcional)'"
+                @update:model-value="onVenueSelected"
+              >
+                <template #prepend>
+                  <q-icon name="stadium" />
+                </template>
+              </q-select>
+
+              <q-toggle
+                v-model="manualLocation"
+                color="green-9"
+                label="La sede no está en la lista (escribir a mano)"
+                dense
+                @update:model-value="onManualLocationToggle"
+              />
+
               <!-- Ubicación -->
               <q-input
                 v-model="form.location"
                 label="Lugar / Cancha"
                 outlined
-                hint="Ej: Cancha Sintética La Plata"
+                :readonly="!manualLocation"
+                :hint="manualLocation ? 'Ej: Cancha Sintética La Plata' : 'Se completa solo al elegir una sede'"
               />
 
               <!-- Fecha y hora del partido -->
@@ -226,6 +255,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useMatch, FORMAT_OPTIONS } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
+import { useVenues } from 'src/composables/useVenues'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from 'src/services/firebase'
 
@@ -235,6 +265,7 @@ const router = useRouter()
 const matchId = route.params.id
 const { fetchMatch, updateMatch } = useMatch()
 const { getMyGroups } = useGroups()
+const { venues, fetchVenues } = useVenues()
 
 const STATUS_OPTIONS = [
   { label: '🕐 Programado', value: 'scheduled' },
@@ -251,6 +282,7 @@ const form = ref({
   groupId: null,
   title: '',
   location: '',
+  venueId: null,
   date: '',
   openAt: '',
   notifyAt: '',
@@ -277,18 +309,22 @@ function formatDateDisplay(iso) {
 
 onMounted(async () => {
   try {
-    ;[groups.value] = await Promise.all([getMyGroups()])
+    const [myGroups] = await Promise.all([getMyGroups(), fetchVenues().catch(() => [])])
+    groups.value = myGroups
     const match = await fetchMatch(matchId)
     form.value = {
       groupId: match.groupId ?? null,
       title: match.title ?? '',
       location: match.location ?? '',
+      venueId: match.venueId ?? null,
       date: toDatetimeLocal(match.date),
       openAt: toDatetimeLocal(match.openAt),
       notifyAt: toDatetimeLocal(match.notifyAt),
       format: match.format ?? null,
       status: match.status ?? 'scheduled',
     }
+    // Si el partido tiene lugar escrito a mano (sin sede), arranca en modo manual
+    manualLocation.value = !match.venueId && !!match.location
   } catch (err) {
     $q.notify({ type: 'negative', message: 'No se pudo cargar el partido' })
     router.back()
@@ -296,6 +332,26 @@ onMounted(async () => {
     loadingMatch.value = false
   }
 })
+
+// Al elegir una sede, autocompleta la ubicación con nombre + dirección
+function onVenueSelected(venueId) {
+  const venue = venues.value.find((v) => v.id === venueId)
+  if (venue) {
+    form.value.location = venue.address ? `${venue.name} — ${venue.address}` : venue.name
+  } else {
+    form.value.location = ''
+  }
+}
+
+// Tilde "sede manual": desactiva el select y habilita el texto libre
+const manualLocation = ref(false)
+
+function onManualLocationToggle(enabled) {
+  if (enabled) {
+    form.value.venueId = null
+    form.value.location = ''
+  }
+}
 
 const selectedFormat = computed(() =>
   FORMAT_OPTIONS.find((f) => f.value === form.value.format),
@@ -326,8 +382,12 @@ function validateNotifyAt() {
 async function handleSubmit() {
   saving.value = true
   try {
-    // Actualiza el partido en Firestore
-    await updateMatch(matchId, form.value)
+    // Actualiza el partido en Firestore (denormaliza el link de Maps de la sede)
+    const selectedVenue = venues.value.find((v) => v.id === form.value.venueId) ?? null
+    await updateMatch(matchId, {
+      ...form.value,
+      venueMapsUrl: selectedVenue?.mapsUrl ?? null,
+    })
 
     // Si se modificó openAt, reprogramar notificaciones
     if (form.value.openAt) {

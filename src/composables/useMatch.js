@@ -35,7 +35,7 @@ export function getMaxPlayers(format) {
 export const MATCH_STATUS = {
   SCHEDULED: 'scheduled', // creado, lista aún cerrada
   OPEN: 'open',           // inscripciones abiertas
-  CLOSED: 'closed',       // cupos llenos o cerrado manualmente
+  CLOSED: 'closed',       // cerrado manualmente (no admite ni suplentes)
   FINISHED: 'finished',   // resultados cargados
 }
 
@@ -46,7 +46,8 @@ export const MATCH_STATUS = {
  * Reglas:
  *  - 'finished' siempre es autoritativo
  *  - 'closed'   siempre es autoritativo
- *  - Si currentPlayers >= maxPlayers → 'closed'
+ *  - Si currentPlayers >= maxPlayers → 'full' (cupo lleno, pero se admite
+ *    anotarse como SUPLENTE en la lista de espera)
  *  - Si 'scheduled' pero openAt ya pasó → 'open'
  *  - Cualquier otro caso respeta el valor de Firestore
  */
@@ -54,7 +55,7 @@ export function getEffectiveStatus(match) {
   if (!match) return null
   if (match.status === 'finished') return 'finished'
   if (match.status === 'closed') return 'closed'
-  if ((match.currentPlayers ?? 0) >= (match.maxPlayers ?? Infinity)) return 'closed'
+  if ((match.currentPlayers ?? 0) >= (match.maxPlayers ?? Infinity)) return 'full'
   if (match.status === 'scheduled') {
     const openAtMillis = match.openAt?.toMillis?.() ?? 0
     if (openAtMillis && Date.now() >= openAtMillis) return 'open'
@@ -129,6 +130,8 @@ export function useMatch() {
       const matchRef = await addDoc(collection(db, 'matches'), {
         title: formData.title,
         location: formData.location ?? '',
+        venueId: formData.venueId ?? null,
+        venueMapsUrl: formData.venueMapsUrl ?? null,
         date,
         openAt,
         notifyAt,
@@ -166,12 +169,16 @@ export function useMatch() {
       await updateDoc(doc(db, 'matches', matchId), {
         title: formData.title,
         location: formData.location ?? '',
+        venueId: formData.venueId ?? null,
+        venueMapsUrl: formData.venueMapsUrl ?? null,
         date,
         openAt,
         notifyAt,
         groupId: formData.groupId ?? null,
         format: formData.format,
         maxPlayers,
+        // El selector "Estado del partido" de EditMatchPage
+        ...(formData.status ? { status: formData.status } : {}),
         updatedAt: serverTimestamp(),
       })
     } catch (err) {
@@ -182,13 +189,15 @@ export function useMatch() {
     }
   }
 
-  // ── Guardar resultado post-partido ────────────────────────────────────────
-  async function saveMatchResult(matchId, { scoreA, scoreB }) {
+  // ── Guardar resultado post-partido (incluye el MVP del partido) ───────────
+  async function saveMatchResult(matchId, { scoreA, scoreB, mvpUserId = null, mvpName = null }) {
     loading.value = true
     try {
       await updateDoc(doc(db, 'matches', matchId), {
         scoreA,
         scoreB,
+        mvpUserId,
+        mvpName,
         status: MATCH_STATUS.FINISHED,
         updatedAt: serverTimestamp(),
       })

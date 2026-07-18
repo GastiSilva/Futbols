@@ -44,6 +44,31 @@
             </q-card-section>
           </q-card>
 
+          <!-- ── MVP del partido ───────────────────────────────────────── -->
+          <q-card flat bordered class="q-mb-lg">
+            <q-card-section>
+              <div class="text-subtitle1 text-weight-bold q-mb-md">
+                <q-icon name="military_tech" color="amber-8" class="q-mr-xs" />
+                MVP del partido
+              </div>
+              <q-select
+                v-model="mvpUserId"
+                :options="playerRows"
+                option-label="displayName"
+                option-value="userId"
+                emit-value
+                map-options
+                label="Elegí al mejor jugador (opcional)"
+                outlined
+                clearable
+              >
+                <template #prepend>
+                  <q-icon name="emoji_events" color="amber-8" />
+                </template>
+              </q-select>
+            </q-card-section>
+          </q-card>
+
           <!-- ── Estadísticas individuales ─────────────────────────────── -->
           <q-card flat bordered class="q-mb-lg">
             <q-card-section>
@@ -142,6 +167,7 @@ const loadingMatch = ref(true)
 const saving = ref(false)
 const scoreA = ref(0)
 const scoreB = ref(0)
+const mvpUserId = ref(null)
 const playerRows = ref([])
 
 onMounted(async () => {
@@ -151,6 +177,7 @@ onMounted(async () => {
     // Si ya tiene resultado, pre-rellena
     if (match.value.scoreA != null) scoreA.value = match.value.scoreA
     if (match.value.scoreB != null) scoreB.value = match.value.scoreB
+    if (match.value.mvpUserId != null) mvpUserId.value = match.value.mvpUserId
 
     // Carga la lista de inscriptos (titulares con cuenta) para las stats.
     // Los invitados sin cuenta (userId null) no acumulan stats → se excluyen.
@@ -185,8 +212,24 @@ onMounted(async () => {
 async function handleSave() {
   saving.value = true
   try {
-    await saveMatchResult(matchId, { scoreA: scoreA.value, scoreB: scoreB.value })
-    await savePlayerStats(matchId, playerRows.value, match.value.groupId ?? null)
+    const mvpPlayer = playerRows.value.find((p) => p.userId === mvpUserId.value) ?? null
+
+    await saveMatchResult(matchId, {
+      scoreA: scoreA.value,
+      scoreB: scoreB.value,
+      mvpUserId: mvpPlayer?.userId ?? null,
+      mvpName: mvpPlayer?.displayName ?? null,
+    })
+
+    // Marca el flag mvp en cada fila — la CF acumula stats.mvps por diferencia
+    const rowsWithMvp = playerRows.value.map((p) => ({
+      ...p,
+      mvp: p.userId === (mvpPlayer?.userId ?? null),
+    }))
+    await savePlayerStats(matchId, rowsWithMvp, match.value.groupId ?? null, {
+      scoreA: scoreA.value,
+      scoreB: scoreB.value,
+    })
 
     $q.notify({ type: 'positive', message: 'Resultado guardado correctamente.' })
     router.push({ name: 'match-detail', params: { id: matchId } })

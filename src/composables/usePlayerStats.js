@@ -23,6 +23,19 @@ import { db } from 'src/services/firebase'
 // grupo puede cargar el resultado sin poder inflar stats ajenas ni duplicar
 // al re-guardar.
 
+// Resultado del jugador según su equipo y el marcador del partido.
+// 'W' = ganó, 'E' = empató, 'L' = perdió, null = sin marcador o sin equipo.
+// Se guarda EN la fila para que el acumulador (CF) lo cuente por diferencia y
+// quede correcto aunque después se edite el marcador (se recalcula al re-guardar).
+export function computeResult(team, scoreA, scoreB) {
+  if (scoreA == null || scoreB == null) return null
+  if (team !== 'A' && team !== 'B') return null
+  if (scoreA === scoreB) return 'E'
+  const teamAWon = scoreA > scoreB
+  if (team === 'A') return teamAWon ? 'W' : 'L'
+  return teamAWon ? 'L' : 'W'
+}
+
 export function usePlayerStats() {
   const loading = ref(false)
   const error = ref(null)
@@ -35,10 +48,14 @@ export function usePlayerStats() {
    * @param {string} matchId
    * @param {Array<{ userId, displayName, goals, assists, team }>} statsArray
    * @param {string | null} groupId
+   * @param {{ scoreA: number|null, scoreB: number|null }} score  Marcador para
+   *        derivar el resultado (W/E/L) de cada jugador según su equipo.
    */
-  async function savePlayerStats(matchId, statsArray, groupId = null) {
+  async function savePlayerStats(matchId, statsArray, groupId = null, score = {}) {
     loading.value = true
     error.value = null
+
+    const { scoreA = null, scoreB = null } = score
 
     try {
       // Firestore Batch: máximo 500 operaciones por batch
@@ -53,7 +70,9 @@ export function usePlayerStats() {
           displayName: entry.displayName ?? null,
           goals: entry.goals ?? 0,
           assists: entry.assists ?? 0,
+          mvp: entry.mvp === true, // MVP del partido (acumula stats.mvps vía CF)
           team: entry.team ?? null,
+          result: computeResult(entry.team ?? null, scoreA, scoreB), // W/E/L/null
           groupId: groupId ?? null,
           savedAt: serverTimestamp(),
         })

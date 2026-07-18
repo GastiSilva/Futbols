@@ -28,8 +28,9 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const initialized = ref(false)  // true cuando onAuthStateChanged ha respondido
 
-  // IDs de los grupos donde el usuario es OG (acceso anticipado a las listas).
-  // El rol OG dejó de ser global: ahora se asigna por grupo (members/{uid}.og).
+  // IDs de los grupos donde el usuario tiene ACCESO ANTICIPADO a las listas
+  // (30 min antes de openAt): es OG (members/{uid}.og === true) O es
+  // owner/admin del grupo. El rol OG dejó de ser global: es por grupo.
   const ogGroupIds = ref([])
 
   // ── Getters ────────────────────────────────────────────────────────────────
@@ -37,7 +38,7 @@ export const useAuthStore = defineStore('auth', () => {
   const isAdmin = computed(() => user.value?.isAdmin === true)
   const role = computed(() => user.value?.role ?? USER_ROLES.PLAYER)
 
-  // ¿El usuario es OG en un grupo puntual?
+  // ¿El usuario tiene acceso anticipado en un grupo puntual? (OG u owner/admin)
   function isOgInGroup(groupId) {
     return !!groupId && ogGroupIds.value.includes(groupId)
   }
@@ -64,6 +65,13 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // Actualiza campos sueltos del perfil en memoria (tras guardarlos en Firestore)
+  function patchUser(partial) {
+    if (user.value && partial && typeof partial === 'object') {
+      user.value = { ...user.value, ...partial }
+    }
+  }
+
   return {
     user,
     initialized,
@@ -76,5 +84,6 @@ export const useAuthStore = defineStore('auth', () => {
     setOgGroups,
     clearUser,
     updateFcmToken,
+    patchUser,
   }
 })

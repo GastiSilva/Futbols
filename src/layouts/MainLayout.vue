@@ -38,6 +38,7 @@
           </q-avatar>
           <div class="column items-center">
             <div class="text-subtitle1 text-weight-bold ellipsis" style="max-width: 200px">
+            
               {{ user?.displayName ?? 'Jugador' }}
             </div>
             <div class="text-caption text-green-2 ellipsis" style="max-width: 200px">
@@ -66,6 +67,19 @@
               clickable
               v-ripple
               class="drawer-item"
+              :to="{ name: 'profile' }"
+              active-class="drawer-item--active"
+            >
+              <q-item-section avatar>
+                <q-icon name="account_circle" size="22px" />
+              </q-item-section>
+              <q-item-section>Mi Perfil</q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-ripple
+              class="drawer-item"
               :to="{ name: 'player-dashboard' }"
               active-class="drawer-item--active"
             >
@@ -86,6 +100,19 @@
                 <q-icon name="emoji_events" size="22px" />
               </q-item-section>
               <q-item-section>Estadísticas</q-item-section>
+            </q-item>
+
+            <q-item
+              clickable
+              v-ripple
+              class="drawer-item"
+              :to="{ name: 'venues' }"
+              active-class="drawer-item--active"
+            >
+              <q-item-section avatar>
+                <q-icon name="stadium" size="22px" />
+              </q-item-section>
+              <q-item-section>Sedes</q-item-section>
             </q-item>
 
             <!-- Grupos -->

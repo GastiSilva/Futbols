@@ -27,18 +27,31 @@ service cloud.firestore {
         && stats.matchesPlayed is int && stats.matchesPlayed >= 0;
     }
 
-    // OG por grupo: el usuario es OG en el grupo al que pertenece el partido.
-    function isOgInGroup(groupId) {
-      return isAuthenticated()
-        && groupId != null
-        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
-        && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.get('og', false) == true;
+    // Acceso anticipado por grupo: un miembro tiene acceso anticipado (30 min
+    // antes de openAt) si es OG (flag og == true) O si es owner/admin del grupo.
+    function memberHasEarlyAccess(groupId, uid) {
+      return groupId != null
+        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(uid))
+        && (
+          get(/databases/$(database)/documents/groups/$(groupId)/members/$(uid)).data.get('og', false) == true
+          || get(/databases/$(database)/documents/groups/$(groupId)/members/$(uid)).data.get('role', '') in ['owner', 'admin']
+        );
     }
 
-    function isOgInMatchGroup(matchId) {
-      return isOgInGroup(
-        get(/databases/$(database)/documents/matches/$(matchId)).data.get('groupId', null)
-      );
+    function matchData(matchId) {
+      return get(/databases/$(database)/documents/matches/$(matchId)).data;
+    }
+
+    // ¿El caller tiene acceso anticipado en el grupo del partido?
+    function hasEarlyAccessInMatchGroup(matchId) {
+      return isAuthenticated()
+        && memberHasEarlyAccess(matchData(matchId).get('groupId', null), request.auth.uid);
+    }
+
+    // ¿El caller es quien creó el partido? (se puede anotar desde el momento cero)
+    function isMatchCreator(matchId) {
+      return isAuthenticated()
+        && matchData(matchId).get('createdBy', '') == request.auth.uid;
     }
 
     // Membresía de grupo: el usuario pertenece al grupo.
@@ -78,10 +91,13 @@ service cloud.firestore {
 
       allow update: if (
 
-        // Usuario actualiza su perfil (fcmToken, displayName, etc - menos stats)
+        // Usuario actualiza su perfil (fcmToken, displayName, apodo, descripción,
+        // pie hábil, etc.) — pero nunca stats/statsByGroup (acumulador de la CF)
+        // ni su propio role
         (
           isOwner(userId)
-          && !('stats' in request.resource.data.diff(resource.data).affectedKeys())
+          && !request.resource.data.diff(resource.data).affectedKeys()
+               .hasAny(['stats', 'statsByGroup', 'role'])
         )
 
         ||
@@ -159,11 +175,11 @@ service cloud.firestore {
 
         ||
 
-        // Cargar el resultado: cualquier miembro del grupo del partido (o admin)
+        // Cargar el resultado (incluye MVP): cualquier miembro del grupo (o admin)
         (
           (isAdmin() || isMemberOfMatchGroup(matchId))
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['scoreA', 'scoreB', 'status', 'updatedAt'])
+               .hasOnly(['scoreA', 'scoreB', 'status', 'mvpUserId', 'mvpName', 'updatedAt'])
         );
 
       allow delete: if isAdmin();
@@ -176,49 +192,79 @@ service cloud.firestore {
         allow read: if isAuthenticated();
 
         // ── ALTA ──────────────────────────────────────────────────────────
-        // Se puede anotar: a uno mismo, a un invitado sin cuenta, o a otro
-        // miembro existente. En los tres casos debe estar abierta la ventana.
+        // Tres ventanas posibles:
+        //  (0) El creador del partido se anota A SÍ MISMO en cualquier momento.
+        //  (1) Ventana abierta (request.time >= openAt): uno mismo, invitado
+        //      sin cuenta, u otro miembro existente.
+        //  (2) Ventana anticipada (openAt - 30 min): solo si el anotador tiene
+        //      acceso anticipado (OG / owner / admin del grupo) o es el creador,
+        //      y SOLO puede anotarse a sí mismo o a otro miembro que TAMBIÉN
+        //      tenga acceso anticipado. Invitados no.
         allow create: if
           isAuthenticated()
-
-          // Ventana abierta (o 30 min antes si el anotador es OG del grupo)
           && (
-            request.time >=
-            get(/databases/$(database)/documents/matches/$(matchId)).data.openAt
-
-            ||
-
-            (
-              isOgInMatchGroup(matchId)
-              &&
-              request.time >=
-              get(/databases/$(database)/documents/matches/$(matchId)).data.openAt
-              - duration.value(30, 'm')
-            )
-          )
-
-          && (
-            // (a) me anoto yo mismo (docId = mi uid)
+            // (0) creador del partido → él mismo, sin restricción de horario
             (
               isOwner(userId)
               && request.resource.data.userId == request.auth.uid
+              && isMatchCreator(matchId)
             )
 
             ||
 
-            // (b) anoto a un invitado sin cuenta (docId autogenerado)
+            // (1) ventana abierta para todos
             (
-              request.resource.data.isGuest == true
-              && request.resource.data.addedBy == request.auth.uid
+              request.time >= matchData(matchId).openAt
+              && (
+                // (a) me anoto yo mismo (docId = mi uid)
+                (
+                  isOwner(userId)
+                  && request.resource.data.userId == request.auth.uid
+                )
+
+                ||
+
+                // (b) anoto a un invitado sin cuenta (docId autogenerado)
+                (
+                  request.resource.data.isGuest == true
+                  && request.resource.data.addedBy == request.auth.uid
+                )
+
+                ||
+
+                // (c) anoto a otro miembro existente (docId = uid del anotado)
+                (
+                  request.resource.data.isGuest == false
+                  && request.resource.data.userId == userId
+                  && request.resource.data.addedBy == request.auth.uid
+                )
+              )
             )
 
             ||
 
-            // (c) anoto a otro miembro existente (docId = uid del anotado)
+            // (2) ventana anticipada (30 min antes de openAt)
             (
-              request.resource.data.isGuest == false
-              && request.resource.data.userId == userId
-              && request.resource.data.addedBy == request.auth.uid
+              request.time >= matchData(matchId).openAt - duration.value(30, 'm')
+              && (hasEarlyAccessInMatchGroup(matchId) || isMatchCreator(matchId))
+              && (
+                // me anoto yo mismo
+                (
+                  isOwner(userId)
+                  && request.resource.data.userId == request.auth.uid
+                  && hasEarlyAccessInMatchGroup(matchId)
+                )
+
+                ||
+
+                // anoto a otro miembro que también tiene acceso anticipado
+                (
+                  request.resource.data.isGuest == false
+                  && request.resource.data.userId == userId
+                  && request.resource.data.addedBy == request.auth.uid
+                  && memberHasEarlyAccess(matchData(matchId).get('groupId', null), userId)
+                )
+              )
             )
           );
 
@@ -305,6 +351,31 @@ service cloud.firestore {
 
         allow delete: if false;
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // VENUES (sedes / canchas)
+    // ─────────────────────────────────────────────────────────────────────────
+    match /venues/{venueId} {
+
+      allow read: if isAuthenticated();
+
+      // Cualquier usuario autenticado puede crear una sede (firmándola)
+      allow create: if isAuthenticated()
+                    && request.resource.data.createdBy == request.auth.uid;
+
+      // Editar: cualquier usuario autenticado.
+      // Idealmente sería "solo OGs", pero el rol OG es POR-GRUPO (members.og) y
+      // las sedes son globales: las reglas no pueden verificar "es OG en algún
+      // grupo" sin un groupId (no se puede iterar la colección de grupos). El
+      // gating real de "solo OGs" vive en la UI (canEditVenue). Como las sedes
+      // son datos de bajo riesgo y quedan denormalizados en cada partido, se
+      // acepta permitir la edición a cualquier autenticado a nivel de reglas.
+      allow update: if isAuthenticated();
+
+      // Borrar (destructivo): solo quien la creó o un admin global.
+      allow delete: if isAdmin()
+                    || (isAuthenticated() && resource.data.createdBy == request.auth.uid);
     }
   }
 }

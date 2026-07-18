@@ -15,22 +15,36 @@ const UserSchema = {
   email:       'string',
   photoURL:    'string | null',
   fcmToken:    'string | null',   // Token FCM para notificaciones push
+  fcmTokens:   'string[]',        // Todos los tokens conocidos (dedupe en functions)
   role:        "'admin' | 'og' | 'player'", // Rol del usuario (default: 'player')
+
+  // Perfil editable por el propio usuario (ProfilePage)
+  nickname:      'string | null', // Apodo
+  description:   'string',        // Descripción libre
+  preferredFoot: "'derecho' | 'izquierdo' | 'ambidiestro' | null", // Pie hábil
+  preferredPositions: 'string[]', // Posiciones favoritas (códigos de src/utils/positions.js:
+                                  // ARQ, LTI, DFC, LTD, MCD, MI, MC, MD, MCO, EI, DC, ED). Máx 3.
+                                  // Elegidas en ProfilePage con el selector visual de cancha.
 
   stats: {
     goals:         'number',      // Goles acumulados en TODOS los partidos (total individual)
     assists:       'number',      // Asistencias acumuladas (total individual)
     matchesPlayed: 'number',      // Partidos jugados (total individual)
+    mvps:          'number',      // Veces elegido MVP del partido
+    wins:          'number',      // Partidos ganados (según result de cada playerStats)
+    draws:         'number',      // Empatados
+    losses:        'number',      // Perdidos
   },
 
   // Desglose de las mismas estadísticas, pero separadas por grupo.
-  // Se actualiza junto con `stats` en el mismo writeBatch (ver usePlayerStats.js)
-  // únicamente cuando el partido tiene un groupId asociado.
+  // Lo escribe ÚNICAMENTE la Cloud Function onPlayerStatsWritten (por diferencia)
+  // cuando el partido tiene un groupId asociado.
   statsByGroup: {
     '[groupId]': {
       goals:         'number',
       assists:       'number',
       matchesPlayed: 'number',
+      mvps:          'number',
     },
   },
 
@@ -46,7 +60,9 @@ const UserSchema = {
  */
 const MatchSchema = {
   title:          'string',
-  location:       'string',
+  location:       'string',        // Texto libre (autocompletado si hay sede)
+  venueId:        'string | null', // Sede asociada (/venues/{venueId})
+  venueMapsUrl:   'string | null', // Link de Google Maps denormalizado de la sede
 
   date:           'Timestamp',    // Fecha y hora del partido
   openAt:         'Timestamp',    // Cuándo se habilita la inscripción
@@ -54,23 +70,29 @@ const MatchSchema = {
 
   groupId:        'string | null', // ID del grupo asociado al partido
 
-  format:         "'5v5' | '7v7' | '8v8'",
-  maxPlayers:     '10 | 14 | 16', // Determinado por format
+  format:         "'5v5' | '7v7' | '8v8' | '11v11'",
+  maxPlayers:     '10 | 14 | 16 | 22', // Determinado por format
 
   currentPlayers: 'number',       // Contador atómico (actualizado en transaction)
 
   status: "'scheduled' | 'open' | 'closed' | 'finished'",
   // scheduled → openAt no llegó aún
   // open      → inscripciones abiertas
-  // closed    → cupos llenos o cerrado manualmente
+  // closed    → cerrado manualmente (no admite ni suplentes)
   // finished  → resultados cargados
+  // NOTA: 'full' (cupo lleno) es un estado EFECTIVO solo de UI, calculado por
+  // getEffectiveStatus() — no se guarda en Firestore. Con cupo lleno se puede
+  // seguir anotando gente como SUPLENTE (isOnWaitlist).
 
   scoreA:         'number | null',
   scoreB:         'number | null',
+  mvpUserId:      'string | null', // MVP del partido (elegido al cargar el resultado)
+  mvpName:        'string | null',
 
   cloudTaskName:  'string | null', // Referencia a la Cloud Task programada
 
-  createdBy:      'string',        // uid del admin
+  createdBy:      'string',        // uid del creador — puede anotarse A SÍ MISMO
+                                   // desde el momento cero (sin esperar openAt)
   createdAt:      'Timestamp',
   updatedAt:      'Timestamp',
 }
@@ -87,13 +109,22 @@ const MatchSchema = {
  *  documento para verificar duplicados de forma atómica.
  */
 const RegistrationSchema = {
-  userId:       'string',         // = document ID
+  userId:       'string | null',  // = document ID (null para invitados sin cuenta)
   displayName:  'string',
   photoURL:     'string | null',
 
+  isGuest:      'boolean',        // invitado sin cuenta (docId autogenerado)
+  guestName:    'string | null',
+
+  addedBy:      'string',         // uid de quien hizo la inscripción
+  addedByName:  'string | null',
+
   registeredAt: 'Timestamp',
-  position:     'number',         // Orden de llegada (1-based)
-  isOnWaitlist: 'boolean',        // true si position > maxPlayers
+  position:     'number',         // Orden de llegada (1-based). Al borrarse una
+                                  // inscripción, la CF onRegistrationDeleted
+                                  // re-numera y promueve al primer suplente
+                                  // (con notificación FCM).
+  isOnWaitlist: 'boolean',        // true si position > maxPlayers (suplente)
   team:         "'A' | 'B' | null",
 }
 
@@ -111,7 +142,9 @@ const PlayerStatsSchema = {
   displayName: 'string',
   goals:       'number',
   assists:     'number',
+  mvp:         'boolean',         // true si fue el MVP del partido (acumula stats.mvps)
   team:        "'A' | 'B' | null",
+  groupId:     'string | null',   // Grupo del partido (para statsByGroup)
   savedAt:     'Timestamp',
 }
 
@@ -174,6 +207,10 @@ const GroupMemberSchema = {
   // admin  → puede aceptar/rechazar solicitudes y expulsar miembros
   // member → miembro regular
 
+  og:          'boolean',         // ACCESO ANTICIPADO (30 min antes de openAt).
+  // Nota: owner y admin tienen acceso anticipado SIEMPRE, aunque og sea false.
+  // El flag og sirve para dárselo también a miembros regulares.
+
   joinedAt:    'Timestamp',
 }
 
@@ -193,5 +230,28 @@ const JoinRequestSchema = {
 
   requestedAt: 'Timestamp',
   status:      "'pending' | 'accepted' | 'rejected'",
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  COLECCIÓN: venues
+ *  Path: /venues/{venueId}
+ * ══════════════════════════════════════════════════════════
+ *
+ *  Sedes (canchas) donde se juegan los partidos. Cualquier usuario
+ *  autenticado puede crearlas; edita/borra el creador o un admin global.
+ *  Los partidos las referencian por venueId y denormalizan name/mapsUrl
+ *  en location/venueMapsUrl (así sobreviven si la sede se borra).
+ */
+const VenueSchema = {
+  name:      'string',            // Nombre visible de la sede
+  nameLower: 'string',            // Nombre en minúsculas (orden/búsqueda)
+  address:   'string',            // Dirección
+  mapsUrl:   'string | null',     // Link de Google Maps ("Compartir" → URL)
+  notes:     'string',            // Observaciones (vestuarios, pago, etc.)
+
+  createdBy: 'string',            // uid del creador
+  createdAt: 'Timestamp',
+  updatedAt: 'Timestamp',
 }
 

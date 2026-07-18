@@ -35,6 +35,7 @@
 import { ref } from 'vue'
 import {
   doc,
+  getDoc,
   collection,
   runTransaction,
   onSnapshot,
@@ -54,7 +55,13 @@ export const REGISTRATION_ERRORS = {
   MATCH_CLOSED: 'El partido ya no admite inscripciones.',
   QUOTA_EXCEEDED: 'Se han llenado todos los cupos disponibles.',
   TRANSACTION_FAILED: 'Error de concurrencia. Por favor intenta de nuevo.',
+  EARLY_NO_GUESTS: 'Los invitados solo pueden anotarse cuando la lista abre para todos.',
+  EARLY_TARGET_NOT_ALLOWED:
+    'Esa persona no tiene acceso anticipado — podés anotarla cuando abra la lista.',
 }
+
+// Ventana de acceso anticipado (OG / owner / admin del grupo): 30 minutos
+export const EARLY_ACCESS_MS = 30 * 60 * 1000
 
 export function useRegistration() {
   const authStore = useAuthStore()
@@ -142,14 +149,46 @@ export function useRegistration() {
         const match = matchSnap.data()
 
         // Validación 100% por reloj — el status no bloquea la inscripción.
-        // El acceso anticipado del anotador (OG del grupo) vale para todos los
-        // que anote (a sí mismo, invitados o miembros).
+        // Reglas de la ventana anticipada (30 min antes de openAt):
+        //  - El creador del partido se anota a SÍ MISMO desde el momento cero.
+        //  - Con acceso anticipado (OG / owner / admin del grupo, o creador)
+        //    se puede entrar 30 min antes.
+        //  - En esa ventana solo se puede anotar a gente que TAMBIÉN tenga
+        //    acceso anticipado: nada de invitados ni miembros comunes.
         const now = Date.now()
         const openAtMillis = match.openAt?.toMillis() ?? 0
-        const isOG = authStore.isOgInGroup(match.groupId)
-        const threshold = isOG ? openAtMillis - (30 * 60 * 1000) : openAtMillis
-        if (now < threshold) {
-          throw new Error(REGISTRATION_ERRORS.MATCH_NOT_OPEN)
+        const isSelf = !entry.isGuest && entry.targetUserId === user.uid
+        const isCreator = match.createdBy === user.uid
+        const creatorSelf = isCreator && isSelf
+
+        if (!creatorSelf) {
+          const hasEarlyAccess = authStore.isOgInGroup(match.groupId) || isCreator
+          const threshold = hasEarlyAccess ? openAtMillis - EARLY_ACCESS_MS : openAtMillis
+          if (now < threshold) {
+            throw new Error(REGISTRATION_ERRORS.MATCH_NOT_OPEN)
+          }
+
+          // Dentro de la ventana anticipada (todavía no llegó openAt)
+          if (now < openAtMillis) {
+            if (entry.isGuest) {
+              throw new Error(REGISTRATION_ERRORS.EARLY_NO_GUESTS)
+            }
+            if (!isSelf) {
+              // El anotado debe tener acceso anticipado en el grupo del partido
+              if (!match.groupId) {
+                throw new Error(REGISTRATION_ERRORS.EARLY_TARGET_NOT_ALLOWED)
+              }
+              const memberSnap = await transaction.get(
+                doc(db, 'groups', match.groupId, 'members', entry.targetUserId),
+              )
+              const member = memberSnap.exists() ? memberSnap.data() : null
+              const targetHasEarlyAccess =
+                !!member && (member.og === true || ['owner', 'admin'].includes(member.role))
+              if (!targetHasEarlyAccess) {
+                throw new Error(REGISTRATION_ERRORS.EARLY_TARGET_NOT_ALLOWED)
+              }
+            }
+          }
         }
 
         if (match.status === 'closed' || match.status === 'finished') {
@@ -177,7 +216,7 @@ export function useRegistration() {
           isGuest: !!entry.isGuest,
           guestName: entry.isGuest ? entry.guestName : null,
           addedBy: user.uid,
-          addedByName: user.displayName ?? null,
+          addedByName: user.nickname || user.displayName || null,
           registeredAt: serverTimestamp(),
           position: newPosition,
           isOnWaitlist,
@@ -198,7 +237,8 @@ export function useRegistration() {
     }
   }
 
-  // Inscribe al usuario autenticado.
+  // Inscribe al usuario autenticado. En la lista aparece con su APODO
+  // (nickname del perfil) si lo tiene; si no, con su nombre de Google.
   function joinMatch(matchId) {
     const user = authStore.user
     if (!user) throw new Error('Usuario no autenticado')
@@ -206,7 +246,7 @@ export function useRegistration() {
       targetUserId: user.uid,
       isGuest: false,
       guestName: null,
-      displayName: user.displayName,
+      displayName: user.nickname || user.displayName,
       photoURL: user.photoURL,
     })
   }
@@ -224,14 +264,25 @@ export function useRegistration() {
     })
   }
 
-  // Anota a otro miembro existente de la app.
-  function addMemberToMatch(matchId, member) {
+  // Anota a otro miembro existente de la app. También aparece con su apodo
+  // si lo tiene configurado en su perfil (se lee de users/{uid}).
+  async function addMemberToMatch(matchId, member) {
     if (!member?.userId) throw new Error('Miembro inválido.')
+
+    let displayName = member.displayName
+    try {
+      const snap = await getDoc(doc(db, 'users', member.userId))
+      const nickname = snap.exists() ? snap.data().nickname : null
+      if (nickname) displayName = nickname
+    } catch {
+      // sin acceso al perfil → se usa el nombre del miembro del grupo
+    }
+
     return registerEntry(matchId, {
       targetUserId: member.userId,
       isGuest: false,
       guestName: null,
-      displayName: member.displayName,
+      displayName,
       photoURL: member.photoURL ?? null,
     })
   }
@@ -276,9 +327,10 @@ export function useRegistration() {
         // Elimina la inscripción
         transaction.delete(regRef)
 
-        // Nota: Re-numerar las posiciones de los jugadores posteriores
-        // se recomienda hacer con una Cloud Function para no sobrecargar
-        // la transacción (Firestore limita a 500 ops por transacción).
+        // Nota: la re-numeración de posiciones y la PROMOCIÓN AUTOMÁTICA del
+        // primer suplente la hace la Cloud Function `onRegistrationDeleted`
+        // (functions/index.js) — también le manda la notificación FCM al
+        // suplente que entra como titular.
       })
     } catch (err) {
       error.value = err.message
@@ -298,7 +350,8 @@ export function useRegistration() {
   // ── Estado del botón "Anotarme" ───────────────────────────────────────────
   /**
    * Determina si el botón de inscripción debe estar habilitado.
-   * @param {{ openAt: Timestamp, status: string }} match
+   * Con estado 'full' (cupo lleno) sigue permitido → entra como suplente.
+   * @param {{ openAt: Timestamp, status: string, createdBy: string }} match
    */
   function canRegister(match) {
     if (!match) return false
@@ -306,26 +359,44 @@ export function useRegistration() {
     if (effectiveStatus === 'closed' || effectiveStatus === 'finished') return false
     if (userRegistration.value) return false
 
+    // El creador del partido puede anotarse desde el momento cero
+    if (match.createdBy === authStore.user?.uid) return true
+
     const now = Date.now()
     const openAt = match.openAt?.toMillis?.() ?? 0
-    const isOG = authStore.isOgInGroup(match.groupId)
 
-    // Si es OG del grupo del partido, el umbral es 30 mins antes.
-    const threshold = isOG ? openAt - (30 * 60 * 1000) : openAt
+    // Acceso anticipado (OG / owner / admin del grupo): umbral 30 min antes.
+    const hasEarlyAccess = authStore.isOgInGroup(match.groupId)
+    const threshold = hasEarlyAccess ? openAt - EARLY_ACCESS_MS : openAt
 
     return now >= threshold
   }
 
   /**
    * Milisegundos restantes para que abra la inscripción (para countdown).
-   * @param {{ openAt: Timestamp }} match
+   * @param {{ openAt: Timestamp, createdBy: string }} match
    */
   function msUntilOpen(match) {
+    // El creador no espera: para él la lista está siempre abierta
+    if (match?.createdBy === authStore.user?.uid) return 0
+
     const openAt = match?.openAt?.toMillis?.() ?? 0
-    const isOG = authStore.isOgInGroup(match?.groupId)
-    const threshold = isOG ? openAt - (30 * 60 * 1000) : openAt
+    const hasEarlyAccess = authStore.isOgInGroup(match?.groupId)
+    const threshold = hasEarlyAccess ? openAt - EARLY_ACCESS_MS : openAt
 
     return Math.max(0, threshold - Date.now())
+  }
+
+  /**
+   * ¿Estamos en la ventana anticipada del partido? (openAt - 30 min ≤ ahora < openAt)
+   * En esta ventana solo pueden anotarse (y ser anotados) quienes tienen
+   * acceso anticipado — nada de invitados.
+   */
+  function isInEarlyWindow(match) {
+    const openAt = match?.openAt?.toMillis?.() ?? 0
+    if (!openAt) return false
+    const now = Date.now()
+    return now >= openAt - EARLY_ACCESS_MS && now < openAt
   }
 
   function stopListening() {
@@ -347,6 +418,7 @@ export function useRegistration() {
     removeRegistration,
     canRegister,
     msUntilOpen,
+    isInEarlyWindow,
     subscribeToRegistrations,
     stopListening,
     REGISTRATION_ERRORS,

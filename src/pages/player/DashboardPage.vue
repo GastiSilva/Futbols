@@ -96,6 +96,15 @@
               <div class="col">
                 <div class="text-caption text-grey-6 text-uppercase">Ubicación</div>
                 <div class="text-body2 text-weight-medium">{{ match.location }}</div>
+                <a
+                  v-if="match.venueMapsUrl"
+                  :href="match.venueMapsUrl"
+                  target="_blank"
+                  rel="noopener"
+                  class="text-caption text-green-8"
+                >
+                  <q-icon name="map" size="xs" class="q-mr-xs" />Ver en Google Maps
+                </a>
               </div>
             </div>
 
@@ -172,20 +181,41 @@
               </div>
             </template>
 
-            <!-- ③ Botón ANOTARME -->
-            <q-btn
-              v-else-if="canRegister(match)"
-              unelevated
-              color="primary"
-              class="full-width pill-btn"
-              size="lg"
-              style="font-size: 1.05rem; letter-spacing: 1px"
-              :loading="loading"
-              @click="handleJoin(match.id)"
-            >
-              <q-icon name="sports_soccer" left />
-              ANOTARME
-            </q-btn>
+            <!-- ③ Botón ANOTARME (como suplente si el cupo está lleno) -->
+            <div v-else-if="canRegister(match)">
+              <q-banner
+                v-if="match.status === 'full'"
+                dense
+                class="bg-orange-1 text-orange-9 rounded-borders q-mb-sm"
+              >
+                <template #avatar>
+                  <q-icon name="hourglass_top" color="orange-8" />
+                </template>
+                Cupo completo — podés anotarte como suplente y entrás automáticamente si alguien se baja.
+              </q-banner>
+              <q-banner
+                v-else-if="isInEarlyWindow(match)"
+                dense
+                class="bg-blue-1 text-blue-9 rounded-borders q-mb-sm"
+              >
+                <template #avatar>
+                  <q-icon name="bolt" color="blue-8" />
+                </template>
+                Acceso anticipado — te estás anotando antes de que abra la lista.
+              </q-banner>
+              <q-btn
+                unelevated
+                :color="match.status === 'full' ? 'orange-8' : 'primary'"
+                class="full-width pill-btn"
+                size="lg"
+                style="font-size: 1.05rem; letter-spacing: 1px"
+                :loading="loading"
+                @click="handleJoin(match.id)"
+              >
+                <q-icon :name="match.status === 'full' ? 'hourglass_top' : 'sports_soccer'" left />
+                {{ match.status === 'full' ? 'ANOTARME COMO SUPLENTE' : 'ANOTARME' }}
+              </q-btn>
+            </div>
 
             <!-- ④ Cerrado / finalizado -->
             <div v-else class="column items-center q-gutter-sm">
@@ -362,6 +392,18 @@
           <q-card-section class="text-h6">Anotar a otra persona</q-card-section>
 
           <q-card-section class="q-pt-none">
+            <q-banner
+              v-if="earlyWindowActive"
+              dense
+              class="bg-blue-1 text-blue-9 rounded-borders q-mb-md"
+            >
+              <template #avatar>
+                <q-icon name="bolt" color="blue-8" />
+              </template>
+              Acceso anticipado: solo podés anotar a miembros que también tengan
+              acceso anticipado. Los invitados y el resto entran cuando abre la lista.
+            </q-banner>
+
             <q-btn-toggle
               v-if="addModeOptions.length > 1"
               v-model="addMode"
@@ -403,7 +445,9 @@
                 v-if="!loadingMembers && availableMembers.length === 0"
                 class="text-caption text-grey-6 q-mt-sm"
               >
-                Todos los miembros del grupo ya están anotados.
+                {{ earlyWindowActive
+                  ? 'No hay miembros con acceso anticipado sin anotar.'
+                  : 'Todos los miembros del grupo ya están anotados.' }}
               </div>
             </template>
           </q-card-section>
@@ -433,6 +477,7 @@ import { useAuth } from 'src/composables/useAuth'
 import { useRegistration } from 'src/composables/useRegistration'
 import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
+import { useAuthStore } from 'src/stores/auth.store'
 
 const $q = useQuasar()
 const { user, isAdmin } = useAuth()
@@ -444,12 +489,14 @@ const {
   removeRegistration,
   canRegister,
   msUntilOpen,
+  isInEarlyWindow,
   subscribeToRegistrations,
   stopListening,
   loading,
 } = useRegistration()
 const { matches, subscribeToUpcoming: subscribeToMatchesUpcoming } = useMatch()
 const { getGroupMembers } = useGroups()
+const authStore = useAuthStore()
 
 // ── Matches próximos ─────────────────────────────────────────────────────────
 const upcomingMatches = computed(() =>
@@ -457,6 +504,7 @@ const upcomingMatches = computed(() =>
     id: m.id,
     title: m.title,
     location: m.location,
+    venueMapsUrl: m.venueMapsUrl ?? null,
     date: m.date,
     openAt: m.openAt,
     format: m.format,
@@ -464,6 +512,7 @@ const upcomingMatches = computed(() =>
     currentPlayers: m.currentPlayers ?? 0,
     status: getEffectiveStatus(m),
     groupId: m.groupId ?? null,
+    createdBy: m.createdBy ?? null,
   })) ?? [],
 )
 
@@ -520,6 +569,7 @@ function getStatusColor(status) {
   return {
     scheduled: 'blue-grey-6',
     open: 'green-9',
+    full: 'orange-7',
     closed: 'red-7',
     finished: 'grey-6',
   }[status] ?? 'grey-6'
@@ -529,6 +579,7 @@ function getStatusLabel(status) {
   return {
     scheduled: 'Programado',
     open: 'Abierto',
+    full: 'Completo',
     closed: 'Cerrado',
     finished: 'Finalizado',
   }[status] ?? status
@@ -538,6 +589,7 @@ function getStatusIcon(status) {
   return {
     scheduled: 'pending',
     open: 'radio_button_checked',
+    full: 'hourglass_top',
     closed: 'lock',
     finished: 'done_all',
   }[status] ?? 'help'
@@ -656,30 +708,55 @@ const groupMembers = ref([])
 const loadingMembers = ref(false)
 
 // ¿La ventana de inscripción está abierta para anotar gente?
+// - Después de openAt: cualquiera puede anotar invitados/miembros.
+// - En la ventana anticipada (30 min antes): solo quienes tienen acceso
+//   anticipado (OG/owner/admin) o el creador, y únicamente pueden anotar
+//   a otros miembros que TAMBIÉN tengan acceso anticipado (sin invitados).
 function canAddOthers(match) {
   if (!match) return false
   if (match.status === 'closed' || match.status === 'finished') return false
-  return msUntilOpen(match) === 0
+
+  const now = Date.now()
+  const openAt = match.openAt?.toMillis?.() ?? 0
+  if (now >= openAt) return true
+
+  if (isInEarlyWindow(match) && match.groupId) {
+    return authStore.isOgInGroup(match.groupId) || match.createdBy === user.value?.uid
+  }
+  return false
 }
 
+// ¿El match seleccionado está en la ventana anticipada? (restricciones extra)
+const earlyWindowActive = computed(() =>
+  selectedMatch.value ? isInEarlyWindow(selectedMatch.value) : false,
+)
+
 const addModeOptions = computed(() => {
-  const opts = [{ label: 'Invitado', value: 'guest' }]
+  // En la ventana anticipada no se pueden anotar invitados
+  const opts = earlyWindowActive.value ? [] : [{ label: 'Invitado', value: 'guest' }]
   if (selectedMatch.value?.groupId) opts.push({ label: 'Del grupo', value: 'member' })
   return opts
 })
 
-// Miembros del grupo que todavía no están anotados
+// Miembros del grupo que todavía no están anotados.
+// En la ventana anticipada solo se listan los que tienen acceso anticipado.
 const availableMembers = computed(() => {
   const registeredUids = new Set(
     registrationsSeleccionadas.value.map((r) => r.userId).filter(Boolean),
   )
-  return groupMembers.value.filter((m) => !registeredUids.has(m.userId))
+  let members = groupMembers.value.filter((m) => !registeredUids.has(m.userId))
+  if (earlyWindowActive.value) {
+    members = members.filter(
+      (m) => m.og === true || ['owner', 'admin'].includes(m.role),
+    )
+  }
+  return members
 })
 
 async function openAddDialog() {
   guestName.value = ''
   selectedMember.value = null
-  addMode.value = 'guest'
+  addMode.value = earlyWindowActive.value ? 'member' : 'guest'
   showAddDialog.value = true
 
   const gid = selectedMatch.value?.groupId

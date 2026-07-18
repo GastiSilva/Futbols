@@ -15,6 +15,7 @@ import {
   setDoc,
   getDoc,
   getDocs,
+  updateDoc,
   collectionGroup,
   query,
   where,
@@ -22,6 +23,7 @@ import {
 } from 'firebase/firestore'
 import { auth, googleProvider, db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
+import { normalizePositions } from 'src/utils/positions'
 
 export function useAuth() {
   const authStore = useAuthStore()
@@ -80,6 +82,9 @@ export function useAuth() {
             photoURL: firebaseUser.photoURL,
             fcmToken: null,
             role: 'player',
+            nickname: null,
+            description: '',
+            preferredFoot: null,
             stats: defaultStats(),
             statsByGroup: {},
             createdAt: serverTimestamp(),
@@ -96,11 +101,14 @@ export function useAuth() {
           photoURL: firebaseUser.photoURL,
           isAdmin: tokenResult.claims.admin === true,
           role: userData.role ?? 'player',
-          stats: userData.stats ?? defaultStats(),
+          nickname: userData.nickname ?? null,
+          description: userData.description ?? '',
+          preferredFoot: userData.preferredFoot ?? null,
+          stats: { ...defaultStats(), ...(userData.stats ?? {}) },
           statsByGroup: userData.statsByGroup ?? {},
         })
 
-        // Carga los grupos donde el usuario es OG (acceso anticipado por grupo)
+        // Carga los grupos con acceso anticipado (OG u owner/admin del grupo)
         await loadOgGroups(firebaseUser.uid)
       } else {
         authStore.clearUser()
@@ -108,23 +116,47 @@ export function useAuth() {
     })
   }
 
-  // ── Grupos donde el usuario tiene rol OG ───────────────────────────────────
-  // Una sola query collectionGroup sobre members filtrando por userId; el flag
-  // `og` se filtra en cliente para no requerir un índice compuesto.
+  // ── Grupos donde el usuario tiene ACCESO ANTICIPADO (OG u owner/admin) ─────
+  // Una sola query collectionGroup sobre members filtrando por userId; el
+  // criterio (og === true || role owner/admin) se filtra en cliente para no
+  // requerir un índice compuesto.
   async function loadOgGroups(uid) {
     try {
       const snaps = await getDocs(
         query(collectionGroup(db, 'members'), where('userId', '==', uid)),
       )
       const ogIds = snaps.docs
-        .filter((d) => d.data().og === true)
+        .filter((d) => {
+          const m = d.data()
+          return m.og === true || ['owner', 'admin'].includes(m.role)
+        })
         .map((d) => d.ref.parent.parent.id)
       authStore.setOgGroups(ogIds)
     } catch (err) {
-      // No bloquea el login si falla; simplemente no hay acceso OG
+      // No bloquea el login si falla; simplemente no hay acceso anticipado
       authStore.setOgGroups([])
-      console.error('No se pudieron cargar los grupos OG:', err)
+      console.error('No se pudieron cargar los grupos con acceso anticipado:', err)
     }
+  }
+
+  // ── Actualizar el perfil editable del usuario (apodo, descripción, pie) ────
+  async function updateUserProfile({ nickname, description, preferredFoot, preferredPositions }) {
+    const uid = authStore.user?.uid
+    if (!uid) throw new Error('Usuario no autenticado')
+
+    const fields = {
+      nickname: (nickname ?? '').trim() || null,
+      description: (description ?? '').trim(),
+      preferredFoot: preferredFoot ?? null,
+      preferredPositions: normalizePositions(preferredPositions),
+    }
+
+    await updateDoc(doc(db, 'users', uid), {
+      ...fields,
+      updatedAt: serverTimestamp(),
+    })
+    authStore.patchUser(fields)
+    return fields
   }
 
   // ── Sincroniza / crea el perfil en Firestore ───────────────────────────────
@@ -141,6 +173,7 @@ export function useAuth() {
         photoURL: firebaseUser.photoURL,
         fcmToken: null,
         role: 'player',
+        preferredPositions: [],
         stats: defaultStats(),
         statsByGroup: {},
         createdAt: serverTimestamp(),
@@ -161,7 +194,7 @@ export function useAuth() {
   }
 
   function defaultStats() {
-    return { goals: 0, assists: 0, matchesPlayed: 0 }
+    return { goals: 0, assists: 0, matchesPlayed: 0, mvps: 0, wins: 0, draws: 0, losses: 0 }
   }
 
   return {
@@ -173,5 +206,6 @@ export function useAuth() {
     loginWithGoogle,
     logout,
     initAuthListener,
+    updateUserProfile,
   }
 }
