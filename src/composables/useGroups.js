@@ -182,11 +182,18 @@ export function useGroups() {
   // El displayName queda congelado en el member doc al momento del join; acá
   // lo pisamos con el nickname actual (users/{uid}.nickname) si el usuario se
   // puso uno después, para no mostrar el nombre de Google/email desactualizado.
+  const MEMBER_ROLE_ORDER = { owner: 0, admin: 1, member: 2 }
+
   async function getGroupMembers(groupId) {
     const q = query(collection(db, 'groups', groupId, 'members'), orderBy('joinedAt', 'asc'))
     const snaps = await getDocs(q)
     const members = snaps.docs.map(d => ({ id: d.id, ...d.data() }))
-    return resolveNicknames(members)
+    const withNicknames = await resolveNicknames(members)
+    // Owner primero, después admins, después miembros — dentro de cada rol se
+    // mantiene el orden de ingreso (Array.sort es estable).
+    return withNicknames.sort(
+      (a, b) => (MEMBER_ROLE_ORDER[a.role] ?? 3) - (MEMBER_ROLE_ORDER[b.role] ?? 3),
+    )
   }
 
   // ── Obtener solicitudes de ingreso pendientes ──────────────────────────────

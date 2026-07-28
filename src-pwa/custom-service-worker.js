@@ -9,13 +9,24 @@ import { clientsClaim } from 'workbox-core'
 import { precacheAndRoute, cleanupOutdatedCaches, createHandlerBoundToURL } from 'workbox-precaching'
 import { registerRoute, NavigationRoute } from 'workbox-routing'
 
-self.skipWaiting()
 clientsClaim()
 
 // Use with precache injection
 precacheAndRoute(self.__WB_MANIFEST)
 
 cleanupOutdatedCaches()
+
+// NO se llama self.skipWaiting() acá arriba a propósito: si se llama sin
+// condición, CADA vez que se detecta un SW nuevo se activa solo y fuerza un
+// reload automático (ver App.vue) sin que el usuario haga nada — eso es lo
+// que causaba que la app pareciera "pedir actualizar todo el tiempo" al
+// recargar. En cambio se espera este mensaje, que el botón "Actualizar
+// ahora" (App.vue) manda recién cuando el usuario confirma.
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting()
+  }
+})
 
 // Non-SSR fallback to index.html
 if (process.env.MODE !== 'ssr' || process.env.PROD) {

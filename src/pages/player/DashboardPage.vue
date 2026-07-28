@@ -33,6 +33,7 @@
           :icon="getStatusIcon(match.status)"
           :header-class="getHeaderClass(match.id)"
           @show="selectedMatchId = match.id"
+          @hide="onMatchCollapse(match.id)"
         >
           <template #header>
             <div class="row items-center q-gutter-md full-width">
@@ -533,6 +534,12 @@ const selectedMatch = computed(() =>
   upcomingMatches.value.find((m) => m.id === selectedMatchId.value),
 )
 
+// Al replegar el partido expandido, deja de mostrarse la lista de anotados
+// de abajo (si no, quedaba pegada mostrando el último seleccionado).
+function onMatchCollapse(matchId) {
+  if (selectedMatchId.value === matchId) selectedMatchId.value = null
+}
+
 // Hora en la que ESTE usuario puntual va a poder ver la lista de anotados
 // (creador: siempre; OG: 30 min antes; miembro común: la hora oficial).
 const myRegistrationsVisibleAtLabel = computed(() => {
@@ -837,13 +844,12 @@ async function handleAddPerson() {
   }
 }
 
-// Subtítulo de una inscripción (invitado / anotado por otro)
+// Subtítulo de una inscripción: "lo anotó X" solo para invitados (gente sin
+// cuenta, ajena al grupo). Si anotás a otro MIEMBRO del grupo, no se muestra
+// quién lo agregó — es normal anotar a un compañero, no hace falta aclararlo.
 function regSubtitle(reg) {
   if (reg.isGuest) {
     return reg.addedByName ? `Invitado · lo anotó ${reg.addedByName}` : 'Invitado'
-  }
-  if (reg.addedBy && reg.addedBy !== reg.userId) {
-    return reg.addedByName ? `Lo anotó ${reg.addedByName}` : null
   }
   return null
 }

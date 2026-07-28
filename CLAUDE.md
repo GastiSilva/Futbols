@@ -143,7 +143,7 @@ All functions deployed to `southamerica-east1`. Written with Firebase Functions 
 - `push` event → `showNotification`
 - `notificationclick` → opens `/partidos/{matchId}` or `/`
 
-The SW calls `skipWaiting()` + `clientsClaim()` so updates take effect immediately.
+The SW calls `clientsClaim()` unconditionally, but deliberately does **not** call `skipWaiting()` at install time — it only does so on receiving a `{ type: 'SKIP_WAITING' }` `message` event. A new SW sits in the "waiting" state until the user clicks "Actualizar ahora" (`App.vue`, which posts that message and reloads on `controllerchange`). Calling `skipWaiting()` unconditionally was a bug: it made every detected SW change force an immediate, unprompted reload, which showed up as the app "asking to update" on almost every load.
 
 ### Firestore Security Rules
 

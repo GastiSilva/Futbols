@@ -81,6 +81,7 @@
               v-ripple
               class="drawer-item"
               :to="{ name: 'player-dashboard' }"
+              exact
               active-class="drawer-item--active"
             >
               <q-item-section avatar>
