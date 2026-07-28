@@ -33,6 +33,11 @@ export const useAuthStore = defineStore('auth', () => {
   // owner/admin del grupo. El rol OG dejó de ser global: es por grupo.
   const ogGroupIds = ref([])
 
+  // IDs de TODOS los grupos de los que el usuario es miembro (cualquier rol).
+  // Se usa para filtrar qué partidos ve/puede anotarse (solo los de sus grupos,
+  // o los partidos sin grupo, que son globales/de admin).
+  const memberGroupIds = ref([])
+
   // ── Getters ────────────────────────────────────────────────────────────────
   const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.isAdmin === true)
@@ -41,6 +46,11 @@ export const useAuthStore = defineStore('auth', () => {
   // ¿El usuario tiene acceso anticipado en un grupo puntual? (OG u owner/admin)
   function isOgInGroup(groupId) {
     return !!groupId && ogGroupIds.value.includes(groupId)
+  }
+
+  // ¿El usuario pertenece a este grupo (cualquier rol)?
+  function isMemberOfGroup(groupId) {
+    return !!groupId && memberGroupIds.value.includes(groupId)
   }
 
   // ── Actions ────────────────────────────────────────────────────────────────
@@ -53,9 +63,14 @@ export const useAuthStore = defineStore('auth', () => {
     ogGroupIds.value = Array.isArray(ids) ? ids : []
   }
 
+  function setMemberGroups(ids) {
+    memberGroupIds.value = Array.isArray(ids) ? ids : []
+  }
+
   function clearUser() {
     user.value = null
     ogGroupIds.value = []
+    memberGroupIds.value = []
     initialized.value = true
   }
 
@@ -76,12 +91,15 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     initialized,
     ogGroupIds,
+    memberGroupIds,
     isAuthenticated,
     isAdmin,
     role,
     isOgInGroup,
+    isMemberOfGroup,
     setUser,
     setOgGroups,
+    setMemberGroups,
     clearUser,
     updateFcmToken,
     patchUser,

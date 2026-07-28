@@ -58,8 +58,8 @@ export default configure(function (/* ctx */) {
       // skipWaiting y clientsClaim se llaman directamente en custom-service-worker.js
 
       manifest: {
-        name: 'Futbols',
-        short_name: 'Futbols',
+        name: 'YASTA',
+        short_name: 'YASTA',
         description: 'Organizá tus partidos de fútbol con amigos',
         display: 'standalone',
         orientation: 'portrait',

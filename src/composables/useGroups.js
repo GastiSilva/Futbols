@@ -20,11 +20,25 @@ import {
   runTransaction,
   increment,
 } from 'firebase/firestore'
-import { db } from 'src/services/firebase'
+import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
+import { db, storage } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
 
 // Estado reactivo compartido entre instancias del composable — se actualiza al instante
 const groups = ref([])
+
+// Pisa `displayName` con el nickname actual del usuario (users/{uid}.nickname)
+// en una lista de docs cuyo `id`/`userId` es el uid. Silencioso ante errores
+// de lectura individuales: se queda con el displayName congelado como fallback.
+async function resolveNicknames(items) {
+  const snaps = await Promise.all(
+    items.map(item => getDoc(doc(db, 'users', item.userId ?? item.id)).catch(() => null)),
+  )
+  return items.map((item, i) => {
+    const nickname = snaps[i]?.exists() ? snaps[i].data().nickname : null
+    return nickname ? { ...item, displayName: nickname } : item
+  })
+}
 
 // Genera un código de 8 caracteres sin letras/números ambiguos (O, 0, I, 1)
 function generateInviteCode() {
@@ -64,7 +78,7 @@ export function useGroups() {
       // El creador se agrega como 'owner'
       await setDoc(doc(db, 'groups', groupRef.id, 'members', uid), {
         userId: uid,
-        displayName: authStore.user.displayName,
+        displayName: authStore.user.nickname || authStore.user.displayName,
         photoURL: authStore.user.photoURL ?? null,
         role: 'owner',
         joinedAt: serverTimestamp(),
@@ -124,24 +138,31 @@ export function useGroups() {
     }
   }
 
-  // ── Cambiar la foto de perfil de un grupo (URL externa) ───────────────────
-  async function setGroupPhotoURL(groupId, photoURL) {
+  // ── Cambiar la foto de perfil de un grupo (subida de archivo) ──────────────
+  // Sube la imagen a Storage en groups/{groupId}/photo.{ext} (mismo path se
+  // sobreescribe en cada cambio) y guarda la download URL en el doc del grupo.
+  // Se agrega ?v=timestamp para evitar que el navegador cachee la foto vieja.
+  async function uploadGroupPhoto(groupId, file) {
     loading.value = true
     error.value = null
     try {
-      const trimmedURL = photoURL.trim()
+      const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+      const fileRef = storageRef(storage, `groups/${groupId}/photo.${ext}`)
+      await uploadBytes(fileRef, file, { contentType: file.type })
+      const rawURL = await getDownloadURL(fileRef)
+      const photoURL = `${rawURL}${rawURL.includes('?') ? '&' : '?'}v=${Date.now()}`
 
       await updateDoc(doc(db, 'groups', groupId), {
-        photoURL: trimmedURL || null,
+        photoURL,
         updatedAt: serverTimestamp(),
       })
 
       // Actualizar estado reactivo al instante
       groups.value = groups.value.map((g) =>
-        g.id === groupId ? { ...g, photoURL: trimmedURL || null } : g,
+        g.id === groupId ? { ...g, photoURL } : g,
       )
 
-      return trimmedURL || null
+      return photoURL
     } catch (err) {
       error.value = err.message
       throw err
@@ -158,10 +179,14 @@ export function useGroups() {
   }
 
   // ── Obtener miembros de un grupo ───────────────────────────────────────────
+  // El displayName queda congelado en el member doc al momento del join; acá
+  // lo pisamos con el nickname actual (users/{uid}.nickname) si el usuario se
+  // puso uno después, para no mostrar el nombre de Google/email desactualizado.
   async function getGroupMembers(groupId) {
     const q = query(collection(db, 'groups', groupId, 'members'), orderBy('joinedAt', 'asc'))
     const snaps = await getDocs(q)
-    return snaps.docs.map(d => ({ id: d.id, ...d.data() }))
+    const members = snaps.docs.map(d => ({ id: d.id, ...d.data() }))
+    return resolveNicknames(members)
   }
 
   // ── Obtener solicitudes de ingreso pendientes ──────────────────────────────
@@ -171,23 +196,28 @@ export function useGroups() {
       where('status', '==', 'pending'),
     )
     const snaps = await getDocs(q)
-    return snaps.docs
+    const requests = snaps.docs
       .map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => (a.requestedAt?.seconds ?? 0) - (b.requestedAt?.seconds ?? 0))
+    return resolveNicknames(requests)
   }
 
-  // ── Buscar grupos por nombre (prefix search) ───────────────────────────────
+  // ── Buscar grupos por nombre (contiene, no solo "empieza con") ─────────────
+  // Antes era un prefix-match ("nameLower >= term") que solo encontraba
+  // grupos cuyo NOMBRE COMPLETO empezaba con el término buscado — si el grupo
+  // se llamaba "Los Pibes FC" y buscabas "pibes", no aparecía nada (por eso
+  // la búsqueda se sentía rota). Ahora se trae un lote de grupos y se filtra
+  // por substring en el cliente — a esta escala (decenas/cientos de grupos)
+  // alcanza de sobra, sin necesitar un índice de búsqueda por palabras.
   async function searchGroups(searchTerm) {
     if (!searchTerm.trim()) return []
     const term = searchTerm.trim().toLowerCase()
-    const q = query(
-      collection(db, 'groups'),
-      where('nameLower', '>=', term),
-      where('nameLower', '<=', term + '\uf8ff'),
-      limit(20),
-    )
+    const q = query(collection(db, 'groups'), orderBy('nameLower', 'asc'), limit(300))
     const snaps = await getDocs(q)
-    return snaps.docs.map(d => ({ id: d.id, ...d.data() }))
+    return snaps.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(g => (g.nameLower ?? '').includes(term))
+      .slice(0, 20)
   }
 
   // ── Solicitar unirse a un grupo ────────────────────────────────────────────
@@ -207,7 +237,7 @@ export function useGroups() {
 
       await setDoc(doc(db, 'groups', groupId, 'joinRequests', uid), {
         userId: uid,
-        displayName: authStore.user.displayName,
+        displayName: authStore.user.nickname || authStore.user.displayName,
         photoURL: authStore.user.photoURL ?? null,
         requestedAt: serverTimestamp(),
         status: 'pending',
@@ -244,7 +274,7 @@ export function useGroups() {
       await runTransaction(db, async tx => {
         tx.set(doc(db, 'groups', groupId, 'members', uid), {
           userId: uid,
-          displayName: authStore.user.displayName,
+          displayName: authStore.user.nickname || authStore.user.displayName,
           photoURL: authStore.user.photoURL ?? null,
           role: 'member',
           joinedAt: serverTimestamp(),
@@ -399,7 +429,7 @@ export function useGroups() {
     error,
     groups,
     createGroup,
-    setGroupPhotoURL,
+    uploadGroupPhoto,
     getMyGroups,
     getGroup,
     getGroupMembers,

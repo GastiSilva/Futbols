@@ -45,7 +45,7 @@
               <!-- Sede (de la lista, o escrita a mano con el tilde) -->
               <q-select
                 v-model="form.venueId"
-                :options="venues"
+                :options="visibleVenues"
                 option-label="name"
                 option-value="id"
                 emit-value
@@ -355,6 +355,12 @@ function onManualLocationToggle(enabled) {
 
 const selectedFormat = computed(() =>
   FORMAT_OPTIONS.find((f) => f.value === form.value.format),
+)
+
+// Sedes elegibles para este partido: las globales + las del propio grupo del
+// partido (nunca las de OTRO grupo). Sin grupo (partido global) → solo globales.
+const visibleVenues = computed(() =>
+  venues.value.filter((v) => !v.groupId || v.groupId === form.value.groupId),
 )
 
 function syncNotifyAt(newOpenAt) {

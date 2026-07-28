@@ -1,4 +1,4 @@
-// Esquema de Firestore — Futbols PWA
+// Esquema de Firestore — YASTA PWA
 // ─────────────────────────────────────────────────────────────────────────────
 // Este archivo es solo documentación. No se ejecuta en runtime.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -50,6 +50,38 @@ const UserSchema = {
 
   createdAt:   'Timestamp',
   updatedAt:   'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: users/{uid}/descriptionRatings/{raterUid}
+ *  Calificación privada (1-5) de si la descripción de {uid} es real.
+ *  Un doc por calificador (docId = su uid), así puede actualizar su voto.
+ *  Solo el calificador puede leer SU PROPIO doc — ni el dueño del perfil ni
+ *  otros calificadores. El promedio lo calcula la Cloud Function
+ *  onDescriptionRatingWritten y lo publica en users/{uid}/private/descriptionStars.
+ *  Se borra entero (por otra Cloud Function, onUserDescriptionChanged) cada vez
+ *  que el dueño edita su `description`.
+ * ══════════════════════════════════════════════════════════
+ */
+const DescriptionRatingSchema = {
+  stars:     'number',    // 1-5
+  updatedAt: 'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: users/{uid}/private/descriptionStars
+ *  Agregado de descriptionRatings. Único doc de esta subcolección hoy.
+ *  read: solo el dueño (o admin) — es el único lugar donde Firestore puede
+ *  ocultar este dato, ya que users/{uid} en sí es legible por cualquier
+ *  autenticado. write: solo la Cloud Function (admin SDK).
+ * ══════════════════════════════════════════════════════════
+ */
+const DescriptionStarsSchema = {
+  avg:       'number', // Promedio de estrellas (0 si count === 0)
+  count:     'number', // Cantidad de calificaciones
+  updatedAt: 'Timestamp',
 }
 
 /**
@@ -176,7 +208,7 @@ const GroupSchema = {
   name:        'string',          // Nombre visible del grupo
   nameLower:   'string',          // Nombre en minúsculas (para búsqueda por prefijo)
   description: 'string',          // Descripción opcional
-  photoURL:    'string | null',   // Foto de perfil del grupo (URL externa, ej: Imgur/Drive)
+  photoURL:    'string | null',   // Foto de perfil del grupo (subida a Storage: groups/{groupId}/photo.*)
 
   inviteCode:  'string',          // Código de 8 chars para compartir enlace de invitación
   createdBy:   'string',          // uid del creador
@@ -249,6 +281,9 @@ const VenueSchema = {
   address:   'string',            // Dirección
   mapsUrl:   'string | null',     // Link de Google Maps ("Compartir" → URL)
   notes:     'string',            // Observaciones (vestuarios, pago, etc.)
+  groupId:   'string | null',     // null = sede GLOBAL (solo la crea/edita un admin);
+                                   // con valor = sede de ESE grupo (la crea/edita
+                                   // cualquier miembro de ese grupo)
 
   createdBy: 'string',            // uid del creador
   createdAt: 'Timestamp',

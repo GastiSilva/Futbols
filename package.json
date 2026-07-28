@@ -1,8 +1,8 @@
 {
-  "name": "futbols",
+  "name": "yasta",
   "version": "1.0.0",
   "description": "PWA para organizar partidos de fútbol amateur",
-  "productName": "Futbols",
+  "productName": "YASTA",
   "author": "",
   "private": true,
   "scripts": {

@@ -1,6 +1,6 @@
 {
   "name": "futbols-functions",
-  "description": "Cloud Functions para Futbols PWA",
+  "description": "Cloud Functions para YASTA PWA",
   "scripts": {
     "lint": "eslint .",
     "serve": "firebase emulators:start --only functions",

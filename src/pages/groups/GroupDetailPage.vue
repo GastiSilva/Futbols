@@ -38,8 +38,8 @@
           </q-btn>
         </div>
 
-        <!-- ── Dialog: cambiar foto del grupo (URL externa) ───────────────── -->
-        <q-dialog v-model="showPhotoDialog">
+        <!-- ── Dialog: cambiar foto del grupo (subir archivo) ──────────────── -->
+        <q-dialog v-model="showPhotoDialog" @hide="resetPhotoDialog">
           <q-card style="min-width: 320px; max-width: 480px; width: 100%">
             <q-card-section>
               <div class="text-h6">Foto del grupo</div>
@@ -47,14 +47,27 @@
 
             <q-form @submit.prevent="handleSavePhoto">
               <q-card-section class="q-pt-none">
-                <q-input
-                  v-model="photoURLInput"
-                  label="URL de la imagen"
-                  hint="Pegá el enlace de una imagen (ej: de Google Drive, Imgur, etc.)"
+                <div class="row justify-center q-mb-md" v-if="photoPreview || group.photoURL">
+                  <q-avatar size="96px" color="green-9" text-color="white">
+                    <img :src="photoPreview || group.photoURL" referrerpolicy="no-referrer" />
+                  </q-avatar>
+                </div>
+
+                <q-file
+                  v-model="photoFile"
+                  label="Elegir foto"
+                  accept="image/*"
                   outlined
                   clearable
                   autofocus
-                />
+                  :max-file-size="5 * 1024 * 1024"
+                  @rejected="onPhotoRejected"
+                  @update:model-value="onPhotoPicked"
+                >
+                  <template #prepend>
+                    <q-icon name="photo_camera" />
+                  </template>
+                </q-file>
               </q-card-section>
 
               <q-card-actions align="right" class="q-pb-md q-px-md">
@@ -65,6 +78,7 @@
                   label="Guardar"
                   type="submit"
                   class="pill-btn"
+                  :disable="!photoFile"
                   :loading="savingPhoto"
                 />
               </q-card-actions>
@@ -195,9 +209,11 @@
 
       <q-list bordered separator class="rounded-borders">
         <q-item
-          v-for="member in members"
+          v-for="member in pagedMembers"
           :key="member.id"
+          clickable
           class="q-py-sm"
+          @click="goToProfile(member)"
         >
           <q-item-section avatar>
             <q-avatar>
@@ -234,7 +250,7 @@
 
           <!-- Opciones de gestión (visible si puede gestionar a este miembro) -->
           <q-item-section side v-if="canManageMember(member)">
-            <q-btn flat round icon="more_vert" size="sm">
+            <q-btn flat round icon="more_vert" size="sm" @click.stop>
               <q-menu anchor="bottom right" self="top right">
                 <q-list style="min-width: 200px">
                   <q-item
@@ -279,6 +295,17 @@
           </q-item-section>
         </q-item>
       </q-list>
+
+      <div v-if="memberPageCount > 1" class="row justify-center q-mt-sm">
+        <q-pagination
+          v-model="memberPage"
+          :max="memberPageCount"
+          max-pages="6"
+          direction-links
+          boundary-links
+          color="green-9"
+        />
+      </div>
 
       <!-- Salir del grupo (solo si no es owner) -->
       <div class="q-mt-xl text-center" v-if="myRole && myRole !== 'owner'">
@@ -344,7 +371,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useGroups } from 'src/composables/useGroups'
 import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
@@ -368,7 +395,7 @@ const {
   setMemberOG,
   getMyRole,
   regenerateInviteCode,
-  setGroupPhotoURL,
+  uploadGroupPhoto,
 } = useGroups()
 
 const { matches, subscribeToGroupMatches, stopListening } = useMatch()
@@ -376,12 +403,22 @@ const { matches, subscribeToGroupMatches, stopListening } = useMatch()
 const groupId = route.params.id
 const group = ref(null)
 const members = ref([])
+const MEMBERS_PER_PAGE = 15
+const memberPage = ref(1)
+const memberPageCount = computed(() => Math.max(1, Math.ceil(members.value.length / MEMBERS_PER_PAGE)))
+const pagedMembers = computed(() =>
+  members.value.slice((memberPage.value - 1) * MEMBERS_PER_PAGE, memberPage.value * MEMBERS_PER_PAGE),
+)
+watch(members, () => {
+  if (memberPage.value > memberPageCount.value) memberPage.value = memberPageCount.value
+})
 const joinRequests = ref([])
 const myRole = ref(null)
 const loadingGroup = ref(true)
 const processingId = ref(null)
 const showPhotoDialog = ref(false)
-const photoURLInput = ref('')
+const photoFile = ref(null)
+const photoPreview = ref('')
 const savingPhoto = ref(false)
 
 const inviteLink = computed(() => {
@@ -395,6 +432,16 @@ const inviteLink = computed(() => {
 const canManageGroup = computed(
   () => authStore.isAdmin || myRole.value === 'owner' || myRole.value === 'admin',
 )
+
+// Ver el perfil de un miembro (el propio va a la página de edición, el de
+// otro compañero de grupo a la vista de solo lectura).
+function goToProfile(member) {
+  if (member.userId === authStore.user?.uid) {
+    router.push({ name: 'profile' })
+  } else {
+    router.push({ name: 'profile-view', params: { uid: member.userId } })
+  }
+}
 
 onMounted(async () => {
   try {
@@ -564,16 +611,31 @@ function handleRegenerateCode() {
   })
 }
 
-// ── Foto de perfil del grupo (URL externa) ──────────────────────────────────
+// ── Foto de perfil del grupo (subir archivo) ────────────────────────────────
 function openPhotoDialog() {
-  photoURLInput.value = group.value?.photoURL ?? ''
   showPhotoDialog.value = true
 }
 
+function resetPhotoDialog() {
+  photoFile.value = null
+  if (photoPreview.value) URL.revokeObjectURL(photoPreview.value)
+  photoPreview.value = ''
+}
+
+function onPhotoPicked(file) {
+  if (photoPreview.value) URL.revokeObjectURL(photoPreview.value)
+  photoPreview.value = file ? URL.createObjectURL(file) : ''
+}
+
+function onPhotoRejected() {
+  $q.notify({ type: 'negative', message: 'La imagen debe pesar menos de 5MB' })
+}
+
 async function handleSavePhoto() {
+  if (!photoFile.value) return
   savingPhoto.value = true
   try {
-    const photoURL = await setGroupPhotoURL(groupId, photoURLInput.value ?? '')
+    const photoURL = await uploadGroupPhoto(groupId, photoFile.value)
     group.value.photoURL = photoURL
     showPhotoDialog.value = false
     $q.notify({ type: 'positive', message: 'Foto del grupo actualizada' })

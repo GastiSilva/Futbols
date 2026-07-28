@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore'
 import { getMessaging, isSupported } from 'firebase/messaging'
 import { getFunctions } from 'firebase/functions'
+import { getStorage } from 'firebase/storage'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -41,6 +42,9 @@ export const db = initializeFirestore(firebaseApp, {
 
 // ── Cloud Functions ───────────────────────────────────────────────────────────
 export const functions = getFunctions(firebaseApp, 'southamerica-east1')
+
+// ── Storage ────────────────────────────────────────────────────────────────────
+export const storage = getStorage(firebaseApp)
 
 // ── FCM (Firebase Cloud Messaging) ────────────────────────────────────────────
 // Se inicializa de forma lazy porque isSupported() es async

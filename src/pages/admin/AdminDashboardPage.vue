@@ -136,7 +136,7 @@
               </q-item-section>
             </q-item>
 
-            <q-item v-for="u in filteredUsers" :key="u.id" class="q-pa-md">
+            <q-item v-for="u in pagedUsers" :key="u.id" class="q-pa-md">
               <q-item-section avatar>
                 <q-avatar size="48px">
                   <img
@@ -187,6 +187,17 @@
               </q-item-section>
             </q-item>
           </q-list>
+
+          <div v-if="userPageCount > 1" class="row justify-center q-py-md">
+            <q-pagination
+              v-model="userPage"
+              :max="userPageCount"
+              max-pages="6"
+              direction-links
+              boundary-links
+              color="green-9"
+            />
+          </div>
         </q-card>
       </div>
 
@@ -195,7 +206,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { date, useQuasar } from 'quasar'
 import { collection, getDocs, orderBy, query } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
@@ -227,6 +238,15 @@ const filteredUsers = computed(() => {
       u.email?.toLowerCase().includes(search),
   )
 })
+
+const USERS_PER_PAGE = 15
+const userPage = ref(1)
+const userPageCount = computed(() => Math.max(1, Math.ceil(filteredUsers.value.length / USERS_PER_PAGE)))
+const pagedUsers = computed(() =>
+  filteredUsers.value.slice((userPage.value - 1) * USERS_PER_PAGE, userPage.value * USERS_PER_PAGE),
+)
+// Al buscar (o al cambiar la lista) volvé siempre a la página 1
+watch(filteredUsers, () => { userPage.value = 1 })
 
 onMounted(async () => {
   subscribeToUpcoming()

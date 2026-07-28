@@ -52,7 +52,9 @@ export function useVenues() {
   }
 
   // ── Crear sede ─────────────────────────────────────────────────────────────
-  async function createVenue({ name, address = '', mapsUrl = '', notes = '' }) {
+  // groupId: null → sede GLOBAL (solo admin puede crearla, lo exigen las
+  // reglas). Un usuario común debe pasar el id de un grupo del que es miembro.
+  async function createVenue({ name, address = '', mapsUrl = '', notes = '', groupId = null }) {
     loading.value = true
     error.value = null
     try {
@@ -65,6 +67,7 @@ export function useVenues() {
         address: address.trim(),
         mapsUrl: mapsUrl.trim() || null,
         notes: notes.trim(),
+        groupId: groupId ?? null,
         createdBy: uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -132,14 +135,12 @@ export function useVenues() {
     }
   }
 
-  // ¿Puede EDITAR esta sede? Admin global, cualquier OG (OG/owner/admin en al
-  // menos un grupo) o quien la creó. Pensado para corregir datos de una cancha.
+  // ¿Puede EDITAR esta sede? Admin global siempre. Una sede de grupo la puede
+  // editar cualquier miembro de ESE grupo. Una sede global (groupId null) solo
+  // la edita un admin (así lo exigen las reglas también).
   function canEditVenue(venue) {
-    return (
-      authStore.isAdmin ||
-      authStore.ogGroupIds.length > 0 ||
-      venue?.createdBy === authStore.user?.uid
-    )
+    if (authStore.isAdmin) return true
+    return !!venue?.groupId && authStore.isMemberOfGroup(venue.groupId)
   }
 
   // ¿Puede BORRARLA? Acción destructiva → solo el creador o un admin global.

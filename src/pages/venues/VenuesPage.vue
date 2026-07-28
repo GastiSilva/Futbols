@@ -41,7 +41,13 @@
           <q-card-section class="col">
             <div class="row items-start no-wrap">
               <div class="col">
-                <div class="text-subtitle1 text-weight-bold">{{ venue.name }}</div>
+                <div class="row items-center q-gutter-xs">
+                  <div class="text-subtitle1 text-weight-bold">{{ venue.name }}</div>
+                  <q-badge
+                    :color="venue.groupId ? 'blue-grey-6' : 'green-9'"
+                    :label="venue.groupId ? (groupNames[venue.groupId] ?? 'Grupo') : 'Global'"
+                  />
+                </div>
                 <div v-if="venue.address" class="text-caption text-grey-7 q-mt-xs">
                   <q-icon name="place" size="xs" class="q-mr-xs" />{{ venue.address }}
                 </div>
@@ -105,6 +111,24 @@
 
         <q-card-section class="q-pt-none">
           <q-form @submit.prevent="handleSave" class="q-gutter-y-md">
+            <q-select
+              v-model="form.groupId"
+              :options="groupOptions"
+              option-label="name"
+              option-value="id"
+              emit-value
+              map-options
+              label="Grupo"
+              outlined
+              :disable="!!editingVenueId"
+              :rules="authStore.isAdmin ? [] : [v => !!v || 'Elegí un grupo']"
+              :hint="editingVenueId ? 'No se puede cambiar el grupo de una sede ya creada' : (authStore.isAdmin ? 'Vacío = sede global, para todos los grupos' : 'Va a quedar disponible solo para ese grupo')"
+            >
+              <template #prepend>
+                <q-icon name="group" />
+              </template>
+            </q-select>
+
             <q-input
               v-model="form.name"
               label="Nombre *"
@@ -170,11 +194,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { useVenues } from 'src/composables/useVenues'
+import { useGroups } from 'src/composables/useGroups'
+import { useAuthStore } from 'src/stores/auth.store'
 
 const $q = useQuasar()
+const authStore = useAuthStore()
 const {
   venues,
   loading,
@@ -186,12 +213,30 @@ const {
   canEditVenue,
   canDeleteVenue,
 } = useVenues()
+const { getMyGroups, getGroup } = useGroups()
 
 const showDialog = ref(false)
 const editingVenueId = ref(null)
-const form = ref({ name: '', address: '', mapsUrl: '', notes: '' })
+const form = ref({ name: '', address: '', mapsUrl: '', notes: '', groupId: null })
+
+const myGroups = ref([])
+// Nombres de TODOS los grupos que aparecen en alguna sede (no solo los míos),
+// para poder mostrar el badge de la tarjeta aunque sea de un grupo ajeno.
+const groupNames = ref({})
+
+// Opciones del selector de grupo del formulario: un admin puede dejarla
+// "Global" (id null); un usuario común elige entre sus propios grupos.
+const groupOptions = computed(() => {
+  const mine = myGroups.value.map((g) => ({ id: g.id, name: g.name }))
+  return authStore.isAdmin ? [{ id: null, name: 'Global (todos los grupos)' }, ...mine] : mine
+})
 
 onMounted(async () => {
+  try {
+    myGroups.value = await getMyGroups()
+  } catch {
+    myGroups.value = []
+  }
   try {
     await fetchVenues()
   } catch {
@@ -199,14 +244,43 @@ onMounted(async () => {
   }
 })
 
+// Completa los nombres de grupo faltantes cada vez que cambia la lista de sedes
+watch(venues, async (list) => {
+  const missing = [...new Set(list.map((v) => v.groupId).filter(Boolean))]
+    .filter((gid) => !groupNames.value[gid])
+  if (missing.length === 0) return
+  const entries = await Promise.all(
+    missing.map(async (gid) => {
+      try {
+        const g = await getGroup(gid)
+        return [gid, g?.name ?? 'Grupo']
+      } catch {
+        return [gid, 'Grupo']
+      }
+    }),
+  )
+  groupNames.value = { ...groupNames.value, ...Object.fromEntries(entries) }
+}, { immediate: true })
+
 function validateMapsUrl(val) {
   if (!val?.trim()) return true
   return /^https?:\/\//.test(val.trim()) || 'Debe ser un link válido (https://...)'
 }
 
 function openCreateDialog() {
+  if (!authStore.isAdmin && myGroups.value.length === 0) {
+    $q.notify({ type: 'warning', message: 'Tenés que pertenecer a un grupo para crear una sede.' })
+    return
+  }
   editingVenueId.value = null
-  form.value = { name: '', address: '', mapsUrl: '', notes: '' }
+  form.value = {
+    name: '',
+    address: '',
+    mapsUrl: '',
+    notes: '',
+    // Admin arranca en "Global"; un usuario con un solo grupo arranca ahí directo.
+    groupId: authStore.isAdmin ? null : (myGroups.value.length === 1 ? myGroups.value[0].id : null),
+  }
   showDialog.value = true
 }
 
@@ -217,6 +291,7 @@ function openEditDialog(venue) {
     address: venue.address ?? '',
     mapsUrl: venue.mapsUrl ?? '',
     notes: venue.notes ?? '',
+    groupId: venue.groupId ?? null,
   }
   showDialog.value = true
 }
@@ -224,6 +299,10 @@ function openEditDialog(venue) {
 async function handleSave() {
   if (!form.value.name?.trim()) {
     $q.notify({ type: 'warning', message: 'El nombre es obligatorio.' })
+    return
+  }
+  if (!authStore.isAdmin && !editingVenueId.value && !form.value.groupId) {
+    $q.notify({ type: 'warning', message: 'Elegí a qué grupo pertenece la sede.' })
     return
   }
   if (validateMapsUrl(form.value.mapsUrl) !== true) {

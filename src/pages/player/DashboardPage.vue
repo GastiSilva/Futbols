@@ -45,10 +45,10 @@
               </div>
               <div class="text-right">
                 <div class="text-caption text-weight-bold" :class="getCuposColor(match)">
-                  {{ match.currentPlayers }} / {{ match.maxPlayers }}
+                  {{ visibleCupos(match).current }} / {{ visibleCupos(match).max }}
                 </div>
                 <q-linear-progress
-                  :value="match.currentPlayers / match.maxPlayers"
+                  :value="visibleCupos(match).ratio"
                   :color="getProgressColor(match)"
                   size="4px"
                   style="width: 80px"
@@ -113,11 +113,11 @@
               <div class="row justify-between items-center q-mb-xs">
                 <span class="text-caption text-grey-6 text-uppercase">Cupos</span>
                 <span class="text-caption text-weight-bold">
-                  {{ match.currentPlayers }} / {{ match.maxPlayers }}
+                  {{ visibleCupos(match).current }} / {{ visibleCupos(match).max }}
                 </span>
               </div>
               <q-linear-progress
-                :value="match.currentPlayers / match.maxPlayers"
+                :value="visibleCupos(match).ratio"
                 :color="getProgressColor(match)"
                 track-color="grey-3"
                 rounded
@@ -243,7 +243,15 @@
 
       <template v-if="selectedMatch">
 
-        <!-- ── Lista de inscriptos ──────────────────────────────────────────── -->
+        <!-- ── Lista de inscriptos (visible desde el horario de acceso de cada uno) ── -->
+        <template v-if="!canSeeRegistrations(selectedMatch)">
+          <q-card flat bordered class="q-pa-md row items-center q-gutter-sm text-grey-6">
+            <q-icon name="visibility_off" size="22px" />
+            <span class="text-body2">La lista se va a ver a las {{ myRegistrationsVisibleAtLabel }}.</span>
+          </q-card>
+        </template>
+
+        <template v-else>
         <div class="text-overline text-grey-6 q-mb-sm dash-overline">
           ANOTADOS ({{ titularesSeleccionado.length }})
           <span v-if="suplentesSelectorado.length > 0"> · SUPLENTES ({{ suplentesSelectorado.length }})</span>
@@ -363,6 +371,7 @@
 
           </q-list>
         </q-card>
+        </template>
 
         <!-- ── Anotar a otra persona (invitado o miembro del grupo) ──────────── -->
         <q-btn
@@ -489,6 +498,7 @@ const {
   removeRegistration,
   canRegister,
   msUntilOpen,
+  canSeeRegistrations,
   isInEarlyWindow,
   subscribeToRegistrations,
   stopListening,
@@ -522,6 +532,16 @@ const selectedMatchId = ref(null)
 const selectedMatch = computed(() =>
   upcomingMatches.value.find((m) => m.id === selectedMatchId.value),
 )
+
+// Hora en la que ESTE usuario puntual va a poder ver la lista de anotados
+// (creador: siempre; OG: 30 min antes; miembro común: la hora oficial).
+const myRegistrationsVisibleAtLabel = computed(() => {
+  if (!selectedMatch.value) return ''
+  const ms = msUntilOpen(selectedMatch.value)
+  if (ms <= 0) return ''
+  const d = new Date(Date.now() + ms)
+  return new Intl.DateTimeFormat('es-AR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(d)
+})
 
 // ── Registraciones globales ──────────────────────────────────────────────────
 // Un Map<matchId, registraciones[]> para mantener registraciones por match
@@ -599,13 +619,22 @@ function getHeaderClass(matchId) {
   return selectedMatchId.value === matchId ? 'bg-green-1' : ''
 }
 
+// Cupos "engaño visual": antes del horario de acceso de cada uno se muestran
+// en 0/0, igual que la lista de anotados — no debe notarse que ya hay gente.
+function visibleCupos(match) {
+  if (!canSeeRegistrations(match)) return { current: 0, max: 0, ratio: 0 }
+  const current = match.currentPlayers ?? 0
+  const max = match.maxPlayers ?? 0
+  return { current, max, ratio: max ? current / max : 0 }
+}
+
 function getProgressColor(match) {
-  const ratio = (match.currentPlayers ?? 0) / (match.maxPlayers ?? 1)
+  const { ratio } = visibleCupos(match)
   return ratio >= 1 ? 'red-7' : ratio >= 0.8 ? 'orange-7' : 'green-9'
 }
 
 function getCuposColor(match) {
-  const ratio = (match.currentPlayers ?? 0) / (match.maxPlayers ?? 1)
+  const { ratio } = visibleCupos(match)
   return ratio >= 1 ? 'text-red-7' : ratio >= 0.8 ? 'text-orange-7' : 'text-green-9'
 }
 

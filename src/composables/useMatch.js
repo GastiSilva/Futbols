@@ -73,6 +73,10 @@ export function useMatch() {
   let unsubscribe = null
 
   // ── Escucha en tiempo real los próximos partidos ──────────────────────────
+  // Solo se muestran partidos de los grupos del usuario, o partidos sin grupo
+  // (globales, creados por un admin). Un admin global ve todo. Esto es solo
+  // filtrado de visibilidad en el cliente — la autorización real de anotarse
+  // vive en useRegistration.registerEntry y en firestore.rules.
   function subscribeToUpcoming() {
     const q = query(
       collection(db, 'matches'),
@@ -82,7 +86,10 @@ export function useMatch() {
     unsubscribe = onSnapshot(
       q,
       (snap) => {
-        matches.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+        const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+        matches.value = authStore.isAdmin
+          ? all
+          : all.filter((m) => !m.groupId || authStore.isMemberOfGroup(m.groupId))
       },
       (err) => {
         error.value = err.message

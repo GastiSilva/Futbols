@@ -54,17 +54,24 @@ service cloud.firestore {
         && matchData(matchId).get('createdBy', '') == request.auth.uid;
     }
 
-    // Membresía de grupo: el usuario pertenece al grupo.
-    function isMemberOfGroup(groupId) {
-      return isAuthenticated()
-        && groupId != null
-        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    // Membresía de grupo: el uid dado pertenece al grupo.
+    function isMemberOfGroup(groupId, uid) {
+      return groupId != null
+        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(uid));
     }
 
     function isMemberOfMatchGroup(matchId) {
-      return isMemberOfGroup(
-        get(/databases/$(database)/documents/matches/$(matchId)).data.get('groupId', null)
-      );
+      return isAuthenticated()
+        && isMemberOfGroup(
+             get(/databases/$(database)/documents/matches/$(matchId)).data.get('groupId', null),
+             request.auth.uid
+           );
+    }
+
+    // Un partido sin grupo (groupId null) es global: lo crea un admin y queda
+    // abierto a cualquier usuario autenticado.
+    function isGroupless(matchId) {
+      return matchData(matchId).get('groupId', null) == null;
     }
 
     function isGroupAdmin(groupId) {
@@ -140,6 +147,41 @@ service cloud.firestore {
         allow write: if isOwner(userId)
                      || isGroupAdmin(groupId);
       }
+
+      // ── users/{userId}/descriptionRatings ───────────────────────────────────
+      // Estrellas (1-5) que otros usuarios asignan en privado a la descripción
+      // de este perfil. Un doc por calificador (docId = su propio uid), así se
+      // puede actualizar su voto. Solo el calificador puede leer SU PROPIO voto
+      // (ni el dueño del perfil ni otros calificadores lo ven) — el promedio lo
+      // calcula la Cloud Function onDescriptionRatingWritten (admin SDK) y lo
+      // publica en users/{userId}/private/descriptionStars.
+      match /descriptionRatings/{raterId} {
+
+        allow read: if isOwner(raterId) || isAdmin();
+
+        allow create, update: if
+          isOwner(raterId)
+          && raterId != userId
+          && request.resource.data.stars is int
+          && request.resource.data.stars >= 1
+          && request.resource.data.stars <= 5;
+
+        allow delete: if isAdmin();
+      }
+
+      // ── users/{userId}/private ──────────────────────────────────────────────
+      // Datos derivados que solo el dueño del perfil puede ver (ej. el promedio
+      // de estrellas de su descripción). Doc separado del users/{userId}
+      // principal porque las reglas de Firestore no pueden ocultar campos
+      // sueltos dentro de un mismo documento — y ese doc ya es legible por
+      // cualquier autenticado (ver perfil de un compañero de grupo).
+      match /private/{docId} {
+
+        allow read: if isOwner(userId) || isAdmin();
+
+        // Solo lo escribe la Cloud Function (admin SDK, ignora estas reglas).
+        allow write: if false;
+      }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -212,9 +254,11 @@ service cloud.firestore {
 
             ||
 
-            // (1) ventana abierta para todos
+            // (1) ventana abierta para todos — pero solo para miembros del
+            // grupo del partido (o admin global, o partido sin grupo/global)
             (
               request.time >= matchData(matchId).openAt
+              && (isAdmin() || isGroupless(matchId) || isMemberOfMatchGroup(matchId))
               && (
                 // (a) me anoto yo mismo (docId = mi uid)
                 (
@@ -232,11 +276,13 @@ service cloud.firestore {
 
                 ||
 
-                // (c) anoto a otro miembro existente (docId = uid del anotado)
+                // (c) anoto a otro miembro existente (docId = uid del anotado);
+                // ese miembro también debe pertenecer al grupo del partido
                 (
                   request.resource.data.isGuest == false
                   && request.resource.data.userId == userId
                   && request.resource.data.addedBy == request.auth.uid
+                  && (isAdmin() || isGroupless(matchId) || isMemberOfGroup(matchData(matchId).get('groupId', null), userId))
                 )
               )
             )
@@ -360,18 +406,31 @@ service cloud.firestore {
 
       allow read: if isAuthenticated();
 
-      // Cualquier usuario autenticado puede crear una sede (firmándola)
+      // Crear: un admin global puede crear una sede GLOBAL (groupId null) o de
+      // cualquier grupo. Un usuario común solo puede crear una sede de UN GRUPO
+      // DEL QUE ES MIEMBRO — nunca una sede global.
       allow create: if isAuthenticated()
-                    && request.resource.data.createdBy == request.auth.uid;
+                    && request.resource.data.createdBy == request.auth.uid
+                    && (
+                      isAdmin()
+                      || (
+                        request.resource.data.groupId != null
+                        && isMemberOfGroup(request.resource.data.groupId, request.auth.uid)
+                      )
+                    );
 
-      // Editar: cualquier usuario autenticado.
-      // Idealmente sería "solo OGs", pero el rol OG es POR-GRUPO (members.og) y
-      // las sedes son globales: las reglas no pueden verificar "es OG en algún
-      // grupo" sin un groupId (no se puede iterar la colección de grupos). El
-      // gating real de "solo OGs" vive en la UI (canEditVenue). Como las sedes
-      // son datos de bajo riesgo y quedan denormalizados en cada partido, se
-      // acepta permitir la edición a cualquier autenticado a nivel de reglas.
-      allow update: if isAuthenticated();
+      // Editar (nombre/dirección/maps/notas): un admin global siempre puede.
+      // Una sede de grupo la puede editar cualquier miembro de ESE grupo (no
+      // solo el creador) — pero no se puede reasignar a otro grupo ni volverla
+      // global salvo un admin. Una sede GLOBAL (groupId null) solo la edita un
+      // admin — por eso no hay branch para "cualquier autenticado" acá.
+      allow update: if isAdmin()
+                    || (
+                      isAuthenticated()
+                      && resource.data.groupId != null
+                      && isMemberOfGroup(resource.data.groupId, request.auth.uid)
+                      && request.resource.data.groupId == resource.data.groupId
+                    );
 
       // Borrar (destructivo): solo quien la creó o un admin global.
       allow delete: if isAdmin()

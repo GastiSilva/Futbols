@@ -32,7 +32,7 @@ if (process.env.MODE !== 'ssr' || process.env.PROD) {
 self.addEventListener('push', (event) => {
   if (!event.data) return
 
-  let title = '⚽ Futbols'
+  let title = '⚽ YASTA'
   let body  = 'Tenes un nuevo mensaje'
   let data  = {}
 

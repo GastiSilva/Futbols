@@ -58,6 +58,7 @@ export const REGISTRATION_ERRORS = {
   EARLY_NO_GUESTS: 'Los invitados solo pueden anotarse cuando la lista abre para todos.',
   EARLY_TARGET_NOT_ALLOWED:
     'Esa persona no tiene acceso anticipado — podés anotarla cuando abra la lista.',
+  NOT_GROUP_MEMBER: 'Este partido es de un grupo del que no formás parte.',
 }
 
 // Ventana de acceso anticipado (OG / owner / admin del grupo): 30 minutos
@@ -161,7 +162,21 @@ export function useRegistration() {
         const isCreator = match.createdBy === user.uid
         const creatorSelf = isCreator && isSelf
 
+        const isGlobalAdmin = authStore.isAdmin
+
         if (!creatorSelf) {
+          // Partido de grupo: solo miembros de ese grupo pueden anotarse o
+          // anotar a otra persona (un admin global puede siempre). Los
+          // partidos sin grupo (groupId null) son globales y quedan abiertos.
+          if (match.groupId && !isGlobalAdmin) {
+            const callerMemberSnap = await transaction.get(
+              doc(db, 'groups', match.groupId, 'members', user.uid),
+            )
+            if (!callerMemberSnap.exists()) {
+              throw new Error(REGISTRATION_ERRORS.NOT_GROUP_MEMBER)
+            }
+          }
+
           const hasEarlyAccess = authStore.isOgInGroup(match.groupId) || isCreator
           const threshold = hasEarlyAccess ? openAtMillis - EARLY_ACCESS_MS : openAtMillis
           if (now < threshold) {
@@ -187,6 +202,15 @@ export function useRegistration() {
               if (!targetHasEarlyAccess) {
                 throw new Error(REGISTRATION_ERRORS.EARLY_TARGET_NOT_ALLOWED)
               }
+            }
+          } else if (!isSelf && !entry.isGuest && match.groupId && !isGlobalAdmin) {
+            // Ventana abierta: si se anota a otro miembro, ese miembro
+            // también debe pertenecer al grupo del partido.
+            const targetMemberSnap = await transaction.get(
+              doc(db, 'groups', match.groupId, 'members', entry.targetUserId),
+            )
+            if (!targetMemberSnap.exists()) {
+              throw new Error(REGISTRATION_ERRORS.NOT_GROUP_MEMBER)
             }
           }
         }
@@ -362,6 +386,11 @@ export function useRegistration() {
     // El creador del partido puede anotarse desde el momento cero
     if (match.createdBy === authStore.user?.uid) return true
 
+    // Partido de grupo: solo miembros de ese grupo (o admin global)
+    if (match.groupId && !authStore.isAdmin && !authStore.isMemberOfGroup(match.groupId)) {
+      return false
+    }
+
     const now = Date.now()
     const openAt = match.openAt?.toMillis?.() ?? 0
 
@@ -385,6 +414,19 @@ export function useRegistration() {
     const threshold = hasEarlyAccess ? openAt - EARLY_ACCESS_MS : openAt
 
     return Math.max(0, threshold - Date.now())
+  }
+
+  /**
+   * ¿Puede VER quién ya está anotado? Mismo umbral que la propia inscripción
+   * de cada uno: el creador siempre, un OG desde que abre SU ventana (30 min
+   * antes), un miembro común recién a la hora oficial. Es "engaño visual" a
+   * propósito — un miembro no debe ver que ya hay gente anotada mientras para
+   * él la lista todavía figura cerrada; cuando le toca a él, ya la ve poblada.
+   * @param {{ openAt: Timestamp, createdBy: string, groupId: string|null }} match
+   */
+  function canSeeRegistrations(match) {
+    if (!match) return false
+    return msUntilOpen(match) <= 0
   }
 
   /**
@@ -418,6 +460,7 @@ export function useRegistration() {
     removeRegistration,
     canRegister,
     msUntilOpen,
+    canSeeRegistrations,
     isInEarlyWindow,
     subscribeToRegistrations,
     stopListening,

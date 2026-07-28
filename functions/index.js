@@ -606,6 +606,73 @@ exports.onRegistrationDeleted = onDocumentDeleted(
   },
 )
 
+// ── 13. Trigger: recalcular el promedio de estrellas de la descripción ───────
+// Se dispara al crear/editar/borrar users/{userId}/descriptionRatings/{raterId}.
+// Recuenta todo el subcolección (es chica, un rating por persona del grupo) y
+// publica el agregado en users/{userId}/private/descriptionStars, el único
+// lugar que el dueño del perfil puede leer (las reglas no dejan ver los votos
+// individuales ni de quién son).
+exports.onDescriptionRatingWritten = onDocumentWritten(
+  { region: LOCATION, document: 'users/{userId}/descriptionRatings/{raterId}' },
+  async (event) => {
+    try {
+      const { userId } = event.params
+      const db = admin.firestore()
+
+      const snap = await db.collection('users').doc(userId).collection('descriptionRatings').get()
+      const count = snap.size
+      const avg = count === 0
+        ? 0
+        : snap.docs.reduce((sum, d) => sum + (d.data().stars ?? 0), 0) / count
+
+      await db.collection('users').doc(userId).collection('private').doc('descriptionStars').set({
+        avg,
+        count,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      logger.info(`Estrellas de descripción recalculadas para ${userId}: avg=${avg} count=${count}`)
+    } catch (error) {
+      logger.error('onDescriptionRatingWritten: error', error)
+    }
+  },
+)
+
+// ── 14. Trigger: si cambia la descripción, resetear sus calificaciones ───────
+// Los votos de "esta descripción es real" quedan obsoletos apenas el texto
+// cambia — se borran todos y el promedio vuelve a cero. Se dispara en CADA
+// update de users/{userId} (fcmToken, stats, etc.), por eso compara
+// explícitamente before/after.description antes de hacer nada.
+exports.onUserDescriptionChanged = onDocumentUpdated(
+  { region: LOCATION, document: 'users/{userId}' },
+  async (event) => {
+    try {
+      const before = event.data.before.data()
+      const after = event.data.after.data()
+      if ((before?.description ?? '') === (after?.description ?? '')) return
+
+      const { userId } = event.params
+      const db = admin.firestore()
+      const userRef = db.collection('users').doc(userId)
+
+      const ratingsSnap = await userRef.collection('descriptionRatings').get()
+      if (!ratingsSnap.empty) {
+        const batch = db.batch()
+        ratingsSnap.docs.forEach((d) => batch.delete(d.ref))
+        await batch.commit()
+      }
+
+      await userRef.collection('private').doc('descriptionStars').set({
+        avg: 0,
+        count: 0,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      logger.info(`Descripción cambiada: estrellas reseteadas para ${userId}`)
+    } catch (error) {
+      logger.error('onUserDescriptionChanged: error', error)
+    }
+  },
+)
+
 // ── Helper: ¿el caller es owner/admin del grupo del partido? ─────────────────
 async function isCallerGroupManagerOfMatch(uid, matchId) {
   const db = admin.firestore()

@@ -36,7 +36,7 @@ async function initFCMInBackground() {
         })
       }
       // Mostrar notificación
-      swReg.showNotification(title ?? '⚽ Futbols', {
+      swReg.showNotification(title ?? '⚽ YASTA', {
         body: body ?? 'Tienes un nuevo mensaje',
         icon: '/icons/brazuca.png',       // pelota de futbol
         badge: '/icons/icon-128x128.png',

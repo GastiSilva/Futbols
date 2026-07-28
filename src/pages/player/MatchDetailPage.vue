@@ -82,11 +82,11 @@
           <div class="row justify-between items-center q-mb-xs">
             <span class="text-caption text-grey-6">Cupos</span>
             <span class="text-caption text-weight-bold">
-              {{ match.currentPlayers }} / {{ match.maxPlayers }}
+              {{ visibleCupos.current }} / {{ visibleCupos.max }}
             </span>
           </div>
           <q-linear-progress
-            :value="match.currentPlayers / match.maxPlayers"
+            :value="visibleCupos.ratio"
             color="green-9"
             track-color="grey-3"
             rounded
@@ -176,8 +176,15 @@
         </q-card-section>
       </q-card>
 
-      <!-- Lista de anotados -->
-      <q-card v-if="registrations.length > 0" flat bordered class="q-mb-md">
+      <!-- Lista de anotados (visible desde el horario de acceso de cada uno) -->
+      <q-card v-if="!canSeeRegistrations(match) && registrations.length > 0" flat bordered class="q-mb-md">
+        <q-card-section class="row items-center q-gutter-sm text-grey-6">
+          <q-icon name="visibility_off" size="22px" />
+          <span class="text-body2">La lista de anotados se va a ver a las {{ myRegistrationsVisibleAtLabel }}.</span>
+        </q-card-section>
+      </q-card>
+
+      <q-card v-else-if="registrations.length > 0" flat bordered class="q-mb-md">
         <q-card-section class="q-pb-none">
           <div class="text-overline text-green-9 text-weight-bold">
             Anotados ({{ starters.length }}/{{ match.maxPlayers }})
@@ -302,6 +309,7 @@ const {
   canRegister,
   isInEarlyWindow,
   msUntilOpen,
+  canSeeRegistrations,
   subscribeToRegistrations,
   stopListening: stopRegistrations,
 } = useRegistration()
@@ -321,6 +329,22 @@ const notYetOpen = computed(() => !!match.value && msUntilOpen(match.value) > 0)
 const openAtLabel = computed(() =>
   match.value?.openAt ? date.formatDate(match.value.openAt.toDate(), 'DD/MM HH:mm') : '',
 )
+// Hora en la que ESTE usuario puntual va a poder ver la lista de anotados
+// (creador: siempre; OG: 30 min antes; miembro común: la hora oficial).
+const myRegistrationsVisibleAtLabel = computed(() => {
+  if (!match.value) return ''
+  const ms = msUntilOpen(match.value)
+  if (ms <= 0) return ''
+  return date.formatDate(new Date(Date.now() + ms), 'DD/MM HH:mm')
+})
+// Cupos "engaño visual": antes del horario de acceso de cada uno se muestran
+// en 0/0, igual que la lista de anotados — no debe notarse que ya hay gente.
+const visibleCupos = computed(() => {
+  if (!match.value || !canSeeRegistrations(match.value)) return { current: 0, max: 0, ratio: 0 }
+  const current = match.value.currentPlayers ?? 0
+  const max = match.value.maxPlayers ?? 0
+  return { current, max, ratio: max ? current / max : 0 }
+})
 const starters = computed(() => registrations.value.filter((r) => !r.isOnWaitlist))
 const waitlist = computed(() => registrations.value.filter((r) => r.isOnWaitlist))
 

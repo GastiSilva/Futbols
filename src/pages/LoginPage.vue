@@ -4,7 +4,7 @@
       <!-- Logo -->
       <div class="q-mb-lg">
         <q-icon name="sports_soccer" size="72px" color="primary" />
-        <div class="text-h4 text-white text-weight-bold q-mt-sm">Futbols</div>
+        <div class="text-h4 text-white text-weight-bold q-mt-sm">YASTA</div>
         <div class="text-subtitle2 text-green-3">Organizá tus partidos de fútbol amateur</div>
       </div>
 

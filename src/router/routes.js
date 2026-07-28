@@ -41,6 +41,13 @@ const routes = [
         meta: { requiresAuth: true },
       },
       {
+        // Perfil de otro usuario, de solo lectura (compañero de grupo)
+        path: 'perfil/:uid',
+        name: 'profile-view',
+        component: () => import('src/pages/player/ProfileViewPage.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
         // Sedes / canchas donde se juegan los partidos
         path: 'sedes',
         name: 'venues',

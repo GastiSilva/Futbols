@@ -1,0 +1,33 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Storage rules — Futbols
+// Hoy solo se usa para la foto de perfil de un grupo (groups/{groupId}/...).
+// La lógica de permisos espeja a firestore.rules: solo el owner/admin del
+// grupo (o un admin global) puede subir/reemplazar la foto; cualquier
+// usuario autenticado puede leerla.
+// ─────────────────────────────────────────────────────────────────────────────
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.admin == true;
+    }
+
+    function isGroupAdmin(groupId) {
+      let member = firestore.get(/databases/(default)/documents/groups/$(groupId)/members/$(request.auth.uid));
+      return isAuthenticated() && member.data.role in ['owner', 'admin'];
+    }
+
+    match /groups/{groupId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if (isAdmin() || isGroupAdmin(groupId))
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

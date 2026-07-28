@@ -116,26 +116,33 @@ export function useAuth() {
     })
   }
 
-  // ── Grupos donde el usuario tiene ACCESO ANTICIPADO (OG u owner/admin) ─────
-  // Una sola query collectionGroup sobre members filtrando por userId; el
-  // criterio (og === true || role owner/admin) se filtra en cliente para no
-  // requerir un índice compuesto.
+  // ── Grupos del usuario: membresía completa + cuáles dan ACCESO ANTICIPADO ──
+  // Una sola query collectionGroup sobre members filtrando por userId. De ahí
+  // se derivan dos listas: todos los grupos (membresía, para filtrar qué
+  // partidos ve/puede jugar) y los que dan acceso anticipado (OG u owner/admin,
+  // filtrado en cliente para no requerir un índice compuesto).
   async function loadOgGroups(uid) {
     try {
       const snaps = await getDocs(
         query(collectionGroup(db, 'members'), where('userId', '==', uid)),
       )
-      const ogIds = snaps.docs
-        .filter((d) => {
-          const m = d.data()
-          return m.og === true || ['owner', 'admin'].includes(m.role)
-        })
-        .map((d) => d.ref.parent.parent.id)
+      const allIds = []
+      const ogIds = []
+      snaps.docs.forEach((d) => {
+        const m = d.data()
+        const groupId = d.ref.parent.parent.id
+        allIds.push(groupId)
+        if (m.og === true || ['owner', 'admin'].includes(m.role)) {
+          ogIds.push(groupId)
+        }
+      })
+      authStore.setMemberGroups(allIds)
       authStore.setOgGroups(ogIds)
     } catch (err) {
       // No bloquea el login si falla; simplemente no hay acceso anticipado
+      authStore.setMemberGroups([])
       authStore.setOgGroups([])
-      console.error('No se pudieron cargar los grupos con acceso anticipado:', err)
+      console.error('No se pudieron cargar los grupos del usuario:', err)
     }
   }
 

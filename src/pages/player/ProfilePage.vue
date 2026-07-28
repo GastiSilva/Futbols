@@ -33,6 +33,27 @@
             <div v-if="user?.description" class="text-body2 text-center q-px-md" style="opacity: 0.9">
               {{ user.description }}
             </div>
+            <div v-if="descriptionStars.count > 0" class="row items-center q-gutter-xs">
+              <q-rating
+                :model-value="descriptionStars.avg"
+                readonly
+                size="1.1em"
+                color="amber-8"
+                icon="star_border"
+                icon-selected="star"
+                :max="5"
+              />
+              <span class="text-caption text-green-2">
+                {{ descriptionStars.avg.toFixed(1) }} · {{ descriptionStars.count }}
+                {{ descriptionStars.count === 1 ? 'calificación' : 'calificaciones' }}
+              </span>
+              <q-icon name="help_outline" size="16px" class="text-green-2">
+                <q-tooltip>
+                  Cuánto le creen tus compañeros de grupo a tu descripción. Es privado — no ves
+                  quién te calificó, y se resetea si editás la descripción.
+                </q-tooltip>
+              </q-icon>
+            </div>
             <div v-if="favoritePositions.length" class="row q-gutter-xs justify-center">
               <q-badge
                 v-for="code in favoritePositions"
@@ -203,6 +224,7 @@ import { doc, getDoc } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 import { useAuth } from 'src/composables/useAuth'
 import { useGroups } from 'src/composables/useGroups'
+import { useProfile } from 'src/composables/useProfile'
 import { useAuthStore, ROLE_LABELS, ROLE_COLORS } from 'src/stores/auth.store'
 import PitchPositionPicker from 'src/components/PitchPositionPicker.vue'
 import { positionLabel, normalizePositions, MAX_FAVORITE_POSITIONS } from 'src/utils/positions'
@@ -210,7 +232,10 @@ import { positionLabel, normalizePositions, MAX_FAVORITE_POSITIONS } from 'src/u
 const $q = useQuasar()
 const { user, updateUserProfile } = useAuth()
 const { getMyGroups } = useGroups()
+const { fetchMyDescriptionStars } = useProfile()
 const authStore = useAuthStore()
+
+const descriptionStars = ref({ avg: 0, count: 0 })
 
 const FOOT_OPTIONS = [
   { label: 'Derecho', value: 'derecho' },
@@ -306,12 +331,20 @@ onMounted(async () => {
   } catch {
     myGroups.value = []
   }
+
+  descriptionStars.value = await fetchMyDescriptionStars()
 })
 
 async function handleSave() {
   saving.value = true
   try {
+    const descriptionChanged = form.value.description !== (user.value?.description ?? '')
     await updateUserProfile(form.value)
+    // La Cloud Function resetea las calificaciones cuando cambia la descripción;
+    // se refleja acá al toque en vez de esperar a recargar la página.
+    if (descriptionChanged) {
+      descriptionStars.value = { avg: 0, count: 0 }
+    }
     $q.notify({ type: 'positive', icon: 'check_circle', message: 'Perfil actualizado.' })
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message })
