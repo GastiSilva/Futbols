@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Composable para crear, listar y observar partidos en Firestore.
 // ─────────────────────────────────────────────────────────────────────────────
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import {
   collection,
   doc,
@@ -83,18 +83,43 @@ export function useMatch() {
       where('status', 'in', [MATCH_STATUS.SCHEDULED, MATCH_STATUS.OPEN]),
       orderBy('date', 'asc'),
     )
-    unsubscribe = onSnapshot(
+
+    // Los partidos "crudos" de Firestore se guardan aparte del filtro, porque
+    // authStore.memberGroupIds se carga de forma asíncrona en el login
+    // (loadOgGroups) y puede terminar DESPUÉS de que este snapshot ya haya
+    // disparado una vez. Si el filtro solo corriera dentro del onSnapshot,
+    // un miembro común podía quedar con matches.value = [] para siempre —
+    // Firestore no vuelve a emitir el snapshot solo porque cambió el store.
+    // El watch de acá abajo lo reaplica cada vez que memberGroupIds/isAdmin
+    // cambian, aunque el snapshot no se haya movido.
+    const rawMatches = ref([])
+
+    function applyGroupFilter() {
+      matches.value = authStore.isAdmin
+        ? rawMatches.value
+        : rawMatches.value.filter((m) => !m.groupId || authStore.isMemberOfGroup(m.groupId))
+    }
+
+    const stopWatch = watch(
+      () => [authStore.memberGroupIds.slice(), authStore.isAdmin],
+      applyGroupFilter,
+    )
+
+    const stopSnapshot = onSnapshot(
       q,
       (snap) => {
-        const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-        matches.value = authStore.isAdmin
-          ? all
-          : all.filter((m) => !m.groupId || authStore.isMemberOfGroup(m.groupId))
+        rawMatches.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+        applyGroupFilter()
       },
       (err) => {
         error.value = err.message
       },
     )
+
+    unsubscribe = () => {
+      stopSnapshot()
+      stopWatch()
+    }
     return unsubscribe
   }
 
