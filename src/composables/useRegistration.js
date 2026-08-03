@@ -42,6 +42,7 @@ import {
   query,
   orderBy,
   serverTimestamp,
+  writeBatch,
 } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
@@ -371,6 +372,34 @@ export function useRegistration() {
     return removeRegistration(matchId, user.uid)
   }
 
+  // ── ASIGNAR EQUIPOS (antes de jugar) ──────────────────────────────────────
+  // Graba team: 'A'|'B' en cada registration — es lo que después se ve en la
+  // lista dividida por equipo (MatchDetailPage) y en "Compartir lista". Queda
+  // editable: se puede volver a llamar (o reasignar a mano) en cualquier
+  // momento antes de cargar el resultado. Permiso: solo quien tiene acceso
+  // anticipado en el grupo del partido (OG/owner/admin) o admin global —
+  // reforzado también en las reglas de Firestore (solo pueden tocar `team`).
+  /**
+   * @param {string} matchId
+   * @param {Array<{ registrationId: string, team: 'A'|'B'|null }>} assignments
+   */
+  async function assignTeams(matchId, assignments) {
+    loading.value = true
+    error.value = null
+    try {
+      const batch = writeBatch(db)
+      assignments.forEach(({ registrationId, team }) => {
+        batch.update(doc(db, 'matches', matchId, 'registrations', registrationId), { team })
+      })
+      await batch.commit()
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   // ── Estado del botón "Anotarme" ───────────────────────────────────────────
   /**
    * Determina si el botón de inscripción debe estar habilitado.
@@ -458,6 +487,7 @@ export function useRegistration() {
     addMemberToMatch,
     leaveMatch,
     removeRegistration,
+    assignTeams,
     canRegister,
     msUntilOpen,
     canSeeRegistrations,

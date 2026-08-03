@@ -388,11 +388,13 @@ function validateNotifyAt() {
 async function handleSubmit() {
   saving.value = true
   try {
-    // Actualiza el partido en Firestore (denormaliza el link de Maps de la sede)
+    // Actualiza el partido en Firestore (denormaliza link de Maps y coordenadas de la sede)
     const selectedVenue = venues.value.find((v) => v.id === form.value.venueId) ?? null
     await updateMatch(matchId, {
       ...form.value,
       venueMapsUrl: selectedVenue?.mapsUrl ?? null,
+      venueLat: selectedVenue?.lat ?? null,
+      venueLng: selectedVenue?.lng ?? null,
     })
 
     // Si se modificó openAt, reprogramar notificaciones

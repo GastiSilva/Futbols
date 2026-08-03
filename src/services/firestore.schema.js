@@ -86,6 +86,29 @@ const DescriptionStarsSchema = {
 
 /**
  * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: users/{uid}/chemistry/{otherUid}
+ *  Historial de resultados jugando en el MISMO equipo que otro jugador.
+ *  A diferencia de descriptionRatings, es de lectura ABIERTA a cualquier
+ *  autenticado (no privado) porque no es un dato sensible tipo calificación
+ *  personal — es un agregado objetivo como `stats` — y el balanceador de
+ *  equipos (useTeamBalancer.js, client-side) necesita leer la química de
+ *  TODOS los jugadores del partido para armar la sugerencia.
+ *  Simétrico: si A y B comparten equipo, hay un doc en users/{A}/chemistry/{B}
+ *  Y en users/{B}/chemistry/{A} con los mismos contadores.
+ *  Solo lo escribe la Cloud Function onPlayerStatsWritten (por diferencia,
+ *  idempotente) y su backfill recalcAllStats.
+ * ══════════════════════════════════════════════════════════
+ */
+const ChemistrySchema = {
+  gamesTogether:  'number', // Partidos jugados en el mismo equipo
+  winsTogether:   'number', // De esos, ganados
+  drawsTogether:  'number',
+  lossesTogether: 'number',
+  lastPlayedAt:   'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
  *  COLECCIÓN: matches
  *  Path: /matches/{matchId}
  * ══════════════════════════════════════════════════════════
@@ -95,6 +118,9 @@ const MatchSchema = {
   location:       'string',        // Texto libre (autocompletado si hay sede)
   venueId:        'string | null', // Sede asociada (/venues/{venueId})
   venueMapsUrl:   'string | null', // Link de Google Maps denormalizado de la sede
+  venueLat:       'number | null', // Coordenadas denormalizadas de la sede
+  venueLng:       'number | null', // (geocodificadas una vez al crear/editar la sede)
+                                   // — habilitan mostrar el clima del partido (useWeather.js)
 
   date:           'Timestamp',    // Fecha y hora del partido
   openAt:         'Timestamp',    // Cuándo se habilita la inscripción
@@ -118,8 +144,11 @@ const MatchSchema = {
 
   scoreA:         'number | null',
   scoreB:         'number | null',
-  mvpUserId:      'string | null', // MVP del partido (elegido al cargar el resultado)
+  mvpUserId:      'string | null', // MVP del partido, fijado por closeMvpVoting
+                                   // según el resultado de la votación (mvpVotes)
   mvpName:        'string | null',
+  mvpVotingClosed: 'boolean',      // true una vez que se cerró la votación de MVP
+                                   // (solo lo escribe la Cloud Function closeMvpVoting)
 
   cloudTaskName:  'string | null', // Referencia a la Cloud Task programada
 
@@ -162,6 +191,22 @@ const RegistrationSchema = {
 
 /**
  * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: matches/{matchId}/mvpVotes/{voterId}
+ *  Un voto por jugador (docId = su propio uid), upsert mientras la votación
+ *  esté abierta (match.status === 'finished' && !match.mvpVotingClosed).
+ *  Nunca se puede votar a uno mismo (bloqueado en reglas). Legible por
+ *  cualquier autenticado (a diferencia de descriptionRatings, acá no hace
+ *  falta anonimato — es una votación de MVP, no una calificación personal).
+ *  El conteo final lo hace la Cloud Function closeMvpVoting.
+ * ══════════════════════════════════════════════════════════
+ */
+const MvpVoteSchema = {
+  votedForUserId: 'string',
+  updatedAt:      'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
  *  SUBCOLECCIÓN: playerStats
  *  Path: /matches/{matchId}/playerStats/{userId}
  * ══════════════════════════════════════════════════════════
@@ -174,7 +219,11 @@ const PlayerStatsSchema = {
   displayName: 'string',
   goals:       'number',
   assists:     'number',
-  mvp:         'boolean',         // true si fue el MVP del partido (acumula stats.mvps)
+  mvp:         'boolean',         // true si ganó la votación de MVP del partido
+                                  // (acumula stats.mvps) — SOLO lo escribe la
+                                  // Cloud Function closeMvpVoting (o un admin
+                                  // global como escape hatch); el cliente
+                                  // nunca manda este campo.
   team:        "'A' | 'B' | null",
   groupId:     'string | null',   // Grupo del partido (para statsByGroup)
   savedAt:     'Timestamp',
@@ -284,6 +333,9 @@ const VenueSchema = {
   groupId:   'string | null',     // null = sede GLOBAL (solo la crea/edita un admin);
                                    // con valor = sede de ESE grupo (la crea/edita
                                    // cualquier miembro de ese grupo)
+  lat:       'number | null',     // Coordenadas geocodificadas de `address` una
+  lng:       'number | null',     // sola vez al crear/editar (Nominatim/OSM, sin
+                                   // key) — null si no se pudo geocodificar.
 
   createdBy: 'string',            // uid del creador
   createdAt: 'Timestamp',

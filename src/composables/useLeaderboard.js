@@ -43,9 +43,11 @@ export function useLeaderboard() {
         users.push(...snap.docs.map((d) => ({ id: d.id, ...d.data() })))
       }
 
-      // Normaliza: cada jugador expone sus stats DE ESTE GRUPO en `.stats`
+      // Normaliza: cada jugador expone sus stats DE ESTE GRUPO en `.stats`,
+      // y su nombre visible prioriza el apodo (igual que en registrations/members).
       const usersWithGroupStats = users.map((u) => ({
         ...u,
+        displayName: u.nickname || u.displayName,
         stats: u.statsByGroup?.[groupId] ?? { goals: 0, assists: 0, matchesPlayed: 0, mvps: 0 },
       }))
 

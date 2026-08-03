@@ -164,6 +164,8 @@ export function useMatch() {
         location: formData.location ?? '',
         venueId: formData.venueId ?? null,
         venueMapsUrl: formData.venueMapsUrl ?? null,
+        venueLat: formData.venueLat ?? null,
+        venueLng: formData.venueLng ?? null,
         date,
         openAt,
         notifyAt,
@@ -203,6 +205,8 @@ export function useMatch() {
         location: formData.location ?? '',
         venueId: formData.venueId ?? null,
         venueMapsUrl: formData.venueMapsUrl ?? null,
+        venueLat: formData.venueLat ?? null,
+        venueLng: formData.venueLng ?? null,
         date,
         openAt,
         notifyAt,
@@ -221,15 +225,15 @@ export function useMatch() {
     }
   }
 
-  // ── Guardar resultado post-partido (incluye el MVP del partido) ───────────
-  async function saveMatchResult(matchId, { scoreA, scoreB, mvpUserId = null, mvpName = null }) {
+  // ── Guardar resultado post-partido ─────────────────────────────────────────
+  // El MVP ya no se fija acá: se decide por votación (useMvpVoting) y lo
+  // escribe la Cloud Function closeMvpVoting cuando se cierra la votación.
+  async function saveMatchResult(matchId, { scoreA, scoreB }) {
     loading.value = true
     try {
       await updateDoc(doc(db, 'matches', matchId), {
         scoreA,
         scoreB,
-        mvpUserId,
-        mvpName,
         status: MATCH_STATUS.FINISHED,
         updatedAt: serverTimestamp(),
       })

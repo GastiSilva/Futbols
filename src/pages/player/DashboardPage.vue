@@ -97,15 +97,26 @@
               <div class="col">
                 <div class="text-caption text-grey-6 text-uppercase">Ubicación</div>
                 <div class="text-body2 text-weight-medium">{{ match.location }}</div>
-                <a
-                  v-if="match.venueMapsUrl"
-                  :href="match.venueMapsUrl"
-                  target="_blank"
-                  rel="noopener"
-                  class="text-caption text-green-8"
-                >
-                  <q-icon name="map" size="xs" class="q-mr-xs" />Ver en Google Maps
-                </a>
+                <div class="row items-center q-gutter-md q-mt-xs">
+                  <a
+                    v-if="match.venueMapsUrl"
+                    :href="match.venueMapsUrl"
+                    target="_blank"
+                    rel="noopener"
+                    class="text-caption text-green-8"
+                  >
+                    <q-icon name="map" size="xs" class="q-mr-xs" />Ver en Google Maps
+                  </a>
+                  <a
+                    v-if="match.status !== 'finished' && buildGoogleCalendarUrl(match)"
+                    :href="buildGoogleCalendarUrl(match)"
+                    target="_blank"
+                    rel="noopener"
+                    class="text-caption text-green-8"
+                  >
+                    <q-icon name="event" size="xs" class="q-mr-xs" />Agregar a Calendar
+                  </a>
+                </div>
               </div>
             </div>
 
@@ -253,9 +264,22 @@
         </template>
 
         <template v-else>
-        <div class="text-overline text-grey-6 q-mb-sm dash-overline">
-          ANOTADOS ({{ titularesSeleccionado.length }})
-          <span v-if="suplentesSelectorado.length > 0"> · SUPLENTES ({{ suplentesSelectorado.length }})</span>
+        <div class="row items-center justify-between q-mb-sm">
+          <div class="text-overline text-grey-6 dash-overline">
+            ANOTADOS ({{ titularesSeleccionado.length }})
+            <span v-if="suplentesSelectorado.length > 0"> · SUPLENTES ({{ suplentesSelectorado.length }})</span>
+          </div>
+          <q-btn
+            v-if="registrationsSeleccionadas.length > 0"
+            flat
+            dense
+            round
+            icon="share"
+            color="green-9"
+            @click="shareList"
+          >
+            <q-tooltip>Compartir lista</q-tooltip>
+          </q-btn>
         </div>
 
         <q-card flat bordered>
@@ -488,6 +512,7 @@ import { useRegistration } from 'src/composables/useRegistration'
 import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
+import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 
 const $q = useQuasar()
 const { user, isAdmin } = useAuth()
@@ -538,6 +563,47 @@ const selectedMatch = computed(() =>
 // de abajo (si no, quedaba pegada mostrando el último seleccionado).
 function onMatchCollapse(matchId) {
   if (selectedMatchId.value === matchId) selectedMatchId.value = null
+}
+
+// ── Compartir lista (texto plano para WhatsApp) ──────────────────────────────
+function buildListText() {
+  const m = selectedMatch.value
+  const lines = []
+  lines.push(`⚽ ${m.title}`)
+  if (m.location) lines.push(`📍 ${m.location}`)
+  const when = [formatMatchDate(m.date), formatMatchTime(m.date)].filter(Boolean).join(' - ')
+  if (when) lines.push(`🕒 ${when}`)
+  lines.push('')
+  titularesSeleccionado.value.forEach((r) => {
+    lines.push(`${r.position}. ${r.displayName}`)
+  })
+  if (suplentesSelectorado.value.length > 0) {
+    lines.push('')
+    lines.push('Suplentes:')
+    suplentesSelectorado.value.forEach((r) => {
+      lines.push(`${r.position - m.maxPlayers}. ${r.displayName}`)
+    })
+  }
+  return lines.join('\n')
+}
+
+async function shareList() {
+  const text = buildListText()
+  if (navigator.share) {
+    try {
+      await navigator.share({ text })
+      return
+    } catch {
+      // usuario canceló el share nativo — no hacer nada más
+      return
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    $q.notify({ type: 'positive', icon: 'content_copy', message: 'Lista copiada al portapapeles' })
+  } catch {
+    $q.notify({ type: 'negative', message: 'No se pudo copiar la lista' })
+  }
 }
 
 // Hora en la que ESTE usuario puntual va a poder ver la lista de anotados

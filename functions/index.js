@@ -150,15 +150,11 @@ exports.processMatchOpenQueue = onSchedule(
         status: 'open',
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       })
+      // No hace falta encolar notificación acá: este update dispara el
+      // trigger onMatchOpened, que ya notifica (filtrando por grupo). Antes
+      // se encolaba también en _matchOpenNotificationQueue, que un minuto
+      // después volvía a notificar a los mismos usuarios (doble push).
       logger.info(`Partido abierto por scheduler: ${matchId}`)
-
-      // Encolar notificación (mismo patrón que recordatorios)
-      await db.collection('_matchOpenNotificationQueue').add({
-        matchId,
-        matchTitle,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        processed: false,
-      })
     }
   },
 )
@@ -184,9 +180,14 @@ exports.scheduleMatchReminderNotification = onCall(
       return { success: true, skipped: true }
     }
 
-    await admin.firestore().collection('_matchReminderQueue').add({
+    const db = admin.firestore()
+    const matchSnap = await db.collection('matches').doc(matchId).get()
+    const groupId = matchSnap.exists ? (matchSnap.data().groupId ?? null) : null
+
+    await db.collection('_matchReminderQueue').add({
       matchId,
       matchTitle,
+      groupId,
       openAt: openAt ?? null,
       notifyAt: admin.firestore.Timestamp.fromDate(notifyAtDate),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -224,54 +225,80 @@ exports.processMatchReminderQueue = onSchedule(
 
     await writeBatch.commit()
 
-    for (const { matchId, matchTitle, openAt } of toProcess) {
+    for (const { matchId, matchTitle, openAt, groupId } of toProcess) {
       const timeStr = openAt
         ? new Date(openAt).toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit' })
         : 'en breve'
       const alreadyRegistered = await getRegisteredUserIds(matchId)
-      await sendFCMToAllUsers(
-        '⏰ ¡La lista abre pronto!',
-        `La lista para "${matchTitle}" se abre a las ${timeStr}. ¡Anotáte!`,
-        { matchId, type: 'match_reminder' },
-        alreadyRegistered,
-      )
+      const title = '⏰ ¡La lista abre pronto!'
+      const body = `La lista para "${matchTitle}" se abre a las ${timeStr}. ¡Anotáte!`
+      if (groupId) {
+        await sendFCMToGroupMembers(groupId, title, body, { matchId, type: 'match_reminder' }, alreadyRegistered)
+      } else {
+        await sendFCMToAllUsers(title, body, { matchId, type: 'match_reminder' }, alreadyRegistered)
+      }
       logger.info(`Recordatorio enviado por scheduler: ${matchId}`)
     }
   },
 )
 
-// ── 5. Scheduled: procesar cola de notificaciones de apertura ────────────────
-exports.processMatchOpenNotificationQueue = onSchedule(
-  { region: LOCATION, schedule: 'every 1 minutes' },
+// ── 5b. Scheduled: avisar 6-8hs antes del partido si faltan jugadores ────────
+// Corre cada 10 min. Para cada partido cuya `date` cae dentro de la ventana
+// [ahora+6h, ahora+8h], si todavía admite anotaciones (no closed/finished) y
+// le faltan jugadores, manda UN aviso (marca `lowSignupAlertSent` para no
+// repetirlo) a los miembros del grupo del partido (o a todos si no tiene
+// grupo), excluyendo a quienes ya están anotados.
+exports.processMatchLowSignupAlert = onSchedule(
+  { region: LOCATION, schedule: 'every 10 minutes' },
   async () => {
     const db = admin.firestore()
+    const now = new Date()
+    const windowStart = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + 6 * 60 * 60 * 1000))
+    const windowEnd = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + 8 * 60 * 60 * 1000))
 
     const snap = await db
-      .collection('_matchOpenNotificationQueue')
-      .where('processed', '==', false)
+      .collection('matches')
+      .where('date', '>=', windowStart)
+      .where('date', '<=', windowEnd)
       .get()
 
     if (snap.empty) return
 
-    const writeBatch = db.batch()
-    const toProcess = []
+    for (const docSnap of snap.docs) {
+      const match = docSnap.data()
+      const matchId = docSnap.id
 
-    snap.docs.forEach((docSnap) => {
-      writeBatch.update(docSnap.ref, { processed: true })
-      toProcess.push(docSnap.data())
-    })
+      if (match.status === 'closed' || match.status === 'finished') continue
+      if (match.lowSignupAlertSent) continue
 
-    await writeBatch.commit()
+      const maxPlayers = match.maxPlayers ?? 0
+      const missing = maxPlayers - (match.currentPlayers ?? 0)
+      if (missing <= 0) continue
 
-    for (const { matchId, matchTitle } of toProcess) {
+      await docSnap.ref.update({ lowSignupAlertSent: true })
+
+      const title = match.title ?? 'un partido'
+      const spotsWord = missing === 1 ? 'lugar' : 'lugares'
+      const body = `Faltan ${missing} ${spotsWord} para "${title}". ¡Sumate o invitá a un amigo!`
       const alreadyRegistered = await getRegisteredUserIds(matchId)
-      await sendFCMToAllUsers(
-        '⚽ ¡Se abrió la lista!',
-        `Ya podés anotarte al partido: "${matchTitle}"`,
-        { matchId, type: 'match_open' },
-        alreadyRegistered,
-      )
-      logger.info(`Notificación de apertura enviada: ${matchId}`)
+
+      if (match.groupId) {
+        await sendFCMToGroupMembers(
+          match.groupId,
+          '⚠️ Faltan jugadores',
+          body,
+          { matchId, type: 'low_signup_alert' },
+          alreadyRegistered,
+        )
+      } else {
+        await sendFCMToAllUsers(
+          '⚠️ Faltan jugadores',
+          body,
+          { matchId, type: 'low_signup_alert' },
+          alreadyRegistered,
+        )
+      }
+      logger.info(`Aviso de faltan jugadores enviado: ${matchId} (faltan ${missing})`)
     }
   },
 )
@@ -326,6 +353,82 @@ exports.setUserRole = onCall(
   },
 )
 
+// ── 7b. Callable: cerrar votación de MVP y fijar el ganador ──────────────────
+// Cuenta matches/{matchId}/mvpVotes, determina el ganador por mayoría simple
+// (empate en el primer puesto → sin MVP) y escribe con Admin SDK:
+//   matches/{id}.mvpUserId/mvpName/mvpVotingClosed
+//   playerStats/{winnerId}.mvp = true (y false en quien lo tuviera antes)
+// El write a playerStats sigue dispargando onPlayerStatsWritten normalmente,
+// que acumula stats.mvps por diferencia — no hace falta tocar ese trigger.
+exports.closeMvpVoting = onCall(
+  { region: LOCATION, invoker: 'public' },
+  async (request) => {
+    const { matchId } = request.data
+    if (!matchId) {
+      throw new HttpsError('invalid-argument', 'matchId requerido.')
+    }
+
+    await assertCanManageMatchNotifications(request.auth, matchId)
+
+    const db = admin.firestore()
+    const matchRef = db.collection('matches').doc(matchId)
+    const matchSnap = await matchRef.get()
+    if (!matchSnap.exists) {
+      throw new HttpsError('not-found', 'Partido no encontrado.')
+    }
+    const match = matchSnap.data()
+
+    if (match.status !== 'finished') {
+      throw new HttpsError('failed-precondition', 'El partido debe estar finalizado para cerrar la votación.')
+    }
+    if (match.mvpVotingClosed === true) {
+      throw new HttpsError('failed-precondition', 'La votación ya está cerrada.')
+    }
+
+    const votesSnap = await matchRef.collection('mvpVotes').get()
+    const tally = new Map()
+    votesSnap.docs.forEach((d) => {
+      const target = d.data().votedForUserId
+      if (!target) return
+      tally.set(target, (tally.get(target) ?? 0) + 1)
+    })
+
+    let winnerId = null
+    if (tally.size > 0) {
+      const sorted = [...tally.entries()].sort((a, b) => b[1] - a[1])
+      const topCount = sorted[0][1]
+      const topCandidates = sorted.filter(([, c]) => c === topCount)
+      // Empate en el primer puesto → sin MVP (sin desempate manual/segunda vuelta)
+      if (topCandidates.length === 1) winnerId = topCandidates[0][0]
+    }
+
+    let winnerName = null
+    if (winnerId) {
+      const statSnap = await matchRef.collection('playerStats').doc(winnerId).get()
+      winnerName = statSnap.exists ? (statSnap.data().displayName ?? null) : null
+    }
+
+    const batch = db.batch()
+    batch.update(matchRef, {
+      mvpUserId: winnerId,
+      mvpName: winnerName,
+      mvpVotingClosed: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+
+    const statsSnap = await matchRef.collection('playerStats').get()
+    statsSnap.docs.forEach((d) => {
+      const isWinner = d.id === winnerId
+      const wasMvp = d.data().mvp === true
+      if (isWinner && !wasMvp) batch.update(d.ref, { mvp: true })
+      if (!isWinner && wasMvp) batch.update(d.ref, { mvp: false })
+    })
+
+    await batch.commit()
+    logger.info(`closeMvpVoting: ${matchId} → ganador=${winnerId ?? 'empate/sin votos'}`)
+    return { success: true, winnerId, winnerName, tally: Object.fromEntries(tally) }
+  },
+)
 
 // ── 8. Trigger: notificar cuando se abre un partido
 exports.onMatchOpened = onDocumentUpdated(
@@ -351,12 +454,23 @@ exports.onMatchOpened = onDocumentUpdated(
 
       logger.info(`onMatchOpened: Enviando notificación para ${matchId}`)
       const alreadyRegistered = await getRegisteredUserIds(matchId)
-      await sendFCMToAllUsers(
-        '⚽ ¡Se abrió la lista!',
-        'Ya podés anotarte al partido: ' + title,
-        { matchId: matchId, type: 'match_open' },
-        alreadyRegistered,
-      )
+      const groupId = after.groupId ?? null
+      if (groupId) {
+        await sendFCMToGroupMembers(
+          groupId,
+          '⚽ ¡Se abrió la lista!',
+          'Ya podés anotarte al partido: ' + title,
+          { matchId: matchId, type: 'match_open' },
+          alreadyRegistered,
+        )
+      } else {
+        await sendFCMToAllUsers(
+          '⚽ ¡Se abrió la lista!',
+          'Ya podés anotarte al partido: ' + title,
+          { matchId: matchId, type: 'match_open' },
+          alreadyRegistered,
+        )
+      }
       logger.info(`onMatchOpened: Notificación enviada para ${matchId}`)
     } catch (error) {
       logger.error(`onMatchOpened: Error en trigger`, error)
@@ -424,11 +538,68 @@ exports.onPlayerStatsWritten = onDocumentWritten(
       // increment() inicializa el campo si no existía. Los users siempre existen.
       await admin.firestore().collection('users').doc(userId).update(updates)
       logger.info(`Stats acumuladas para ${userId} (Δg=${dGoals}, Δa=${dAssists}, Δp=${dPlayed}, Δmvp=${dMvps})`)
+
+      // ── Química por pares: ¿compartió equipo con otros en este partido? ────
+      // Se dispara solo cuando la fila tiene team+result definidos (resultado
+      // ya cargado). Compara antes/después contra cada compañero de partido
+      // para sumar/restar por diferencia — mismo patrón idempotente de arriba.
+      const afterHasTeamResult = !!(after?.userId && after?.team && after?.result)
+      const beforeHasTeamResult = !!(before?.userId && before?.team && before?.result)
+
+      if (afterHasTeamResult || beforeHasTeamResult) {
+        await updateChemistryForPlayerStat(event.params.matchId, userId, before, after)
+      }
     } catch (error) {
       logger.error('onPlayerStatsWritten: error', error)
     }
   },
 )
+
+// ── Helper: actualizar química por pares tras un write en playerStats ───────
+// Lee los demás playerStats del mismo partido y, para cada compañero que
+// compartía/comparte equipo con `userId`, incrementa por diferencia (before
+// → after) los contadores simétricos en users/{userId}/chemistry/{other} Y
+// users/{other}/chemistry/{userId}. No hay orden garantizado entre triggers
+// hermanos (cada playerStats dispara su propio evento), pero cada incremento
+// es atómico y todos convergen al mismo estado final — aceptable acá.
+async function updateChemistryForPlayerStat(matchId, userId, before, after) {
+  const db = admin.firestore()
+  const siblingsSnap = await db.collection('matches').doc(matchId).collection('playerStats').get()
+  const siblings = siblingsSnap.docs
+    .map((d) => d.data())
+    .filter((s) => s.userId && s.userId !== userId && s.team && s.result)
+
+  if (siblings.length === 0) return
+
+  const inc = admin.firestore.FieldValue.increment
+  const batch = db.batch()
+  let hasChanges = false
+
+  for (const other of siblings) {
+    const wasTogetherBefore = !!(before?.team && before?.result && before.team === other.team)
+    const isTogetherAfter = !!(after?.team && after?.result && after.team === other.team)
+
+    if (wasTogetherBefore === isTogetherAfter) continue
+
+    const sign = isTogetherAfter ? 1 : -1
+    const result = isTogetherAfter ? after.result : before.result
+    const payload = {
+      gamesTogether: inc(sign),
+      winsTogether: inc(result === 'W' ? sign : 0),
+      drawsTogether: inc(result === 'E' ? sign : 0),
+      lossesTogether: inc(result === 'L' ? sign : 0),
+      lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }
+
+    const chemRefA = db.collection('users').doc(userId).collection('chemistry').doc(other.userId)
+    const chemRefB = db.collection('users').doc(other.userId).collection('chemistry').doc(userId)
+    batch.set(chemRefA, payload, { merge: true })
+    batch.set(chemRefB, payload, { merge: true })
+    hasChanges = true
+  }
+
+  if (hasChanges) await batch.commit()
+}
 
 // ── 12. Callable: RECALCULAR todas las estadísticas desde cero (solo admin) ──
 // El acumulador onPlayerStatsWritten suma por DIFERENCIA, así que los
@@ -497,10 +668,73 @@ exports.recalcAllStats = onCall(
     }
     if (ops > 0) await batch.commit()
 
+    // 3. Backfill de química por pares: agrupar playerStats por partido y,
+    //    para cada par con mismo team+result en el mismo matchId, acumular
+    //    contadores simétricos. Se sobrescribe TODA la subcolección chemistry
+    //    de cada usuario tocado (borrar + reescribir), igual criterio que
+    //    stats/statsByGroup arriba.
+    const byMatch = new Map()
+    statsSnap.docs.forEach((d) => {
+      const s = d.data()
+      if (!s.userId || !s.team || !s.result) return
+      const matchId = d.ref.parent.parent.id
+      if (!byMatch.has(matchId)) byMatch.set(matchId, [])
+      byMatch.get(matchId).push({ userId: s.userId, team: s.team, result: s.result })
+    })
+
+    const zeroChem = () => ({ gamesTogether: 0, winsTogether: 0, drawsTogether: 0, lossesTogether: 0 })
+    const chemByUser = new Map()
+    const addPair = (uid, otherUid, result) => {
+      if (!chemByUser.has(uid)) chemByUser.set(uid, new Map())
+      const m = chemByUser.get(uid)
+      const c = m.get(otherUid) ?? zeroChem()
+      c.gamesTogether += 1
+      if (result === 'W') c.winsTogether += 1
+      if (result === 'E') c.drawsTogether += 1
+      if (result === 'L') c.lossesTogether += 1
+      m.set(otherUid, c)
+    }
+
+    for (const players of byMatch.values()) {
+      for (let i = 0; i < players.length; i++) {
+        for (let j = i + 1; j < players.length; j++) {
+          const a = players[i]
+          const b = players[j]
+          if (a.team !== b.team) continue
+          addPair(a.userId, b.userId, a.result)
+          addPair(b.userId, a.userId, b.result)
+        }
+      }
+    }
+
+    let chemBatch = db.batch()
+    let chemOps = 0
+    for (const [uid, pairs] of chemByUser.entries()) {
+      const chemCol = db.collection('users').doc(uid).collection('chemistry')
+      const existingSnap = await chemCol.get()
+      existingSnap.docs.forEach((d) => {
+        chemBatch.delete(d.ref)
+        chemOps += 1
+      })
+      for (const [otherUid, c] of pairs.entries()) {
+        chemBatch.set(chemCol.doc(otherUid), {
+          ...c,
+          lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+        })
+        chemOps += 1
+      }
+      if (chemOps >= 400) {
+        await chemBatch.commit()
+        chemBatch = db.batch()
+        chemOps = 0
+      }
+    }
+    if (chemOps > 0) await chemBatch.commit()
+
     logger.info(
-      `recalcAllStats: ${statsSnap.size} playerStats → ${usersSnap.size} usuarios actualizados`,
+      `recalcAllStats: ${statsSnap.size} playerStats → ${usersSnap.size} usuarios actualizados, química recalculada para ${chemByUser.size} usuarios`,
     )
-    return { success: true, playerStats: statsSnap.size, users: usersSnap.size }
+    return { success: true, playerStats: statsSnap.size, users: usersSnap.size, chemistryUsers: chemByUser.size }
   },
 )
 
@@ -524,11 +758,17 @@ exports.onRegistrationDeleted = onDocumentDeleted(
 
       const info = await db.runTransaction(async (tx) => {
         const matchSnap = await tx.get(matchRef)
-        if (!matchSnap.exists) return null
+        if (!matchSnap.exists) {
+          logger.warn(`onRegistrationDeleted: match ${matchId} no existe, se omite`)
+          return null
+        }
 
         const match = matchSnap.data()
         // En partidos terminados no tiene sentido promover ni avisar
-        if (match.status === 'finished') return null
+        if (match.status === 'finished') {
+          logger.info(`onRegistrationDeleted: match ${matchId} finished, se omite (se bajó ${leaverName})`)
+          return null
+        }
 
         const maxPlayers = match.maxPlayers ?? 0
         const regsSnap = await tx.get(
@@ -559,15 +799,22 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           promoted: promotedUsers,
           createdBy: match.createdBy ?? null,
           status: match.status ?? null,
-          // ¿Quedó un lugar libre de verdad? (lista abierta y cupo sin llenar,
-          // es decir sin suplentes que tapen el hueco)
-          spotOpen: match.status === 'open' && regsSnap.size < maxPlayers,
+          // ¿Quedó un lugar libre de verdad? (partido aún admite anotaciones y
+          // cupo sin llenar, es decir sin suplentes que tapen el hueco).
+          // OJO: no exigir status === 'open' a secas — el scheduler que pasa
+          // 'scheduled' → 'open' corre cada 1 min y puede tener lag; el mismo
+          // criterio que getEffectiveStatus() en el cliente (useMatch.js) es
+          // "no está cerrado ni terminado", no el string exacto 'open'.
+          spotOpen:
+            match.status !== 'closed' &&
+            match.status !== 'finished' &&
+            regsSnap.size < maxPlayers,
           registeredUserIds,
         }
       })
 
       if (!info) return
-      const { matchTitle, promoted, createdBy, spotOpen, registeredUserIds } = info
+      const { matchTitle, promoted, createdBy, status, spotOpen, registeredUserIds } = info
 
       // 1) Suplentes que ascendieron a titular: aviso personal
       for (const userId of promoted) {
@@ -599,9 +846,19 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           { matchId, type: 'registration_left' },
         )
         logger.info(`Organizador ${createdBy} notificado: se bajó ${leaverName} (${matchId})`)
+      } else {
+        // Ninguna rama aplicó: no había suplente, no hay lugar real (o el
+        // partido ya no admite anotaciones), y el que se bajó era el propio
+        // creador (o no tiene creador) → nadie a quien avisar. Se deja
+        // constancia explícita para que esto nunca vuelva a quedar en silencio.
+        logger.info(
+          `onRegistrationDeleted: sin notificación para ${matchId} (se bajó ${leaverName}, ` +
+          `status=${status}, spotOpen=${spotOpen}, promoted=${promoted.length}, ` +
+          `createdBy=${createdBy}, leaverUserId=${leaverUserId})`,
+        )
       }
     } catch (error) {
-      logger.error('onRegistrationDeleted: error', error)
+      logger.error(`onRegistrationDeleted: error procesando baja en ${event.params.matchId}`, error)
     }
   },
 )
@@ -775,6 +1032,40 @@ async function sendFCMToGroupOGs(groupId, title, body, data) {
   const userDocs = []
   for (let i = 0; i < earlyUserIds.length; i += 30) {
     const chunk = earlyUserIds.slice(i, i + 30)
+    const usersSnap = await db
+      .collection('users')
+      .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+      .select('fcmToken', 'fcmTokens')
+      .get()
+    userDocs.push(...usersSnap.docs)
+  }
+
+  const tokens = collectTokensFromUserDocs(userDocs)
+  await dispatchFCM(tokens, title, body, data)
+}
+
+// ── 9c2. Helper: enviar FCM a TODOS los miembros de un grupo ─────────────────
+async function sendFCMToGroupMembers(groupId, title, body, data, excludeUserIds = []) {
+  if (!groupId) return
+  const db = admin.firestore()
+  const membersSnap = await db.collection('groups').doc(groupId).collection('members').get()
+
+  const excludeSet = new Set(excludeUserIds)
+  const memberUserIds = [
+    ...new Set(
+      membersSnap.docs
+        .map((d) => d.data().userId)
+        .filter((uid) => uid && !excludeSet.has(uid)),
+    ),
+  ]
+
+  logger.info(`[FCM] sendFCMToGroupMembers(${groupId}) → destinatarios: ${memberUserIds.length}`)
+  if (memberUserIds.length === 0) return
+
+  // Firestore limita `in` a 30 elementos → leer en tandas
+  const userDocs = []
+  for (let i = 0; i < memberUserIds.length; i += 30) {
+    const chunk = memberUserIds.slice(i, i + 30)
     const usersSnap = await db
       .collection('users')
       .where(admin.firestore.FieldPath.documentId(), 'in', chunk)

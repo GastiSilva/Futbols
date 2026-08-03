@@ -38,8 +38,7 @@
           </q-avatar>
           <div class="column items-center">
             <div class="text-subtitle1 text-weight-bold ellipsis" style="max-width: 200px">
-            
-              {{ user?.displayName ?? 'Jugador' }}
+              {{ user?.nickname || user?.displayName || 'Jugador' }}
             </div>
             <div class="text-caption text-green-2 ellipsis" style="max-width: 200px">
               {{ user?.email }}

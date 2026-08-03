@@ -22,6 +22,27 @@ import { useAuthStore } from 'src/stores/auth.store'
 // Estado reactivo compartido entre instancias del composable
 const venues = ref([])
 
+// Geocodifica una dirección a { lat, lng } usando Nominatim (OpenStreetMap,
+// gratis, sin API key). Se llama UNA sola vez por sede (al crear/editar), no
+// por partido — costo esporádico y bajo. Si falla o no hay match, devuelve
+// null y la sede queda sin coordenadas (el clima del partido simplemente no
+// se muestra, no rompe nada más).
+async function geocodeAddress(address) {
+  const trimmed = address?.trim()
+  if (!trimmed) return null
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(trimmed)}`
+    const res = await fetch(url, { headers: { Accept: 'application/json' } })
+    if (!res.ok) return null
+    const results = await res.json()
+    const first = results?.[0]
+    if (!first) return null
+    return { lat: parseFloat(first.lat), lng: parseFloat(first.lon) }
+  } catch {
+    return null // sin conexión o servicio caído: la sede queda sin coordenadas
+  }
+}
+
 export function useVenues() {
   const authStore = useAuthStore()
   const loading = ref(false)
@@ -60,14 +81,18 @@ export function useVenues() {
     try {
       const uid = authStore.user.uid
       const trimmedName = name.trim()
+      const trimmedAddress = address.trim()
+      const coords = await geocodeAddress(trimmedAddress)
 
       const venueRef = await addDoc(collection(db, 'venues'), {
         name: trimmedName,
         nameLower: trimmedName.toLowerCase(),
-        address: address.trim(),
+        address: trimmedAddress,
         mapsUrl: mapsUrl.trim() || null,
         notes: notes.trim(),
         groupId: groupId ?? null,
+        lat: coords?.lat ?? null,
+        lng: coords?.lng ?? null,
         createdBy: uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -96,13 +121,23 @@ export function useVenues() {
     error.value = null
     try {
       const trimmedName = name.trim()
+      const trimmedAddress = address.trim()
       const fields = {
         name: trimmedName,
         nameLower: trimmedName.toLowerCase(),
-        address: address.trim(),
+        address: trimmedAddress,
         mapsUrl: mapsUrl.trim() || null,
         notes: notes.trim(),
         updatedAt: serverTimestamp(),
+      }
+
+      // Solo re-geocodificar si la dirección cambió (evita llamar la API en
+      // cada edición trivial de nombre/notas).
+      const prevVenue = venues.value.find((v) => v.id === venueId)
+      if (prevVenue?.address !== trimmedAddress) {
+        const coords = await geocodeAddress(trimmedAddress)
+        fields.lat = coords?.lat ?? null
+        fields.lng = coords?.lng ?? null
       }
 
       await updateDoc(doc(db, 'venues', venueId), fields)

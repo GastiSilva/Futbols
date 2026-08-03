@@ -169,6 +169,22 @@ service cloud.firestore {
         allow delete: if isAdmin();
       }
 
+      // ── users/{userId}/chemistry ─────────────────────────────────────────────
+      // Historial de resultados jugando en el MISMO equipo que otro jugador
+      // (gamesTogether/winsTogether/...). A diferencia de descriptionRatings,
+      // acá se opta por lectura abierta a cualquier autenticado (no privado):
+      // no es un dato sensible tipo calificación personal, es un agregado
+      // objetivo como `stats`, y el balanceador de equipos (client-side, ver
+      // useTeamBalancer.js) necesita leer la química de TODOS los jugadores
+      // del partido, no solo la propia. Solo la Cloud Function
+      // onPlayerStatsWritten (y su backfill recalcAllStats) la escribe.
+      match /chemistry/{otherUid} {
+
+        allow read: if isAuthenticated();
+
+        allow write: if false;
+      }
+
       // ── users/{userId}/private ──────────────────────────────────────────────
       // Datos derivados que solo el dueño del perfil puede ver (ej. el promedio
       // de estrellas de su descripción). Doc separado del users/{userId}
@@ -217,11 +233,13 @@ service cloud.firestore {
 
         ||
 
-        // Cargar el resultado (incluye MVP): cualquier miembro del grupo (o admin)
+        // Cargar el resultado: cualquier miembro del grupo (o admin). El MVP
+        // ya NO se escribe acá — lo decide la votación (mvpVotes) y lo fija
+        // la Cloud Function closeMvpVoting (Admin SDK, ignora estas reglas).
         (
           (isAdmin() || isMemberOfMatchGroup(matchId))
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['scoreA', 'scoreB', 'status', 'mvpUserId', 'mvpName', 'updatedAt'])
+               .hasOnly(['scoreA', 'scoreB', 'status', 'updatedAt'])
         );
 
       allow delete: if isAdmin();
@@ -314,8 +332,18 @@ service cloud.firestore {
             )
           );
 
-        // Admin o dueño modifica inscripción
-        allow update: if isAdmin() || isOwner(userId);
+        // Admin o dueño modifica inscripción. Además, quien tiene acceso
+        // anticipado en el grupo del partido (OG/owner/admin) puede asignar
+        // el equipo (A/B) de CUALQUIER inscripto — necesario para armar
+        // equipos balanceados antes de jugar (useTeamBalancer) — pero SOLO
+        // puede tocar el campo `team`, nada más.
+        allow update: if
+          isAdmin()
+          || isOwner(userId)
+          || (
+            hasEarlyAccessInMatchGroup(matchId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['team'])
+          );
 
         // Cancelar inscripción: uno mismo, admin, o quien lo anotó (invitado/miembro)
         allow delete: if
@@ -331,10 +359,43 @@ service cloud.firestore {
 
         allow read: if isAuthenticated();
 
-        // Cargar stats individuales: cualquier miembro del grupo del partido (o admin).
-        // El acumulador en users/{uid} lo escribe la Cloud Function onPlayerStatsWritten
-        // (admin SDK), no el cliente.
-        allow write: if isAdmin() || isMemberOfMatchGroup(matchId);
+        // Cargar stats individuales (goals/assists/team): cualquier miembro del
+        // grupo del partido. El campo `mvp` queda excluido de esta rama — solo
+        // lo escribe la Cloud Function closeMvpVoting (Admin SDK) según el
+        // resultado de la votación; un admin global puede corregirlo a mano
+        // como escape hatch de emergencia.
+        // El acumulador en users/{uid} lo escribe la Cloud Function
+        // onPlayerStatsWritten (admin SDK), no el cliente.
+        allow create, update: if
+          (
+            isMemberOfMatchGroup(matchId)
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mvp'])
+          )
+          || isAdmin();
+
+        allow delete: if isAdmin();
+      }
+
+      // ──────────────────────────────────────────────────────────────────────
+      // MVP VOTES
+      // ──────────────────────────────────────────────────────────────────────
+      // Un voto por jugador (docId = su uid), upsert mientras la votación esté
+      // abierta. Nunca se puede votar a uno mismo. Solo se puede votar cuando
+      // el partido está finalizado y la votación no fue cerrada todavía
+      // (closeMvpVoting, Cloud Function, la cierra fijando mvpVotingClosed).
+      match /mvpVotes/{voterId} {
+
+        allow read: if isAuthenticated();
+
+        allow create, update: if
+          (isAdmin() || isMemberOfMatchGroup(matchId) || isGroupless(matchId))
+          && isOwner(voterId)
+          && matchData(matchId).status == 'finished'
+          && matchData(matchId).get('mvpVotingClosed', false) == false
+          && request.resource.data.votedForUserId is string
+          && request.resource.data.votedForUserId != request.auth.uid;
+
+        allow delete: if isAdmin();
       }
     }
 

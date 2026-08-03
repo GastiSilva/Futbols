@@ -64,18 +64,21 @@ export function usePlayerStats() {
       for (const entry of statsArray) {
         if (!entry.userId) continue // invitados sin cuenta: no acumulan
 
+        // El campo `mvp` NO se manda desde acá: lo fija únicamente la Cloud
+        // Function closeMvpVoting según el resultado de la votación de MVP
+        // (useMvpVoting) — las reglas de Firestore bloquean ese campo para
+        // escrituras de cliente en playerStats.
         const statRef = doc(db, 'matches', matchId, 'playerStats', entry.userId)
         batch.set(statRef, {
           userId: entry.userId,
           displayName: entry.displayName ?? null,
           goals: entry.goals ?? 0,
           assists: entry.assists ?? 0,
-          mvp: entry.mvp === true, // MVP del partido (acumula stats.mvps vía CF)
           team: entry.team ?? null,
           result: computeResult(entry.team ?? null, scoreA, scoreB), // W/E/L/null
           groupId: groupId ?? null,
           savedAt: serverTimestamp(),
-        })
+        }, { merge: true })
       }
 
       await batch.commit()

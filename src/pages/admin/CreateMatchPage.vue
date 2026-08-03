@@ -338,12 +338,15 @@ function validateNotifyAt() {
 
 async function handleSubmit() {
   try {
-    // Denormaliza el link de Maps de la sede en el partido (para mostrarlo
-    // sin lecturas extra, y para que sobreviva si la sede se borra)
+    // Denormaliza el link de Maps y las coordenadas de la sede en el partido
+    // (para mostrarlos sin lecturas extra, y para que sobrevivan si la sede
+    // se borra — venueLat/venueLng habilitan mostrar el clima del partido)
     const selectedVenue = venues.value.find((v) => v.id === form.value.venueId) ?? null
     const matchId = await createMatch({
       ...form.value,
       venueMapsUrl: selectedVenue?.mapsUrl ?? null,
+      venueLat: selectedVenue?.lat ?? null,
+      venueLng: selectedVenue?.lng ?? null,
     })
 
     // Solo programa notificaciones si se definió openAt

@@ -19,9 +19,9 @@
                 />
               </q-avatar>
               <div class="column items-center">
-                <div class="text-h6 text-weight-bold">{{ profile.displayName }}</div>
-                <div v-if="profile.nickname" class="text-subtitle2 text-green-2">
-                  "{{ profile.nickname }}"
+                <div class="text-h6 text-weight-bold">{{ profile.nickname || profile.displayName }}</div>
+                <div v-if="profile.nickname" class="text-caption text-green-2">
+                  {{ profile.displayName }}
                 </div>
               </div>
               <div class="row q-gutter-xs" v-if="profile.preferredFoot">
@@ -57,7 +57,7 @@
                 ¿La descripción es real?
               </div>
               <div class="text-caption text-grey-7 q-mb-sm">
-                Tu calificación es privada — ni {{ profile.displayName }} ni nadie más ve quién
+                Tu calificación es privada — ni {{ profile.nickname || profile.displayName }} ni nadie más ve quién
                 puso qué.
               </div>
               <q-rating

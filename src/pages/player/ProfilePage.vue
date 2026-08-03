@@ -14,9 +14,9 @@
               />
             </q-avatar>
             <div class="column items-center">
-              <div class="text-h6 text-weight-bold">{{ user?.displayName }}</div>
-              <div v-if="user?.nickname" class="text-subtitle2 text-green-2">
-                "{{ user.nickname }}"
+              <div class="text-h6 text-weight-bold">{{ user?.nickname || user?.displayName }}</div>
+              <div v-if="user?.nickname" class="text-caption text-green-2">
+                {{ user.displayName }}
               </div>
               <div class="text-caption text-green-2">{{ user?.email }}</div>
             </div>

@@ -253,7 +253,12 @@ onMounted(async () => {
   loadingUsers.value = true
   try {
     const snap = await getDocs(query(collection(db, 'users'), orderBy('displayName', 'asc')))
-    users.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+    // El nombre visible prioriza el apodo (igual que en registrations/members);
+    // el orden de la query sigue siendo por displayName real, es solo interno.
+    users.value = snap.docs.map((d) => {
+      const data = d.data()
+      return { id: d.id, ...data, displayName: data.nickname || data.displayName }
+    })
   } finally {
     loadingUsers.value = false
   }
