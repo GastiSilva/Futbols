@@ -17,6 +17,14 @@
       ]
     },
     {
+      "collectionGroup": "matches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",     "order": "ASCENDING" },
+        { "fieldPath": "finishedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "_matchOpenQueue",
       "queryScope": "COLLECTION",
       "fields": [

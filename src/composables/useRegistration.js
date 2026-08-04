@@ -163,13 +163,14 @@ export function useRegistration() {
         const isCreator = match.createdBy === user.uid
         const creatorSelf = isCreator && isSelf
 
-        const isGlobalAdmin = authStore.isAdmin
-
         if (!creatorSelf) {
           // Partido de grupo: solo miembros de ese grupo pueden anotarse o
-          // anotar a otra persona (un admin global puede siempre). Los
+          // anotar a otra persona. Un admin global NO tiene bypass acá — un
+          // admin del sistema no debe poder sumarse a partidos de grupos
+          // ajenos, solo puede participar como cualquier usuario normal (ver
+          // "Modo superadmin" para visibilidad de solo lectura). Los
           // partidos sin grupo (groupId null) son globales y quedan abiertos.
-          if (match.groupId && !isGlobalAdmin) {
+          if (match.groupId) {
             const callerMemberSnap = await transaction.get(
               doc(db, 'groups', match.groupId, 'members', user.uid),
             )
@@ -204,7 +205,7 @@ export function useRegistration() {
                 throw new Error(REGISTRATION_ERRORS.EARLY_TARGET_NOT_ALLOWED)
               }
             }
-          } else if (!isSelf && !entry.isGuest && match.groupId && !isGlobalAdmin) {
+          } else if (!isSelf && !entry.isGuest && match.groupId) {
             // Ventana abierta: si se anota a otro miembro, ese miembro
             // también debe pertenecer al grupo del partido.
             const targetMemberSnap = await transaction.get(
@@ -224,9 +225,12 @@ export function useRegistration() {
         }
 
         // ── 3. CÁLCULO DE POSICIÓN ────────────────────────────────────────
+        // Formato libre (maxPlayers null): nunca hay lista de espera, todos
+        // entran como titulares. `newPosition > null` sería true en JS (null
+        // se coerciona a 0), así que hay que chequear explícitamente.
         const currentCount = match.currentPlayers ?? 0
         const newPosition = currentCount + 1
-        const isOnWaitlist = newPosition > match.maxPlayers
+        const isOnWaitlist = match.maxPlayers != null && newPosition > match.maxPlayers
 
         // ── 4. ESCRITURAS ATÓMICAS ────────────────────────────────────────
         transaction.update(matchRef, {
@@ -415,8 +419,9 @@ export function useRegistration() {
     // El creador del partido puede anotarse desde el momento cero
     if (match.createdBy === authStore.user?.uid) return true
 
-    // Partido de grupo: solo miembros de ese grupo (o admin global)
-    if (match.groupId && !authStore.isAdmin && !authStore.isMemberOfGroup(match.groupId)) {
+    // Partido de grupo: solo miembros de ese grupo. Un admin global no tiene
+    // bypass para participar en partidos de grupos ajenos.
+    if (match.groupId && !authStore.isMemberOfGroup(match.groupId)) {
       return false
     }
 

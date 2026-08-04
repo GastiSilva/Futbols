@@ -200,7 +200,12 @@
                 <template #avatar>
                   <q-icon name="info" color="green-8" />
                 </template>
-                Cupos máximos: <strong>{{ selectedFormat?.maxPlayers }}</strong> jugadores
+                <template v-if="selectedFormat?.maxPlayers != null">
+                  Cupos máximos: <strong>{{ selectedFormat.maxPlayers }}</strong> jugadores
+                </template>
+                <template v-else>
+                  Sin límite de jugadores — cualquiera se anota, nunca hay lista de espera.
+                </template>
               </q-banner>
 
               <q-btn

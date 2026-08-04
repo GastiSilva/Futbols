@@ -36,6 +36,25 @@
         </q-card>
       </div>
 
+      <!-- Modo superadmin -->
+      <div class="col-12 col-sm-6 col-md-4">
+        <q-card flat bordered>
+          <q-card-section class="text-center q-pa-lg">
+            <q-icon name="visibility" size="48px" :color="authStore.superAdminMode ? 'purple-8' : 'grey-5'" />
+            <div class="text-subtitle1 text-weight-bold q-mt-sm">Modo superadmin</div>
+            <div class="text-caption text-grey-6 q-mb-sm">
+              Ver partidos y datos de TODOS los grupos, no solo los tuyos. Se apaga al reabrir la app.
+            </div>
+            <q-toggle
+              :model-value="authStore.superAdminMode"
+              color="purple-8"
+              label="Activado"
+              @update:model-value="authStore.setSuperAdminMode($event)"
+            />
+          </q-card-section>
+        </q-card>
+      </div>
+
       <!-- Lista de partidos activos -->
       <div class="col-12">
         <div class="text-subtitle1 text-weight-bold q-mb-sm">Partidos activos</div>
@@ -212,8 +231,10 @@ import { collection, getDocs, orderBy, query } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 import { db, functions } from 'src/services/firebase'
 import { useMatch } from 'src/composables/useMatch'
+import { useAuthStore } from 'src/stores/auth.store'
 
 const $q = useQuasar()
+const authStore = useAuthStore()
 const { matches, subscribeToUpcoming, stopListening } = useMatch()
 
 // ── Usuarios ──────────────────────────────────────────────────────────────────

@@ -14,7 +14,19 @@
 
         <q-skeleton v-if="loadingMatch" type="rect" height="200px" />
 
+        <!-- Bloqueado para no-admins: pasaron 36hs desde que se finalizó -->
+        <div v-else-if="isLocked && !authStore.isAdmin" class="text-center q-py-xl text-grey-6">
+          <q-icon name="lock" size="48px" class="q-mb-md" />
+          <div class="text-body1">Este resultado quedó bloqueado 36 horas después de cargado.</div>
+          <div class="text-caption">Solo un admin puede editarlo ahora.</div>
+        </div>
+
         <template v-else-if="match">
+          <!-- Bloqueado pero es admin: puede seguir editando, con aviso -->
+          <q-banner v-if="isLocked" class="bg-orange-1 text-orange-9 rounded-borders q-mb-lg" rounded>
+            <template #avatar><q-icon name="lock" color="orange-8" /></template>
+            Bloqueado para el resto (pasaron 36hs) — estás editando como admin.
+          </q-banner>
           <!-- ── Marcador ──────────────────────────────────────────────── -->
           <q-card flat bordered class="q-mb-lg">
             <q-card-section>
@@ -124,17 +136,19 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuasar, date } from 'quasar'
 import { useMatch } from 'src/composables/useMatch'
 import { usePlayerStats } from 'src/composables/usePlayerStats'
+import { useAuthStore } from 'src/stores/auth.store'
 import { collection, getDocs } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 
 const route = useRoute()
 const router = useRouter()
 const $q = useQuasar()
+const authStore = useAuthStore()
 const matchId = route.params.id
 
 const { fetchMatch, saveMatchResult } = useMatch()
@@ -143,6 +157,8 @@ const { savePlayerStats } = usePlayerStats()
 const match = ref(null)
 const loadingMatch = ref(true)
 const saving = ref(false)
+// A las 36hs de finalizado, resultLocked lo fija el scheduler processAutoCloseMatches
+const isLocked = computed(() => match.value?.resultLocked === true)
 const scoreA = ref(0)
 const scoreB = ref(0)
 const playerRows = ref([])
@@ -188,10 +204,11 @@ onMounted(async () => {
 async function handleSave() {
   saving.value = true
   try {
-    await saveMatchResult(matchId, {
-      scoreA: scoreA.value,
-      scoreB: scoreB.value,
-    })
+    await saveMatchResult(
+      matchId,
+      { scoreA: scoreA.value, scoreB: scoreB.value },
+      { alreadyFinished: match.value.status === 'finished' },
+    )
 
     // El MVP ya no se fija acá — se decide por votación desde MatchDetailPage
     // una vez finalizado el partido (useMvpVoting + closeMvpVoting).

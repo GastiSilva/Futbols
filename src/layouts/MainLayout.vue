@@ -201,6 +201,12 @@
               <q-spinner-dots color="negative" size="18px" />
             </q-item-section>
           </q-item>
+
+          <!-- Firma discreta del desarrollador -->
+          <div class="row items-center justify-center q-py-xs q-gutter-x-xs dev-signature">
+            <img src="icons/Logo for MokDev.png" alt="MokDev" width="14" height="14" />
+            <span class="text-caption">MokDev</span>
+          </div>
         </div>
 
       </div>
@@ -281,5 +287,14 @@ async function handleLogout() {
 
 .drawer-item--active :deep(.q-icon) {
   color: var(--q-primary);
+}
+
+.dev-signature {
+  opacity: 0.35;
+}
+
+.dev-signature img {
+  border-radius: 3px;
+  object-fit: cover;
 }
 </style>

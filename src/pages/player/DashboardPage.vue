@@ -7,6 +7,16 @@
         <div class="text-h6 text-weight-bold ellipsis">¡Hola, {{ firstName }}!</div>
         <div class="text-caption text-grey-6 text-capitalize">{{ today }}</div>
       </div>
+      <q-btn
+        v-if="isAdmin || authStore.memberGroupIds.length > 0"
+        unelevated
+        dense
+        color="green-9"
+        icon="add"
+        label="Crear partido"
+        class="pill-btn"
+        :to="{ name: 'create-match-player' }"
+      />
     </div>
 
     <!-- ── Sin partidos próximos ──────────────────────────────────────────── -->
@@ -46,7 +56,8 @@
               </div>
               <div class="text-right">
                 <div class="text-caption text-weight-bold" :class="getCuposColor(match)">
-                  {{ visibleCupos(match).current }} / {{ visibleCupos(match).max }}
+                  <template v-if="visibleCupos(match).isFree">{{ visibleCupos(match).current }} anotados</template>
+                  <template v-else>{{ visibleCupos(match).current }} / {{ visibleCupos(match).max }}</template>
                 </div>
                 <q-linear-progress
                   :value="visibleCupos(match).ratio"
@@ -62,6 +73,9 @@
                 :label="getStatusLabel(match.status)"
                 size="sm"
               />
+              <q-badge v-if="match.venueReserved" color="positive" outline>
+                <q-icon name="event_available" size="14px" class="q-mr-xs" />Cancha reservada
+              </q-badge>
             </div>
           </template>
 
@@ -320,6 +334,12 @@
 
               <q-item-section side>
                 <div class="row items-center no-wrap q-gutter-xs">
+                  <q-badge
+                    v-if="reg.team === 'A' || reg.team === 'B'"
+                    :color="reg.team === 'A' ? 'blue-8' : 'red-8'"
+                    text-color="white"
+                    :label="reg.team"
+                  />
                   <q-badge color="primary" text-color="dark" :label="`#${reg.position}`" />
                   <q-btn
                     v-if="canRemoveReg(reg)"
@@ -694,11 +714,13 @@ function getHeaderClass(matchId) {
 
 // Cupos "engaño visual": antes del horario de acceso de cada uno se muestran
 // en 0/0, igual que la lista de anotados — no debe notarse que ya hay gente.
+// Formato libre (maxPlayers null): sin denominador, la barra siempre queda vacía.
 function visibleCupos(match) {
-  if (!canSeeRegistrations(match)) return { current: 0, max: 0, ratio: 0 }
+  const isFree = match.maxPlayers == null
+  if (!canSeeRegistrations(match)) return { current: 0, max: 0, ratio: 0, isFree }
   const current = match.currentPlayers ?? 0
   const max = match.maxPlayers ?? 0
-  return { current, max, ratio: max ? current / max : 0 }
+  return { current, max, ratio: isFree ? 0 : (max ? current / max : 0), isFree }
 }
 
 function getProgressColor(match) {

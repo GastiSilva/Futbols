@@ -38,6 +38,14 @@ export const useAuthStore = defineStore('auth', () => {
   // o los partidos sin grupo, que son globales/de admin).
   const memberGroupIds = ref([])
 
+  // Modo superadmin: un admin global, por defecto, ve/participa SOLO de sus
+  // propios grupos como cualquier jugador — no quiere partidos/notificaciones
+  // de grupos ajenos mezclados con los suyos. Este flag (activable a mano
+  // desde el panel admin) lo saca de ese filtro para debuggear o revisar
+  // datos de otros grupos. Es de SESIÓN: arranca en false siempre, se resetea
+  // solo con clearUser (logout) y también al recargar/reabrir la app.
+  const superAdminMode = ref(false)
+
   // ── Getters ────────────────────────────────────────────────────────────────
   const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.isAdmin === true)
@@ -71,7 +79,12 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
     ogGroupIds.value = []
     memberGroupIds.value = []
+    superAdminMode.value = false
     initialized.value = true
+  }
+
+  function setSuperAdminMode(enabled) {
+    superAdminMode.value = !!enabled
   }
 
   function updateFcmToken(token) {
@@ -92,6 +105,7 @@ export const useAuthStore = defineStore('auth', () => {
     initialized,
     ogGroupIds,
     memberGroupIds,
+    superAdminMode,
     isAuthenticated,
     isAdmin,
     role,
@@ -100,6 +114,7 @@ export const useAuthStore = defineStore('auth', () => {
     setUser,
     setOgGroups,
     setMemberGroups,
+    setSuperAdminMode,
     clearUser,
     updateFcmToken,
     patchUser,

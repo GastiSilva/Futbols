@@ -207,13 +207,14 @@ service cloud.firestore {
 
       allow read: if isAuthenticated();
 
-      // Crean partidos: admins globales, o el owner/admin del grupo del partido
+      // Crean partidos: admins globales, o CUALQUIER miembro del grupo del
+      // partido (no hace falta ser owner/admin del grupo para armar una lista).
       allow create: if
         isAdmin()
         || (
           request.resource.data.createdBy == request.auth.uid
           && request.resource.data.groupId != null
-          && isGroupAdmin(request.resource.data.groupId)
+          && isMemberOfGroup(request.resource.data.groupId, request.auth.uid)
         );
 
       // ── UPDATE MATCH ──────────────────────────────────────────────────────
@@ -224,22 +225,53 @@ service cloud.firestore {
 
         ||
 
-        // Usuarios solo pueden modificar currentPlayers
+        // Usuarios solo pueden modificar currentPlayers: deben ser miembros
+        // del grupo del partido (o admin/partido sin grupo), el valor debe
+        // ser un entero >= 0, y solo puede moverse de a UNO por vez (+1 al
+        // anotarse, -1 al bajarse) — nunca un salto arbitrario. El caso
+        // "== mismo valor" solo se permite cuando ya estaba en 0 (clamp de
+        // useRegistration.removeRegistration al bajarse con el contador ya
+        // en cero, un borde de estado inconsistente que no debe bloquearse).
         (
-          isAuthenticated()
+          (isAdmin() || isGroupless(matchId) || isMemberOfMatchGroup(matchId))
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['currentPlayers', 'updatedAt'])
+          && request.resource.data.currentPlayers is int
+          && request.resource.data.currentPlayers >= 0
+          && (
+            request.resource.data.currentPlayers == resource.data.currentPlayers + 1
+            || request.resource.data.currentPlayers == resource.data.currentPlayers - 1
+            || (resource.data.currentPlayers == 0 && request.resource.data.currentPlayers == 0)
+          )
         )
 
         ||
 
-        // Cargar el resultado: cualquier miembro del grupo (o admin). El MVP
+        // Cargar el resultado: cualquier miembro del grupo (o admin), pero
+        // SOLO si el partido no está bloqueado (resultLocked lo fija el
+        // scheduler de auto-cierre a las 36hs de finalizado; después de eso
+        // únicamente un admin puede seguir editando el resultado). El MVP
         // ya NO se escribe acá — lo decide la votación (mvpVotes) y lo fija
         // la Cloud Function closeMvpVoting (Admin SDK, ignora estas reglas).
+        // scoreA/scoreB deben ser enteros >= 0 y status un valor válido.
+        (
+          (isAdmin() || (isMemberOfMatchGroup(matchId) && matchData(matchId).get('resultLocked', false) == false))
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['scoreA', 'scoreB', 'status', 'finishedAt', 'updatedAt'])
+          && request.resource.data.scoreA is int && request.resource.data.scoreA >= 0
+          && request.resource.data.scoreB is int && request.resource.data.scoreB >= 0
+          && request.resource.data.status in ['scheduled', 'open', 'closed', 'finished']
+        )
+
+        ||
+
+        // Marcar/desmarcar "cancha reservada": cualquier miembro del grupo
+        // (o admin) — mismo criterio que cargar resultado, sin exigir que el
+        // partido haya terminado (se reserva ANTES de jugar).
         (
           (isAdmin() || isMemberOfMatchGroup(matchId))
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['scoreA', 'scoreB', 'status', 'updatedAt'])
+               .hasOnly(['venueReserved', 'updatedAt'])
         );
 
       allow delete: if isAdmin();
@@ -276,7 +308,7 @@ service cloud.firestore {
             // grupo del partido (o admin global, o partido sin grupo/global)
             (
               request.time >= matchData(matchId).openAt
-              && (isAdmin() || isGroupless(matchId) || isMemberOfMatchGroup(matchId))
+              && (isGroupless(matchId) || isMemberOfMatchGroup(matchId))
               && (
                 // (a) me anoto yo mismo (docId = mi uid)
                 (
@@ -300,7 +332,7 @@ service cloud.firestore {
                   request.resource.data.isGuest == false
                   && request.resource.data.userId == userId
                   && request.resource.data.addedBy == request.auth.uid
-                  && (isAdmin() || isGroupless(matchId) || isMemberOfGroup(matchData(matchId).get('groupId', null), userId))
+                  && (isGroupless(matchId) || isMemberOfGroup(matchData(matchId).get('groupId', null), userId))
                 )
               )
             )
@@ -360,16 +392,26 @@ service cloud.firestore {
         allow read: if isAuthenticated();
 
         // Cargar stats individuales (goals/assists/team): cualquier miembro del
-        // grupo del partido. El campo `mvp` queda excluido de esta rama — solo
-        // lo escribe la Cloud Function closeMvpVoting (Admin SDK) según el
-        // resultado de la votación; un admin global puede corregirlo a mano
-        // como escape hatch de emergencia.
+        // grupo del partido, mientras el partido no esté bloqueado
+        // (resultLocked, a las 36hs de finalizado). El campo `mvp` queda
+        // excluido de esta rama — solo lo escribe la Cloud Function
+        // closeMvpVoting (Admin SDK) según el resultado de la votación; un
+        // admin global puede corregir cualquier cosa a mano como escape
+        // hatch de emergencia, incluso con el partido bloqueado.
+        // goals/assists deben ser enteros >= 0, y el userId del doc debe
+        // coincidir con el docId (no se pueden cargar stats "a nombre de
+        // otro" pisando el uid real).
         // El acumulador en users/{uid} lo escribe la Cloud Function
         // onPlayerStatsWritten (admin SDK), no el cliente.
         allow create, update: if
           (
             isMemberOfMatchGroup(matchId)
+            && matchData(matchId).get('resultLocked', false) == false
             && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mvp'])
+            && request.resource.data.userId == userId
+            && request.resource.data.goals is int && request.resource.data.goals >= 0
+            && request.resource.data.assists is int && request.resource.data.assists >= 0
+            && request.resource.data.team in ['A', 'B', null]
           )
           || isAdmin();
 
@@ -393,7 +435,9 @@ service cloud.firestore {
           && matchData(matchId).status == 'finished'
           && matchData(matchId).get('mvpVotingClosed', false) == false
           && request.resource.data.votedForUserId is string
-          && request.resource.data.votedForUserId != request.auth.uid;
+          && request.resource.data.votedForUserId != request.auth.uid
+          && exists(/databases/$(database)/documents/matches/$(matchId)/registrations/$(request.resource.data.votedForUserId))
+          && get(/databases/$(database)/documents/matches/$(matchId)/registrations/$(request.resource.data.votedForUserId)).data.get('isOnWaitlist', false) == false;
 
         allow delete: if isAdmin();
       }
@@ -416,9 +460,28 @@ service cloud.firestore {
 
         ||
 
-        // usuarios solo actualizan memberCount
-        request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['memberCount', 'updatedAt'])
+        // memberCount: contador auxiliar de UI (evita leer toda la
+        // subcolección members solo para mostrar "X miembros"). Solo puede
+        // tocarlo quien ya sea miembro del grupo, O quien se está uniendo en
+        // esta misma transacción (joinGroup/acceptJoinRequest crean el doc
+        // de member y actualizan memberCount en la misma transacción; el
+        // member doc todavía no existe cuando se evalúa esta regla, por eso
+        // isOwner(request.auth.uid) cubre el alta propia). Como entero >= 0,
+        // moviéndose de a UNO por vez (mismo patrón que currentPlayers en
+        // matches) — antes cualquier autenticado, ni siquiera miembro, podía
+        // pisarlo con cualquier valor.
+        (
+          (isMemberOfGroup(groupId, request.auth.uid) || isOwner(request.auth.uid))
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['memberCount', 'updatedAt'])
+          && request.resource.data.memberCount is int
+          && request.resource.data.memberCount >= 0
+          && (
+            request.resource.data.memberCount == resource.data.memberCount + 1
+            || request.resource.data.memberCount == resource.data.memberCount - 1
+            || (resource.data.memberCount == 0 && request.resource.data.memberCount == 0)
+          )
+        )
       );
 
       allow delete: if isAuthenticated()
@@ -432,8 +495,26 @@ service cloud.firestore {
 
         allow read: if isAuthenticated();
 
+        // Alta propia (joinGroup): solo puede autoasignarse role 'member' sin
+        // OG — nunca 'owner'/'admin' ni og:true por su cuenta. La única
+        // excepción es el creador del grupo dándose de alta como 'owner' en
+        // el mismo flujo de createGroup (createdBy del grupo ya apunta a él).
+        // Un owner/admin del grupo puede dar de alta a cualquiera con
+        // cualquier role/og (invitar como admin, aceptar solicitud, etc.).
         allow create: if
-          isOwner(userId)
+          (
+            isOwner(userId)
+            && (
+              (
+                request.resource.data.role == 'member'
+                && request.resource.data.get('og', false) == false
+              )
+              || (
+                request.resource.data.role == 'owner'
+                && get(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == request.auth.uid
+              )
+            )
+          )
           || isGroupAdmin(groupId);
 
         allow update: if isGroupAdmin(groupId);
@@ -483,7 +564,9 @@ service cloud.firestore {
       // Editar (nombre/dirección/maps/notas): un admin global siempre puede.
       // Una sede de grupo la puede editar cualquier miembro de ESE grupo (no
       // solo el creador) — pero no se puede reasignar a otro grupo ni volverla
-      // global salvo un admin. Una sede GLOBAL (groupId null) solo la edita un
+      // global salvo un admin, NI reasignar createdBy (antes un miembro podía
+      // pisarlo con su propio uid y así ganar permiso de delete, que depende
+      // de ser el creador). Una sede GLOBAL (groupId null) solo la edita un
       // admin — por eso no hay branch para "cualquier autenticado" acá.
       allow update: if isAdmin()
                     || (
@@ -491,6 +574,7 @@ service cloud.firestore {
                       && resource.data.groupId != null
                       && isMemberOfGroup(resource.data.groupId, request.auth.uid)
                       && request.resource.data.groupId == resource.data.groupId
+                      && request.resource.data.createdBy == resource.data.createdBy
                     );
 
       // Borrar (destructivo): solo quien la creó o un admin global.

@@ -303,6 +303,48 @@ exports.processMatchLowSignupAlert = onSchedule(
   },
 )
 
+// ── 5c. Scheduled: auto-cerrar resultado/votación de MVP a las 36hs ──────────
+// Corre cada hora. Un partido 'finished' hace más de 36hs (desde finishedAt,
+// que se fija UNA sola vez) deja de ser editable por el cliente común: cierra
+// la votación de MVP (si no se cerró antes a mano) y marca resultLocked:true,
+// lo que bloquea en las reglas la edición de scoreA/scoreB/status/playerStats.
+// Un admin global siempre puede seguir editando después de esto.
+exports.processAutoCloseMatches = onSchedule(
+  { region: LOCATION, schedule: 'every 60 minutes' },
+  async () => {
+    const db = admin.firestore()
+    const threshold = admin.firestore.Timestamp.fromDate(new Date(Date.now() - 36 * 60 * 60 * 1000))
+
+    const snap = await db
+      .collection('matches')
+      .where('status', '==', 'finished')
+      .where('finishedAt', '<=', threshold)
+      .get()
+
+    if (snap.empty) return
+
+    for (const docSnap of snap.docs) {
+      const match = docSnap.data()
+      if (match.resultLocked === true) continue
+
+      try {
+        if (match.mvpVotingClosed === true) {
+          // La votación ya se cerró a mano — solo falta bloquear el resultado.
+          await docSnap.ref.update({
+            resultLocked: true,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          })
+        } else {
+          await closeMvpVotingForMatch(docSnap.id, { lockResult: true })
+        }
+        logger.info(`processAutoCloseMatches: ${docSnap.id} bloqueado (finishedAt hace más de 36hs)`)
+      } catch (error) {
+        logger.error(`processAutoCloseMatches: error en ${docSnap.id}`, error)
+      }
+    }
+  },
+)
+
 // ── 6. Callable: asignar claim admin ─────────────────────────────────────────
 exports.setAdminClaim = onCall(
   { region: LOCATION, invoker: 'public' },
@@ -360,6 +402,58 @@ exports.setUserRole = onCall(
 //   playerStats/{winnerId}.mvp = true (y false en quien lo tuviera antes)
 // El write a playerStats sigue dispargando onPlayerStatsWritten normalmente,
 // que acumula stats.mvps por diferencia — no hace falta tocar ese trigger.
+// ── Helper: cuenta los votos y fija el MVP de un partido ─────────────────────
+// Reusado por la callable closeMvpVoting (cierre manual) y por el scheduler
+// processAutoCloseMatches (cierre automático a las 36hs). Si `lockResult` es
+// true, además marca resultLocked:true en el mismo batch (auto-cierre).
+async function closeMvpVotingForMatch(matchId, { lockResult = false } = {}) {
+  const db = admin.firestore()
+  const matchRef = db.collection('matches').doc(matchId)
+
+  const votesSnap = await matchRef.collection('mvpVotes').get()
+  const tally = new Map()
+  votesSnap.docs.forEach((d) => {
+    const target = d.data().votedForUserId
+    if (!target) return
+    tally.set(target, (tally.get(target) ?? 0) + 1)
+  })
+
+  let winnerId = null
+  if (tally.size > 0) {
+    const sorted = [...tally.entries()].sort((a, b) => b[1] - a[1])
+    const topCount = sorted[0][1]
+    const topCandidates = sorted.filter(([, c]) => c === topCount)
+    // Empate en el primer puesto → sin MVP (sin desempate manual/segunda vuelta)
+    if (topCandidates.length === 1) winnerId = topCandidates[0][0]
+  }
+
+  let winnerName = null
+  if (winnerId) {
+    const statSnap = await matchRef.collection('playerStats').doc(winnerId).get()
+    winnerName = statSnap.exists ? (statSnap.data().displayName ?? null) : null
+  }
+
+  const batch = db.batch()
+  batch.update(matchRef, {
+    mvpUserId: winnerId,
+    mvpName: winnerName,
+    mvpVotingClosed: true,
+    ...(lockResult ? { resultLocked: true } : {}),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  })
+
+  const statsSnap = await matchRef.collection('playerStats').get()
+  statsSnap.docs.forEach((d) => {
+    const isWinner = d.id === winnerId
+    const wasMvp = d.data().mvp === true
+    if (isWinner && !wasMvp) batch.update(d.ref, { mvp: true })
+    if (!isWinner && wasMvp) batch.update(d.ref, { mvp: false })
+  })
+
+  await batch.commit()
+  return { winnerId, winnerName, tally }
+}
+
 exports.closeMvpVoting = onCall(
   { region: LOCATION, invoker: 'public' },
   async (request) => {
@@ -371,8 +465,7 @@ exports.closeMvpVoting = onCall(
     await assertCanManageMatchNotifications(request.auth, matchId)
 
     const db = admin.firestore()
-    const matchRef = db.collection('matches').doc(matchId)
-    const matchSnap = await matchRef.get()
+    const matchSnap = await db.collection('matches').doc(matchId).get()
     if (!matchSnap.exists) {
       throw new HttpsError('not-found', 'Partido no encontrado.')
     }
@@ -385,46 +478,7 @@ exports.closeMvpVoting = onCall(
       throw new HttpsError('failed-precondition', 'La votación ya está cerrada.')
     }
 
-    const votesSnap = await matchRef.collection('mvpVotes').get()
-    const tally = new Map()
-    votesSnap.docs.forEach((d) => {
-      const target = d.data().votedForUserId
-      if (!target) return
-      tally.set(target, (tally.get(target) ?? 0) + 1)
-    })
-
-    let winnerId = null
-    if (tally.size > 0) {
-      const sorted = [...tally.entries()].sort((a, b) => b[1] - a[1])
-      const topCount = sorted[0][1]
-      const topCandidates = sorted.filter(([, c]) => c === topCount)
-      // Empate en el primer puesto → sin MVP (sin desempate manual/segunda vuelta)
-      if (topCandidates.length === 1) winnerId = topCandidates[0][0]
-    }
-
-    let winnerName = null
-    if (winnerId) {
-      const statSnap = await matchRef.collection('playerStats').doc(winnerId).get()
-      winnerName = statSnap.exists ? (statSnap.data().displayName ?? null) : null
-    }
-
-    const batch = db.batch()
-    batch.update(matchRef, {
-      mvpUserId: winnerId,
-      mvpName: winnerName,
-      mvpVotingClosed: true,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    })
-
-    const statsSnap = await matchRef.collection('playerStats').get()
-    statsSnap.docs.forEach((d) => {
-      const isWinner = d.id === winnerId
-      const wasMvp = d.data().mvp === true
-      if (isWinner && !wasMvp) batch.update(d.ref, { mvp: true })
-      if (!isWinner && wasMvp) batch.update(d.ref, { mvp: false })
-    })
-
-    await batch.commit()
+    const { winnerId, winnerName, tally } = await closeMvpVotingForMatch(matchId)
     logger.info(`closeMvpVoting: ${matchId} → ganador=${winnerId ?? 'empate/sin votos'}`)
     return { success: true, winnerId, winnerName, tally: Object.fromEntries(tally) }
   },
@@ -796,6 +850,7 @@ exports.onRegistrationDeleted = onDocumentDeleted(
 
         return {
           matchTitle: match.title ?? 'un partido',
+          groupId: match.groupId ?? null,
           promoted: promotedUsers,
           createdBy: match.createdBy ?? null,
           status: match.status ?? null,
@@ -814,7 +869,7 @@ exports.onRegistrationDeleted = onDocumentDeleted(
       })
 
       if (!info) return
-      const { matchTitle, promoted, createdBy, status, spotOpen, registeredUserIds } = info
+      const { matchTitle, groupId, promoted, createdBy, status, spotOpen, registeredUserIds } = info
 
       // 1) Suplentes que ascendieron a titular: aviso personal
       for (const userId of promoted) {
@@ -828,14 +883,16 @@ exports.onRegistrationDeleted = onDocumentDeleted(
       }
 
       if (promoted.length === 0 && spotOpen) {
-        // 2) No había suplentes y quedó lugar → avisar a TODOS (menos los anotados)
-        await sendFCMToAllUsers(
-          '⚽ ¡Se liberó un lugar!',
-          `Se bajó ${leaverName} de "${matchTitle}". ¡Hay lugar, anotáte!`,
-          { matchId, type: 'spot_available' },
-          registeredUserIds,
-        )
-        logger.info(`Lugar libre en ${matchId}: broadcast a todos (se bajó ${leaverName})`)
+        // 2) No había suplentes y quedó lugar → avisar (solo al grupo del
+        // partido si tiene uno; a todos si es un partido global sin grupo)
+        const title = '⚽ ¡Se liberó un lugar!'
+        const body = `Se bajó ${leaverName} de "${matchTitle}". ¡Hay lugar, anotáte!`
+        if (groupId) {
+          await sendFCMToGroupMembers(groupId, title, body, { matchId, type: 'spot_available' }, registeredUserIds)
+        } else {
+          await sendFCMToAllUsers(title, body, { matchId, type: 'spot_available' }, registeredUserIds)
+        }
+        logger.info(`Lugar libre en ${matchId}: broadcast a ${groupId ? 'grupo ' + groupId : 'todos'} (se bajó ${leaverName})`)
       } else if (createdBy && createdBy !== leaverUserId) {
         // 3) El lugar se tapó con un suplente (o la lista no está abierta):
         //    solo avisamos al organizador que alguien se bajó.

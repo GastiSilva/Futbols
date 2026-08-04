@@ -121,6 +121,10 @@ const MatchSchema = {
   venueLat:       'number | null', // Coordenadas denormalizadas de la sede
   venueLng:       'number | null', // (geocodificadas una vez al crear/editar la sede)
                                    // — habilitan mostrar el clima del partido (useWeather.js)
+  venueReserved:  'boolean',       // ¿Ya se reservó/pagó la cancha? Lo tildan el creador/
+                                   // admin del grupo del partido (o admin global) — mismo
+                                   // permiso que cargar el resultado, sin exigir que el
+                                   // partido haya terminado. Default false.
 
   date:           'Timestamp',    // Fecha y hora del partido
   openAt:         'Timestamp',    // Cuándo se habilita la inscripción
@@ -128,8 +132,9 @@ const MatchSchema = {
 
   groupId:        'string | null', // ID del grupo asociado al partido
 
-  format:         "'5v5' | '7v7' | '8v8' | '11v11'",
-  maxPlayers:     '10 | 14 | 16 | 22', // Determinado por format
+  format:         "'5v5' | '7v7' | '8v8' | '11v11' | 'libre'",
+  maxPlayers:     '10 | 14 | 16 | 22 | null', // Determinado por format — null en 'libre'
+                                   // (sin cupo: nunca hay lista de espera)
 
   currentPlayers: 'number',       // Contador atómico (actualizado en transaction)
 
@@ -144,11 +149,19 @@ const MatchSchema = {
 
   scoreA:         'number | null',
   scoreB:         'number | null',
+  finishedAt:     'Timestamp | null', // Momento en que el partido pasó a 'finished' por
+                                   // PRIMERA vez (no se re-escribe al re-editar el
+                                   // resultado). Ancla del auto-cierre de 36hs.
+  resultLocked:   'boolean',       // true a las 36hs de finishedAt — a partir de ahí
+                                   // solo un admin global puede seguir editando el
+                                   // resultado/playerStats/votación de MVP. Lo fija
+                                   // el scheduler processAutoCloseMatches.
   mvpUserId:      'string | null', // MVP del partido, fijado por closeMvpVoting
                                    // según el resultado de la votación (mvpVotes)
   mvpName:        'string | null',
   mvpVotingClosed: 'boolean',      // true una vez que se cerró la votación de MVP
-                                   // (solo lo escribe la Cloud Function closeMvpVoting)
+                                   // (manualmente, o automático a las 36hs junto con
+                                   // resultLocked) — solo lo escribe closeMvpVoting
 
   cloudTaskName:  'string | null', // Referencia a la Cloud Task programada
 

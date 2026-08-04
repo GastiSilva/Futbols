@@ -324,7 +324,7 @@
           <q-icon name="sports_soccer" class="q-mr-xs text-green-9" />Partidos
         </div>
         <q-btn
-          v-if="canManageGroup"
+          v-if="canCreateMatch"
           unelevated
           dense
           color="green-9"
@@ -426,12 +426,16 @@ const inviteLink = computed(() => {
   return `${window.location.origin}/grupos/unirse?code=${group.value.inviteCode}`
 })
 
-// ¿Puede GESTIONAR el grupo? (aceptar/expulsar miembros, crear partidos,
-// regenerar código, cambiar foto). Todos los miembros ven el enlace, los
-// miembros y los partidos; la gestión queda para owner/admin (o admin global).
+// ¿Puede GESTIONAR el grupo? (aceptar/expulsar miembros, regenerar código,
+// cambiar foto). Todos los miembros ven el enlace, los miembros y los
+// partidos; la gestión queda para owner/admin (o admin global).
 const canManageGroup = computed(
   () => authStore.isAdmin || myRole.value === 'owner' || myRole.value === 'admin',
 )
+
+// ¿Puede CREAR un partido en este grupo? Cualquier miembro (no hace falta
+// ser owner/admin) — armar la lista es una tarea común, no de gestión.
+const canCreateMatch = computed(() => authStore.isAdmin || !!myRole.value)
 
 // Ver el perfil de un miembro (el propio va a la página de edición, el de
 // otro compañero de grupo a la vista de solo lectura).

@@ -20,15 +20,20 @@ import { db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
 
 // ── Formatos de partido → cupos máximos ───────────────────────────────────────
+// 'libre' no tiene tope: maxPlayers queda null, cualquiera se anota siempre
+// como titular (nunca hay lista de espera) — pensado para cuando todavía no
+// se sabe si van a sumarse 10 o 14 personas.
 export const FORMAT_OPTIONS = [
   { label: '5 vs 5  (10 jugadores)', value: '5v5', maxPlayers: 10 },
   { label: '7 vs 7  (14 jugadores)', value: '7v7', maxPlayers: 14 },
   { label: '8 vs 8  (16 jugadores)', value: '8v8', maxPlayers: 16 },
   { label: '11 vs 11  (22 jugadores)', value: '11v11', maxPlayers: 22 },
+  { label: 'Libre (sin límite de jugadores)', value: 'libre', maxPlayers: null },
 ]
 
 export function getMaxPlayers(format) {
-  return FORMAT_OPTIONS.find((f) => f.value === format)?.maxPlayers ?? 10
+  const found = FORMAT_OPTIONS.find((f) => f.value === format)
+  return found ? found.maxPlayers : 10
 }
 
 // ── Estado de un partido ──────────────────────────────────────────────────────
@@ -74,7 +79,11 @@ export function useMatch() {
 
   // ── Escucha en tiempo real los próximos partidos ──────────────────────────
   // Solo se muestran partidos de los grupos del usuario, o partidos sin grupo
-  // (globales, creados por un admin). Un admin global ve todo. Esto es solo
+  // (globales). Un admin global, por defecto, ve SOLO lo suyo también — no
+  // quiere partidos/notificaciones de grupos ajenos mezclados con los propios
+  // (es dueño del sistema, no necesariamente parte de todo). Con
+  // superAdminMode activado (toggle manual en el panel admin, de sesión) ve
+  // todo, para debuggear o revisar datos de otros grupos. Esto es solo
   // filtrado de visibilidad en el cliente — la autorización real de anotarse
   // vive en useRegistration.registerEntry y en firestore.rules.
   function subscribeToUpcoming() {
@@ -90,18 +99,18 @@ export function useMatch() {
     // disparado una vez. Si el filtro solo corriera dentro del onSnapshot,
     // un miembro común podía quedar con matches.value = [] para siempre —
     // Firestore no vuelve a emitir el snapshot solo porque cambió el store.
-    // El watch de acá abajo lo reaplica cada vez que memberGroupIds/isAdmin
+    // El watch de acá abajo lo reaplica cada vez que memberGroupIds/superAdminMode
     // cambian, aunque el snapshot no se haya movido.
     const rawMatches = ref([])
 
     function applyGroupFilter() {
-      matches.value = authStore.isAdmin
+      matches.value = authStore.superAdminMode
         ? rawMatches.value
         : rawMatches.value.filter((m) => !m.groupId || authStore.isMemberOfGroup(m.groupId))
     }
 
     const stopWatch = watch(
-      () => [authStore.memberGroupIds.slice(), authStore.isAdmin],
+      () => [authStore.memberGroupIds.slice(), authStore.superAdminMode],
       applyGroupFilter,
     )
 
@@ -228,13 +237,17 @@ export function useMatch() {
   // ── Guardar resultado post-partido ─────────────────────────────────────────
   // El MVP ya no se fija acá: se decide por votación (useMvpVoting) y lo
   // escribe la Cloud Function closeMvpVoting cuando se cierra la votación.
-  async function saveMatchResult(matchId, { scoreA, scoreB }) {
+  // finishedAt se fija SOLO la primera vez que el partido pasa a 'finished'
+  // (re-guardar un resultado ya cargado no debe correr el reloj de las 36hs
+  // del auto-cierre) — por eso el caller debe indicar si ya estaba finalizado.
+  async function saveMatchResult(matchId, { scoreA, scoreB }, { alreadyFinished = false } = {}) {
     loading.value = true
     try {
       await updateDoc(doc(db, 'matches', matchId), {
         scoreA,
         scoreB,
         status: MATCH_STATUS.FINISHED,
+        ...(alreadyFinished ? {} : { finishedAt: serverTimestamp() }),
         updatedAt: serverTimestamp(),
       })
     } catch (err) {
@@ -243,6 +256,14 @@ export function useMatch() {
     } finally {
       loading.value = false
     }
+  }
+
+  // ── Marcar/desmarcar cancha reservada ──────────────────────────────────────
+  async function toggleVenueReserved(matchId, reserved) {
+    await updateDoc(doc(db, 'matches', matchId), {
+      venueReserved: reserved,
+      updatedAt: serverTimestamp(),
+    })
   }
 
   // ── Próximo partido visible para el jugador ───────────────────────────────
@@ -285,6 +306,7 @@ export function useMatch() {
     createMatch,
     updateMatch,
     saveMatchResult,
+    toggleVenueReserved,
     stopListening,
     FORMAT_OPTIONS,
     MATCH_STATUS,

@@ -1,5 +1,4 @@
 // src/router/routes.js
-import { useAuthStore } from 'src/stores/auth.store'
 
 const routes = [
   // ── Autenticación ──────────────────────────────────────────────────────────
@@ -75,9 +74,17 @@ const routes = [
         meta: { requiresAuth: true },
       },
       {
-        // Crear partido dentro de un grupo (owner/admin del grupo, sin ser admin global)
+        // Crear partido dentro de un grupo (cualquier miembro, sin ser admin global)
         path: 'grupos/:id/crear-partido',
         name: 'create-group-match',
+        component: () => import('src/pages/admin/CreateMatchPage.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
+        // Crear partido desde la sección Partidos, sin grupo preseleccionado
+        // (cualquier miembro; el selector de grupo solo ofrece los suyos)
+        path: 'crear-partido',
+        name: 'create-match-player',
         component: () => import('src/pages/admin/CreateMatchPage.vue'),
         meta: { requiresAuth: true },
       },

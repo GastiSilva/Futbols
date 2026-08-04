@@ -59,6 +59,28 @@
               <div class="text-body2 text-weight-medium">{{ match.format }}</div>
             </div>
           </div>
+
+          <!-- Cancha reservada -->
+          <q-separator class="q-my-md" />
+          <div class="row items-center justify-between">
+            <div class="row items-center q-gutter-sm">
+              <q-icon
+                :name="match.venueReserved ? 'event_available' : 'event_busy'"
+                :color="match.venueReserved ? 'positive' : 'grey-6'"
+                size="22px"
+              />
+              <span class="text-body2" :class="match.venueReserved ? 'text-positive text-weight-medium' : 'text-grey-6'">
+                {{ match.venueReserved ? 'Cancha reservada' : 'Cancha sin reservar' }}
+              </span>
+            </div>
+            <q-toggle
+              v-if="canManageVenue"
+              :model-value="!!match.venueReserved"
+              color="positive"
+              :disable="togglingVenue"
+              @update:model-value="handleToggleVenueReserved"
+            />
+          </div>
         </q-card-section>
       </q-card>
 
@@ -90,7 +112,8 @@
           <div class="row justify-between items-center q-mb-xs">
             <span class="text-caption text-grey-6">Cupos</span>
             <span class="text-caption text-weight-bold">
-              {{ visibleCupos.current }} / {{ visibleCupos.max }}
+              <template v-if="visibleCupos.isFree">{{ visibleCupos.current }} anotados (sin límite)</template>
+              <template v-else>{{ visibleCupos.current }} / {{ visibleCupos.max }}</template>
             </span>
           </div>
           <q-linear-progress
@@ -195,7 +218,8 @@
       <q-card v-else-if="registrations.length > 0" flat bordered class="q-mb-md">
         <q-card-section class="q-pb-none row items-center justify-between">
           <div class="text-overline text-green-9 text-weight-bold">
-            Anotados ({{ starters.length }}/{{ match.maxPlayers }})
+            <template v-if="match.maxPlayers == null">Anotados ({{ starters.length }})</template>
+            <template v-else>Anotados ({{ starters.length }}/{{ match.maxPlayers }})</template>
           </div>
           <q-btn
             flat
@@ -489,7 +513,7 @@ import { db } from 'src/services/firebase'
 
 const $q = useQuasar()
 const route = useRoute()
-const { currentMatch: match, loading, subscribeToMatch, stopListening } = useMatch()
+const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved } = useMatch()
 const { getMyRole } = useGroups()
 const { fetchPlayerStats } = usePlayerStats()
 const { castVote, getMyVote, subscribeToVotes, closeMvpVoting } = useMvpVoting()
@@ -536,11 +560,13 @@ const myRegistrationsVisibleAtLabel = computed(() => {
 })
 // Cupos "engaño visual": antes del horario de acceso de cada uno se muestran
 // en 0/0, igual que la lista de anotados — no debe notarse que ya hay gente.
+// Formato libre (maxPlayers null): sin denominador, la barra siempre queda vacía.
 const visibleCupos = computed(() => {
-  if (!match.value || !canSeeRegistrations(match.value)) return { current: 0, max: 0, ratio: 0 }
+  const isFree = match.value?.maxPlayers == null
+  if (!match.value || !canSeeRegistrations(match.value)) return { current: 0, max: 0, ratio: 0, isFree }
   const current = match.value.currentPlayers ?? 0
   const max = match.value.maxPlayers ?? 0
-  return { current, max, ratio: max ? current / max : 0 }
+  return { current, max, ratio: isFree ? 0 : (max ? current / max : 0), isFree }
 })
 const starters = computed(() => registrations.value.filter((r) => !r.isOnWaitlist))
 const waitlist = computed(() => registrations.value.filter((r) => r.isOnWaitlist))
@@ -829,11 +855,30 @@ watch(
   { immediate: true },
 )
 
+// A las 36hs de finalizado, resultLocked bloquea la edición para cualquiera
+// que no sea admin global (lo fija processAutoCloseMatches en Cloud Functions).
 const canLoadResult = computed(() => {
   const st = getEffectiveStatus(match.value)
   const done = st === 'closed' || st === 'finished' || st === 'full'
-  return done && (authStore.isAdmin || !!myGroupRole.value)
+  if (authStore.isAdmin) return done
+  return done && !match.value?.resultLocked && !!myGroupRole.value
 })
+
+// ── Cancha reservada: mismo permiso que cargar resultado, pero sin exigir
+// que el partido haya terminado (se reserva ANTES de jugar).
+const canManageVenue = computed(() => authStore.isAdmin || !!myGroupRole.value)
+const togglingVenue = ref(false)
+
+async function handleToggleVenueReserved(reserved) {
+  togglingVenue.value = true
+  try {
+    await toggleVenueReserved(route.params.id, reserved)
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    togglingVenue.value = false
+  }
+}
 
 const matchDate = computed(() =>
   match.value?.date ? date.formatDate(match.value.date.toDate(), 'DD/MM/YYYY') : '',

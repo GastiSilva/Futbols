@@ -20,9 +20,6 @@
               </q-avatar>
               <div class="column items-center">
                 <div class="text-h6 text-weight-bold">{{ profile.nickname || profile.displayName }}</div>
-                <div v-if="profile.nickname" class="text-caption text-green-2">
-                  {{ profile.displayName }}
-                </div>
               </div>
               <div class="row q-gutter-xs" v-if="profile.preferredFoot">
                 <q-badge
