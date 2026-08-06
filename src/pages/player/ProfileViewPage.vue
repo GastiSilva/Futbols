@@ -13,7 +13,7 @@
             <q-card-section class="grass-bg text-white column items-center q-gutter-sm">
               <q-avatar size="88px" class="shadow-4">
                 <img
-                  :src="profile.photoURL ?? 'icons/icon-128x128.png'"
+                  :src="profile.photoURL ?? '/icons/icon-128x128.png'"
                   :alt="profile.displayName ?? 'usuario'"
                   referrerpolicy="no-referrer"
                 />
@@ -28,6 +28,17 @@
                   :label="footLabel(profile.preferredFoot)"
                   class="q-px-sm"
                 />
+              </div>
+              <!-- Equipo del que es hincha (escudo + nombre) -->
+              <div v-if="favoriteTeam" class="row items-center justify-center q-gutter-xs">
+                <img
+                  :src="favoriteTeam.badge"
+                  :alt="favoriteTeam.label"
+                  style="width: 22px; height: 22px; object-fit: contain"
+                />
+                <span class="text-body2 text-weight-medium">
+                  Hincha de {{ favoriteTeam.label }}
+                </span>
               </div>
               <div v-if="profile.description" class="text-body2 text-center q-px-md" style="opacity: 0.9">
                 {{ profile.description }}
@@ -154,6 +165,7 @@ import { useProfile } from 'src/composables/useProfile'
 import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
 import { positionLabel, normalizePositions } from 'src/utils/positions'
+import { findTeam } from 'src/utils/teams'
 
 const route = useRoute()
 const router = useRouter()
@@ -179,6 +191,7 @@ const myRating = ref(0)
 const groupNames = ref({})
 
 const favoritePositions = computed(() => normalizePositions(profile.value?.preferredPositions))
+const favoriteTeam = computed(() => findTeam(profile.value?.favoriteTeam))
 
 const globalStatCards = computed(() => {
   const s = profile.value?.stats ?? {}

@@ -235,9 +235,10 @@
 
         <!-- Armado de equipos (OG/admin, desde que la lista está cerrada) -->
         <template v-if="canManageTeams">
-          <q-card-section class="q-pt-none">
+          <q-card-section id="equipos" class="q-pt-none">
             <div class="row items-center q-gutter-sm">
               <q-btn
+                v-if="!teamPreview"
                 flat
                 dense
                 no-caps
@@ -263,6 +264,17 @@
                 flat
                 dense
                 no-caps
+                color="primary"
+                icon="refresh"
+                label="Recalcular"
+                :loading="suggestingTeams"
+                @click="handleSuggestTeams"
+              />
+              <q-btn
+                v-if="teamPreview"
+                flat
+                dense
+                no-caps
                 color="grey-7"
                 label="Descartar"
                 @click="teamPreview = null"
@@ -275,7 +287,7 @@
                 Propuesta — podés reasignar a mano antes de aceptar:
               </div>
               <div class="row q-col-gutter-md">
-                <div class="col-6">
+                <div class="col-12 col-sm-6">
                   <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">Equipo A</div>
                   <q-chip
                     v-for="p in teamPreview"
@@ -283,13 +295,16 @@
                     :key="p.registrationId"
                     dense
                     removable
+                    clickable
                     icon="swap_horiz"
+                    class="preview-chip"
                     @remove="togglePreviewTeam(p.registrationId)"
+                    @click="goToProfile(p)"
                   >
-                    {{ p.displayName }}
+                    <span class="ellipsis">{{ p.displayName }}</span>
                   </q-chip>
                 </div>
-                <div class="col-6">
+                <div class="col-12 col-sm-6">
                   <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">Equipo B</div>
                   <q-chip
                     v-for="p in teamPreview"
@@ -297,10 +312,13 @@
                     :key="p.registrationId"
                     dense
                     removable
+                    clickable
                     icon="swap_horiz"
+                    class="preview-chip"
                     @remove="togglePreviewTeam(p.registrationId)"
+                    @click="goToProfile(p)"
                   >
-                    {{ p.displayName }}
+                    <span class="ellipsis">{{ p.displayName }}</span>
                   </q-chip>
                 </div>
               </div>
@@ -320,7 +338,7 @@
                 <div class="text-caption text-weight-bold text-grey-7">Equipo A</div>
               </q-card-section>
               <q-list dense>
-                <q-item v-for="reg in startersTeamA" :key="reg.id">
+                <q-item v-for="reg in startersTeamA" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
                   <q-item-section>{{ reg.displayName }}</q-item-section>
                 </q-item>
               </q-list>
@@ -330,7 +348,7 @@
                 <div class="text-caption text-weight-bold text-grey-7">Equipo B</div>
               </q-card-section>
               <q-list dense>
-                <q-item v-for="reg in startersTeamB" :key="reg.id">
+                <q-item v-for="reg in startersTeamB" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
                   <q-item-section>{{ reg.displayName }}</q-item-section>
                 </q-item>
               </q-list>
@@ -341,7 +359,7 @@
               <div class="text-caption text-weight-bold text-grey-7">Sin equipo asignado</div>
             </q-card-section>
             <q-list dense>
-              <q-item v-for="reg in startersNoTeam" :key="reg.id">
+              <q-item v-for="reg in startersNoTeam" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
                 <q-item-section avatar>
                   <q-avatar size="28px" color="green-2" text-color="green-9">
                     {{ reg.position }}
@@ -355,7 +373,7 @@
 
         <!-- Lista simple (sin equipos asignados todavía) -->
         <q-list v-else-if="!teamPreview" dense>
-          <q-item v-for="reg in starters" :key="reg.id">
+          <q-item v-for="reg in starters" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
             <q-item-section avatar>
               <q-avatar size="28px" color="green-2" text-color="green-9">
                 {{ reg.position }}
@@ -376,7 +394,7 @@
             </div>
           </q-card-section>
           <q-list dense>
-            <q-item v-for="reg in waitlist" :key="reg.id">
+            <q-item v-for="reg in waitlist" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
               <q-item-section avatar>
                 <q-avatar size="28px" color="orange-2" text-color="orange-9">
                   {{ reg.position - match.maxPlayers }}
@@ -497,7 +515,7 @@
 
 <script setup>
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { date, useQuasar } from 'quasar'
 import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
@@ -513,6 +531,13 @@ import { db } from 'src/services/firebase'
 
 const $q = useQuasar()
 const route = useRoute()
+const router = useRouter()
+
+// Invitados (isGuest, sin cuenta) no tienen perfil — no navega para esos
+function goToProfile(reg) {
+  if (!reg.userId) return
+  router.push({ name: 'profile-view', params: { uid: reg.userId } })
+}
 const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved } = useMatch()
 const { getMyRole } = useGroups()
 const { fetchPlayerStats } = usePlayerStats()
@@ -902,3 +927,24 @@ const calendarUrl = computed(() =>
   match.value && match.value.status !== 'finished' ? buildGoogleCalendarUrl(match.value) : null,
 )
 </script>
+
+<style scoped>
+/* Nombres largos (José María Marcelo Guzmán...) desbordaban el chip en
+   pantallas chicas — se truncan con ellipsis en vez de romper el layout. */
+.preview-chip {
+  max-width: 100%;
+}
+
+.preview-chip :deep(.q-chip__content) {
+  min-width: 0;
+}
+
+.preview-chip .ellipsis {
+  display: inline-block;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+</style>

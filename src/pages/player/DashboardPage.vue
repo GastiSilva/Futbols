@@ -261,6 +261,47 @@
               />
             </div>
 
+            <!-- ── Acciones de gestión: editar datos / calcular equipos ──────── -->
+            <!-- OG/owner/admin del grupo, quien creó el partido, o admin global -->
+            <div
+              v-if="canManageMatch(match) || canManageTeamsFor(match)"
+              class="row q-gutter-sm q-mt-md"
+            >
+              <q-btn
+                v-if="canManageMatch(match)"
+                flat
+                dense
+                no-caps
+                color="grey-8"
+                icon="edit"
+                label="Editar partido"
+                class="col"
+                :to="{ name: 'edit-match-player', params: { id: match.id } }"
+              />
+              <q-btn
+                v-if="canManageTeamsFor(match)"
+                flat
+                dense
+                no-caps
+                color="blue-8"
+                icon="groups"
+                label="Calcular equipos"
+                class="col"
+                :to="{ name: 'match-detail', params: { id: match.id }, hash: '#equipos' }"
+              />
+              <q-btn
+                v-if="canManageMatch(match)"
+                flat
+                dense
+                no-caps
+                color="negative"
+                icon="delete_outline"
+                label="Borrar partido"
+                class="col"
+                @click="handleDeleteMatch(match)"
+              />
+            </div>
+
           </q-card-section>
         </q-expansion-item>
       </div>
@@ -305,6 +346,8 @@
               :key="reg.id"
               class="q-py-sm"
               :class="{ 'bg-green-1': reg.userId === user?.uid }"
+              :clickable="!!reg.userId"
+              @click="goToProfile(reg)"
             >
               <q-item-section avatar>
                 <q-avatar size="36px">
@@ -347,7 +390,7 @@
                     icon="close"
                     color="grey-6"
                     :loading="loading"
-                    @click="handleRemoveReg(reg)"
+                    @click.stop="handleRemoveReg(reg)"
                   />
                 </div>
               </q-item-section>
@@ -368,6 +411,8 @@
                 :key="reg.id"
                 class="q-py-sm"
                 :class="{ 'bg-orange-1': reg.userId === user?.uid }"
+                :clickable="!!reg.userId"
+                @click="goToProfile(reg)"
               >
                 <q-item-section avatar>
                   <q-avatar size="36px">
@@ -399,7 +444,7 @@
                       icon="close"
                       color="grey-6"
                       :loading="loading"
-                      @click="handleRemoveReg(reg)"
+                      @click.stop="handleRemoveReg(reg)"
                     />
                   </div>
                 </q-item-section>
@@ -526,6 +571,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 import { useRegistration } from 'src/composables/useRegistration'
@@ -535,7 +581,15 @@ import { useAuthStore } from 'src/stores/auth.store'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 
 const $q = useQuasar()
+const router = useRouter()
 const { user, isAdmin } = useAuth()
+
+// Ver el perfil de un anotado desde la lista. Los invitados (isGuest, sin
+// cuenta) no tienen perfil, así que para esos no navega.
+function goToProfile(reg) {
+  if (!reg.userId) return
+  router.push({ name: 'profile-view', params: { uid: reg.userId } })
+}
 const {
   joinMatch,
   addGuestToMatch,
@@ -550,7 +604,7 @@ const {
   stopListening,
   loading,
 } = useRegistration()
-const { matches, subscribeToUpcoming: subscribeToMatchesUpcoming } = useMatch()
+const { matches, subscribeToUpcoming: subscribeToMatchesUpcoming, deleteMatch } = useMatch()
 const { getGroupMembers } = useGroups()
 const authStore = useAuthStore()
 
@@ -942,6 +996,27 @@ function regSubtitle(reg) {
   return null
 }
 
+// ── Gestión del partido desde el menú de Partidos ────────────────────────────
+// Editar datos generales (título, sede, horarios, formato): admin global,
+// OG/owner/admin del grupo del partido, o quien lo creó — mismo criterio que
+// valida firestore.rules en la rama de "editar datos generales".
+function canManageMatch(match) {
+  if (!user.value) return false
+  if (isAdmin.value) return true
+  if (match.createdBy === user.value.uid) return true
+  return !!match.groupId && authStore.isOgInGroup(match.groupId)
+}
+
+// Calcular/sugerir equipos: mismo criterio que canManageTeams en
+// MatchDetailPage — solo desde que la lista está cerrada (ya se sabe quién
+// juega) y solo OG/owner/admin del grupo, o admin global.
+function canManageTeamsFor(match) {
+  if (!match) return false
+  const listaCerrada = match.status === 'closed' || match.status === 'full' || match.status === 'finished'
+  if (!listaCerrada) return false
+  return isAdmin.value || (!!match.groupId && authStore.isOgInGroup(match.groupId))
+}
+
 // ¿Puedo quitar esta inscripción? (quien lo anotó, o admin)
 function canRemoveReg(reg) {
   const uid = user.value?.uid
@@ -964,6 +1039,31 @@ function handleRemoveReg(reg) {
     try {
       await removeRegistration(matchId, reg.id)
       $q.notify({ type: 'info', message: `${reg.displayName} fue sacado de la lista` })
+    } catch (err) {
+      $q.notify({ type: 'negative', message: err.message })
+    }
+  })
+}
+
+// Borrar un partido entero (lista duplicada, o que no juntó gente). Es
+// irreversible y se lleva puestas las inscripciones, así que el diálogo
+// avisa cuánta gente hay anotada antes de confirmar.
+function handleDeleteMatch(match) {
+  const anotados = match.currentPlayers ?? 0
+  const aviso = anotados > 0
+    ? ` Hay ${anotados} ${anotados === 1 ? 'persona anotada' : 'personas anotadas'} que van a perder su lugar.`
+    : ''
+
+  $q.dialog({
+    title: 'Borrar partido',
+    message: `¿Seguro que querés borrar "${match.title}"?${aviso} Esta acción no se puede deshacer.`,
+    cancel: { flat: true, label: 'No' },
+    ok: { unelevated: true, color: 'negative', label: 'Sí, borrar' },
+  }).onOk(async () => {
+    try {
+      await deleteMatch(match.id)
+      if (selectedMatchId.value === match.id) selectedMatchId.value = null
+      $q.notify({ type: 'info', message: 'Partido borrado' })
     } catch (err) {
       $q.notify({ type: 'negative', message: err.message })
     }

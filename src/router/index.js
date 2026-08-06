@@ -12,7 +12,10 @@ export default route(function ({ store }) {
       : createWebHashHistory
 
   const router = createRouter({
-    scrollBehavior: () => ({ left: 0, top: 0 }),
+    scrollBehavior: (to) => {
+      if (to.hash) return { el: to.hash, behavior: 'smooth', top: 80 }
+      return { left: 0, top: 0 }
+    },
     routes,
     history: createHistory(process.env.VUE_ROUTER_BASE),
   })
@@ -39,6 +42,16 @@ export default route(function ({ store }) {
 
     if (requiresAuth && !authStore.isAuthenticated) {
       return { path: '/login' }
+    }
+
+    // Cuenta de email/contraseña sin verificar: solo puede estar en
+    // /verificar-email hasta confirmar el mail (Google nunca cae acá,
+    // ver needsEmailVerification en auth.store.js).
+    if (authStore.isAuthenticated && authStore.needsEmailVerification && to.path !== '/verificar-email') {
+      return { path: '/verificar-email' }
+    }
+    if (to.path === '/verificar-email' && authStore.isAuthenticated && !authStore.needsEmailVerification) {
+      return { path: '/' }  // ya verificado, no tiene sentido quedarse acá
     }
 
     if (requiresAdmin && !authStore.isAdmin) {

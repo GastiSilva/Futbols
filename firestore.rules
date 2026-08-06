@@ -99,12 +99,12 @@ service cloud.firestore {
       allow update: if (
 
         // Usuario actualiza su perfil (fcmToken, displayName, apodo, descripción,
-        // pie hábil, etc.) — pero nunca stats/statsByGroup (acumulador de la CF)
-        // ni su propio role
+        // pie hábil, etc.) — pero nunca stats/statsByGroup (acumulador de la CF),
+        // su propio role, ni mundial (tiene su propia cláusula de activación abajo)
         (
           isOwner(userId)
           && !request.resource.data.diff(resource.data).affectedKeys()
-               .hasAny(['stats', 'statsByGroup', 'role'])
+               .hasAny(['stats', 'statsByGroup', 'role', 'mundial'])
         )
 
         ||
@@ -129,11 +129,30 @@ service cloud.firestore {
 
         // Stats (total y por grupo): el acumulador lo escribe la Cloud Function
         // onPlayerStatsWritten (admin SDK, ignora estas reglas). Desde el cliente
-        // solo un admin global puede tocarlas manualmente.
+        // solo un admin global puede tocarlas manualmente. `mundial` incluido acá
+        // también como vía de escape manual para soporte (resetear un Mundial
+        // trabado) sin necesitar una Cloud Function dedicada.
         (
           isAdmin()
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['stats', 'statsByGroup', 'updatedAt'])
+               .hasOnly(['stats', 'statsByGroup', 'mundial', 'updatedAt'])
+        )
+
+        ||
+
+        // Mundial personal: el dueño solo puede ACTIVAR uno nuevo (nunca tenía
+        // uno en curso), y solo al estado inicial exacto de la fase de grupos.
+        // Todo avance de fase, coin flip, título o eliminación lo escribe
+        // exclusivamente la Cloud Function (admin SDK) vía advancePlayerMundial /
+        // revealMundialCoinFlip.
+        (
+          isOwner(userId)
+          && resource.data.get('mundial', {}).get('active', false) != true
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mundial', 'updatedAt'])
+          && request.resource.data.mundial.active == true
+          && request.resource.data.mundial.phase == 'groups'
+          && request.resource.data.mundial.groupMatchResults == []
+          && request.resource.data.mundial.pendingCoinFlip == null
         )
       );
 
@@ -247,6 +266,24 @@ service cloud.firestore {
 
         ||
 
+        // Editar datos generales del partido (título, sede, fecha, horarios,
+        // formato): quien tiene acceso anticipado en el grupo (OG/owner/
+        // admin) o quien creó el partido — antes esto solo lo podía hacer un
+        // admin global desde el panel de admin. groupId no se puede
+        // reasignar desde acá (mover un partido a otro grupo queda para un
+        // admin global, vía la rama de arriba).
+        (
+          (hasEarlyAccessInMatchGroup(matchId) || isMatchCreator(matchId))
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly([
+                 'title', 'location', 'venueId', 'venueMapsUrl', 'venueLat', 'venueLng',
+                 'date', 'openAt', 'notifyAt', 'format', 'maxPlayers', 'status', 'updatedAt'
+               ])
+          && request.resource.data.groupId == resource.data.groupId
+        )
+
+        ||
+
         // Cargar el resultado: cualquier miembro del grupo (o admin), pero
         // SOLO si el partido no está bloqueado (resultLocked lo fija el
         // scheduler de auto-cierre a las 36hs de finalizado; después de eso
@@ -274,7 +311,14 @@ service cloud.firestore {
                .hasOnly(['venueReserved', 'updatedAt'])
         );
 
-      allow delete: if isAdmin();
+      // Borrar un partido: admin global, quien lo creó, o quien tiene acceso
+      // anticipado en el grupo (OG/owner/admin). Cubre el caso de "saqué la
+      // lista dos veces sin querer" o "no se anotó nadie" — el mismo criterio
+      // que ya rige para editar los datos del partido.
+      allow delete: if
+        isAdmin()
+        || isMatchCreator(matchId)
+        || hasEarlyAccessInMatchGroup(matchId);
 
       // ──────────────────────────────────────────────────────────────────────
       // REGISTRATIONS

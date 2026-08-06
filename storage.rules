@@ -29,5 +29,15 @@ service firebase.storage {
         && request.resource.size < 5 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
     }
+
+    // Foto de perfil propia. Quienes entran con Google ya traen la foto de
+    // su cuenta; los que se registran con email/contraseña no tienen ninguna,
+    // así que se la pueden subir acá. Cada uno solo escribe la suya.
+    match /users/{userId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if (isAdmin() || request.auth.uid == userId)
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
   }
 }

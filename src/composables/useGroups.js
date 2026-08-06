@@ -28,15 +28,25 @@ import { useAuthStore } from 'src/stores/auth.store'
 const groups = ref([])
 
 // Pisa `displayName` con el nickname actual del usuario (users/{uid}.nickname)
-// en una lista de docs cuyo `id`/`userId` es el uid. Silencioso ante errores
-// de lectura individuales: se queda con el displayName congelado como fallback.
+// en una lista de docs cuyo `id`/`userId` es el uid, y de paso denormaliza un
+// resumen de su Mundial personal (users/{uid}.mundial) en `item.mundial` — se
+// reusa esta misma lectura para no agregar un N+1 aparte (ver LeaderboardPage,
+// tab "Mundial"). Silencioso ante errores de lectura individuales: se queda
+// con el displayName congelado y sin mundial como fallback.
 async function resolveNicknames(items) {
   const snaps = await Promise.all(
     items.map(item => getDoc(doc(db, 'users', item.userId ?? item.id)).catch(() => null)),
   )
   return items.map((item, i) => {
-    const nickname = snaps[i]?.exists() ? snaps[i].data().nickname : null
-    return nickname ? { ...item, displayName: nickname } : item
+    const data = snaps[i]?.exists() ? snaps[i].data() : null
+    const nickname = data?.nickname ?? null
+    return {
+      ...item,
+      ...(nickname ? { displayName: nickname } : {}),
+      mundial: data?.mundial
+        ? { active: data.mundial.active, phase: data.mundial.phase, titles: data.mundial.titles ?? 0 }
+        : null,
+    }
   })
 }
 

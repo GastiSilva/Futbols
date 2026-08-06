@@ -9,20 +9,24 @@
       </div>
 
       <!-- Card de login -->
-      <q-card class="q-pa-lg" style="width: 100%">
+      <q-card class="q-pa-lg text-left" style="width: 100%">
         <q-card-section>
-          <div class="text-h6 text-weight-bold q-mb-xs">Iniciar sesión</div>
+          <div class="text-h6 text-weight-bold q-mb-xs">
+            {{ mode === 'register' ? 'Crear cuenta' : 'Iniciar sesión' }}
+          </div>
           <div class="text-body2 text-grey-6 q-mb-lg">
-            Usá tu cuenta de Google para continuar
+            Usá tu cuenta de Google o email para continuar
           </div>
 
+          <!-- Google -->
           <q-btn
             color="primary"
             unelevated
             size="lg"
             class="full-width pill-btn"
-            :loading="loading"
-            @click="handleLogin"
+            :loading="loading && lastAction === 'google'"
+            :disable="loading && lastAction !== 'google'"
+            @click="handleGoogleLogin"
           >
             <q-avatar size="24px" class="q-mr-sm bg-white">
               <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
@@ -30,8 +34,73 @@
             Continuar con Google
           </q-btn>
 
+          <div class="row items-center q-my-md">
+            <q-separator class="col" />
+            <div class="text-caption text-grey-6 q-mx-sm">o</div>
+            <q-separator class="col" />
+          </div>
+
+          <!-- Email / contraseña -->
+          <q-form class="column q-gutter-sm" @submit.prevent="handleEmailSubmit">
+            <q-input
+              v-model="email"
+              type="email"
+              outlined
+              dense
+              label="Email"
+              autocomplete="email"
+              :rules="[(val) => !!val || 'Ingresá tu email']"
+            />
+            <q-input
+              v-model="password"
+              type="password"
+              outlined
+              dense
+              label="Contraseña"
+              :autocomplete="mode === 'register' ? 'new-password' : 'current-password'"
+              :rules="[(val) => !!val || 'Ingresá tu contraseña']"
+            />
+
+            <q-btn
+              type="submit"
+              color="secondary"
+              unelevated
+              size="lg"
+              class="full-width pill-btn"
+              :loading="loading && lastAction === 'email'"
+              :disable="loading && lastAction !== 'email'"
+            >
+              {{ mode === 'register' ? 'Crear cuenta' : 'Ingresar' }}
+            </q-btn>
+          </q-form>
+
+          <div class="row items-center justify-between q-mt-md">
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="grey-7"
+              :label="mode === 'register' ? '¿Ya tenés cuenta? Iniciá sesión' : '¿No tenés cuenta? Registrate'"
+              @click="toggleMode"
+            />
+            <q-btn
+              v-if="mode === 'login'"
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="grey-7"
+              label="Olvidé mi contraseña"
+              @click="handleResetPassword"
+            />
+          </div>
+
           <div v-if="error" class="text-negative text-caption q-mt-md">
             {{ error }}
+          </div>
+          <div v-if="info" class="text-positive text-caption q-mt-md">
+            {{ info }}
           </div>
         </q-card-section>
       </q-card>
@@ -40,16 +109,66 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 
 const router = useRouter()
-const { loginWithGoogle, loading, error } = useAuth()
+const $q = useQuasar()
+const { loginWithGoogle, loginWithEmail, registerWithEmail, resetPassword, loading, error } = useAuth()
 
-async function handleLogin() {
+const mode = ref('login') // 'login' | 'register'
+const email = ref('')
+const password = ref('')
+const lastAction = ref(null) // 'google' | 'email' — para saber qué botón mostraba el spinner
+const info = ref(null)
+
+function toggleMode() {
+  mode.value = mode.value === 'login' ? 'register' : 'login'
+  info.value = null
+}
+
+async function handleGoogleLogin() {
+  lastAction.value = 'google'
+  info.value = null
   try {
     await loginWithGoogle()
     router.push('/')
+  } catch {
+    // El error ya está en la ref `error` del composable
+  }
+}
+
+async function handleEmailSubmit() {
+  if (!email.value || !password.value) return
+  lastAction.value = 'email'
+  info.value = null
+  try {
+    if (mode.value === 'register') {
+      await registerWithEmail(email.value, password.value)
+      // Cuenta recién creada: el guard del router la intercepta y manda a
+      // /verificar-email igual (needsEmailVerification), pero le dejamos
+      // dicho que después de confirmar el mail vaya a completar el perfil
+      // en vez de al dashboard — es su primera vez, todavía no tiene nickname.
+      sessionStorage.setItem('postVerifyRedirect', '/perfil')
+    } else {
+      await loginWithEmail(email.value, password.value)
+    }
+    router.push('/')
+  } catch {
+    // El error ya está en la ref `error` del composable
+  }
+}
+
+async function handleResetPassword() {
+  if (!email.value) {
+    $q.notify({ type: 'warning', message: 'Ingresá tu email primero para poder enviarte el link.' })
+    return
+  }
+  try {
+    await resetPassword(email.value)
+    info.value = 'Te enviamos un email para restablecer tu contraseña. Si no lo ves, revisá spam.'
   } catch {
     // El error ya está en la ref `error` del composable
   }

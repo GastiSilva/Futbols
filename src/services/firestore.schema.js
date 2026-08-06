@@ -25,6 +25,10 @@ const UserSchema = {
   preferredPositions: 'string[]', // Posiciones favoritas (códigos de src/utils/positions.js:
                                   // ARQ, LTI, DFC, LTD, MCD, MI, MC, MD, MCO, EI, DC, ED). Máx 3.
                                   // Elegidas en ProfilePage con el selector visual de cancha.
+  favoriteTeam:  'string | null', // Equipo de AFA del que es hincha (value de
+                                  // src/utils/teams.js TEAM_OPTIONS). Solo Primera
+                                  // División + una selección de Primera Nacional
+                                  // (no hay fuente gratuita con el listado completo).
 
   stats: {
     goals:         'number',      // Goles acumulados en TODOS los partidos (total individual)
@@ -50,6 +54,36 @@ const UserSchema = {
 
   createdAt:   'Timestamp',
   updatedAt:   'Timestamp',
+
+  // "Mundial personal" (ausente hasta la primera activación): modo de juego
+  // individual y opcional. Cada jugador lo activa desde su perfil; avanza de
+  // fase automáticamente con CUALQUIER partido real que juegue mientras está
+  // activo (sin importar el grupo). Fase de grupos = primeros 3 resultados
+  // reales (siempre se esperan los 3, nunca se corta antes). Solo la Cloud
+  // Function onPlayerStatsWritten (avance) y revealMundialCoinFlip (desempate)
+  // escriben las transiciones — el cliente únicamente puede ACTIVAR uno nuevo
+  // (ver firestore.rules).
+  mundial: {
+    active:   'boolean',
+    phase:    "'groups' | 'round_of_16' | 'quarter' | 'semi' | 'final' | 'champion' | 'eliminated'",
+    startedAt: 'Timestamp | null',
+    endedAt:   'Timestamp | null',
+    groupMatchResults: "Array<'W'|'E'|'L'>", // hasta 3, en orden de carga
+    // Ambigüedad (4 puntos en grupos, o empate en mata-mata): el `outcome` ya
+    // queda decidido y congelado por la CF en el momento de detectarse — el
+    // cliente solo lo revela con la animación de moneda (revealMundialCoinFlip).
+    pendingCoinFlip: {
+      kind:      "'groups_4pts' | 'knockout_draw'",
+      seed:      'string',
+      outcome:   "'advance' | 'eliminate'",
+      matchId:   'string',
+      resolved:  'boolean',
+    }, // | null
+    titles:      'number',  // Mundiales ganados (histórico)
+    runsPlayed:  'number',  // Mundiales activados en total (histórico)
+    lastResult:  "'champion' | 'eliminated_groups' | 'eliminated_knockout' | null",
+    updatedAt:   'Timestamp',
+  }, // | undefined
 }
 
 /**

@@ -4,6 +4,7 @@ const { onSchedule } = require('firebase-functions/v2/scheduler')
 const { onDocumentUpdated, onDocumentWritten, onDocumentDeleted } = require('firebase-functions/v2/firestore')
 const logger = require('firebase-functions/logger')
 const admin = require('firebase-admin')
+const { computeMundialTransition, resolvePendingCoinFlip } = require('./mundial-rules')
 
 // Inicialización top-level requerida por firebase-admin v13+
 admin.initializeApp()
@@ -593,6 +594,14 @@ exports.onPlayerStatsWritten = onDocumentWritten(
       await admin.firestore().collection('users').doc(userId).update(updates)
       logger.info(`Stats acumuladas para ${userId} (Δg=${dGoals}, Δa=${dAssists}, Δp=${dPlayed}, Δmvp=${dMvps})`)
 
+      // ── Mundial personal: avanza de fase con el PRIMER resultado cargado ───
+      // Gate por beforeResult == null (no por afterResult !== beforeResult):
+      // así una edición posterior del resultado (before ya tenía W/E/L) nunca
+      // reprocesa el Mundial — el primer resultado cargado es el que cuenta.
+      if (after?.result && before?.result == null) {
+        await advancePlayerMundial(userId, after.result, event.params.matchId)
+      }
+
       // ── Química por pares: ¿compartió equipo con otros en este partido? ────
       // Se dispara solo cuando la fila tiene team+result definidos (resultado
       // ya cargado). Compara antes/después contra cada compañero de partido
@@ -654,6 +663,115 @@ async function updateChemistryForPlayerStat(matchId, userId, before, after) {
 
   if (hasChanges) await batch.commit()
 }
+
+// ── Helper: avanzar el Mundial personal de un jugador con un resultado real ─
+// Solo hace algo si el jugador tiene un Mundial activo. Si hay un coin flip
+// pendiente sin resolver, NO avanza (queda congelado hasta que el cliente
+// llame revealMundialCoinFlip) — el resultado del partido ya se acumuló en
+// stats más arriba de todas formas.
+async function advancePlayerMundial(userId, result, matchId) {
+  const db = admin.firestore()
+  const userRef = db.collection('users').doc(userId)
+  const userSnap = await userRef.get()
+  const mundial = userSnap.data()?.mundial
+  if (!mundial?.active) return
+
+  if (mundial.pendingCoinFlip && !mundial.pendingCoinFlip.resolved) {
+    logger.warn(`advancePlayerMundial: ${userId} tiene un coin flip pendiente, se ignora el resultado de ${matchId}`)
+    return
+  }
+
+  const transition = computeMundialTransition(mundial, result, matchId, userId)
+  const patch = { ...transition.patch, 'mundial.updatedAt': admin.firestore.FieldValue.serverTimestamp() }
+
+  let notifyTitle = null
+  let notifyBody = null
+
+  if (transition.type === 'classify_knockout') {
+    notifyTitle = '⚽ ¡Clasificaste a octavos!'
+    notifyBody = 'Tu Mundial personal sigue en pie. ¡A por la copa!'
+  } else if (transition.type === 'advance_knockout') {
+    notifyTitle = '🏆 ¡Avanzaste de fase en tu Mundial!'
+    notifyBody = `Ahora estás en ${transition.nextPhase}.`
+  } else if (transition.type === 'champion') {
+    patch['mundial.active'] = false
+    patch['mundial.endedAt'] = admin.firestore.FieldValue.serverTimestamp()
+    patch['mundial.titles'] = admin.firestore.FieldValue.increment(1)
+    patch['mundial.lastResult'] = 'champion'
+    notifyTitle = '🏆 ¡SOS CAMPEÓN DEL MUNDIAL!'
+    notifyBody = 'Ganaste la final de tu Mundial personal. ¡Felicitaciones!'
+  } else if (transition.type === 'eliminated') {
+    patch['mundial.active'] = false
+    patch['mundial.endedAt'] = admin.firestore.FieldValue.serverTimestamp()
+    patch['mundial.lastResult'] = mundial.phase === 'groups' ? 'eliminated_groups' : 'eliminated_knockout'
+    notifyTitle = '😔 Quedaste eliminado del Mundial'
+    notifyBody = 'Tu Mundial personal terminó acá. Podés arrancar uno nuevo cuando quieras.'
+  } else if (transition.type === 'pending_coin_flip') {
+    notifyTitle = '🪙 Tenés un sorteo pendiente en tu Mundial'
+    notifyBody = 'El resultado quedó ajustado — entrá a tu perfil para tirar la moneda.'
+  }
+  // noop_group_result: solo guarda el resultado en groupMatchResults, sin notificar
+
+  await userRef.update(patch)
+  logger.info(`advancePlayerMundial: ${userId} → ${transition.type}`)
+
+  if (notifyTitle) {
+    await sendFCMToUser(userId, notifyTitle, notifyBody, { type: 'mundial_update' })
+  }
+}
+
+// ── Callable: resolver un coin flip pendiente del Mundial personal ──────────
+// El outcome ya fue decidido y congelado server-side cuando se detectó la
+// ambigüedad (buildPendingCoinFlip en mundial-rules.js) — esta función NUNCA
+// decide nada, solo aplica la transición correspondiente y la devuelve para
+// que el cliente anime la revelación. runTransaction evita doble-resolución
+// ante reintentos/doble-tap.
+exports.revealMundialCoinFlip = onCall(
+  { region: LOCATION, invoker: 'public' },
+  async (request) => {
+    const uid = request.auth?.uid
+    if (!uid) {
+      throw new HttpsError('unauthenticated', 'Debés iniciar sesión.')
+    }
+
+    const db = admin.firestore()
+    const userRef = db.collection('users').doc(uid)
+
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(userRef)
+      const mundial = snap.data()?.mundial
+      const pending = mundial?.pendingCoinFlip
+
+      if (!pending || pending.resolved) {
+        throw new HttpsError('failed-precondition', 'No hay un sorteo pendiente para resolver.')
+      }
+
+      const transition = resolvePendingCoinFlip(mundial)
+      const patch = {
+        ...transition.patch,
+        'mundial.pendingCoinFlip.resolved': true,
+        'mundial.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
+      }
+
+      if (transition.type === 'champion') {
+        patch['mundial.active'] = false
+        patch['mundial.endedAt'] = admin.firestore.FieldValue.serverTimestamp()
+        patch['mundial.titles'] = admin.firestore.FieldValue.increment(1)
+        patch['mundial.lastResult'] = 'champion'
+      } else if (transition.type === 'eliminated') {
+        patch['mundial.active'] = false
+        patch['mundial.endedAt'] = admin.firestore.FieldValue.serverTimestamp()
+        patch['mundial.lastResult'] = mundial.phase === 'groups' ? 'eliminated_groups' : 'eliminated_knockout'
+      }
+
+      tx.update(userRef, patch)
+      return { outcome: pending.outcome, type: transition.type, nextPhase: transition.nextPhase ?? null }
+    })
+
+    logger.info(`revealMundialCoinFlip: ${uid} → ${result.outcome} (${result.type})`)
+    return result
+  },
+)
 
 // ── 12. Callable: RECALCULAR todas las estadísticas desde cero (solo admin) ──
 // El acumulador onPlayerStatsWritten suma por DIFERENCIA, así que los

@@ -7,6 +7,15 @@ const routes = [
     component: () => import('src/pages/LoginPage.vue'),
     meta: { public: true },
   },
+  {
+    // Pantalla de espera para cuentas de email/contraseña sin verificar.
+    // requiresAuth (necesita sesión) pero NO public — el guard la deja
+    // pasar aunque needsEmailVerification esté activo (ver router/index.js).
+    path: '/verificar-email',
+    name: 'verify-email',
+    component: () => import('src/pages/VerifyEmailPage.vue'),
+    meta: { requiresAuth: true },
+  },
 
   // ── Layout principal ───────────────────────────────────────────────────────
   {
@@ -86,6 +95,15 @@ const routes = [
         path: 'crear-partido',
         name: 'create-match-player',
         component: () => import('src/pages/admin/CreateMatchPage.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
+        // Editar partido desde la sección Partidos (OG/owner/admin del grupo,
+        // o quien creó el partido — no hace falta ser admin global). El
+        // permiso fino se valida dentro de EditMatchPage.vue y en las reglas.
+        path: 'editar-partido/:id',
+        name: 'edit-match-player',
+        component: () => import('src/pages/admin/EditMatchPage.vue'),
         meta: { requiresAuth: true },
       },
 

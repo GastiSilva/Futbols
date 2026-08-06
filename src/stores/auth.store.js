@@ -51,6 +51,13 @@ export const useAuthStore = defineStore('auth', () => {
   const isAdmin = computed(() => user.value?.isAdmin === true)
   const role = computed(() => user.value?.role ?? USER_ROLES.PLAYER)
 
+  // Bloquea el acceso solo a cuentas de email/contraseña sin verificar.
+  // Google ya llega verificado (emailVerified true de por sí), así que
+  // nunca queda atrapado por esta condición.
+  const needsEmailVerification = computed(
+    () => user.value?.providerId === 'password' && user.value?.emailVerified === false,
+  )
+
   // ¿El usuario tiene acceso anticipado en un grupo puntual? (OG u owner/admin)
   function isOgInGroup(groupId) {
     return !!groupId && ogGroupIds.value.includes(groupId)
@@ -109,6 +116,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     isAdmin,
     role,
+    needsEmailVerification,
     isOgInGroup,
     isMemberOfGroup,
     setUser,

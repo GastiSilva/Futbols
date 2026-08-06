@@ -8,7 +8,9 @@ import {
   doc,
   addDoc,
   updateDoc,
+  deleteDoc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   where,
@@ -293,6 +295,28 @@ export function useMatch() {
     unsubscribe = null
   }
 
+  // ── Borrar un partido (y sus subcolecciones) ───────────────────────────────
+  // Para listas creadas por error o que nadie usó. Firestore no borra en
+  // cascada: hay que limpiar a mano registrations/playerStats/mvpVotes, o
+  // quedan documentos huérfanos que siguen apareciendo en las queries de
+  // collectionGroup (por ejemplo el acumulador de stats).
+  async function deleteMatch(matchId) {
+    loading.value = true
+    error.value = null
+    try {
+      for (const sub of ['registrations', 'playerStats', 'mvpVotes']) {
+        const snap = await getDocs(collection(db, 'matches', matchId, sub))
+        await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)))
+      }
+      await deleteDoc(doc(db, 'matches', matchId))
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
     matches,
     currentMatch,
@@ -305,6 +329,7 @@ export function useMatch() {
     fetchMatch,
     createMatch,
     updateMatch,
+    deleteMatch,
     saveMatchResult,
     toggleVenueReserved,
     stopListening,

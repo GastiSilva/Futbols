@@ -16,8 +16,9 @@
           <q-card-section>
             <q-form @submit.prevent="handleSubmit" greedy class="q-gutter-y-md">
 
-              <!-- Grupo -->
+              <!-- Grupo (reasignar el partido a otro grupo: solo admin global) -->
               <q-select
+                v-if="authStore.isAdmin"
                 v-model="form.groupId"
                 :options="groups"
                 option-label="name"
@@ -261,6 +262,7 @@ import { useQuasar } from 'quasar'
 import { useMatch, FORMAT_OPTIONS } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { useVenues } from 'src/composables/useVenues'
+import { useAuthStore } from 'src/stores/auth.store'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from 'src/services/firebase'
 
@@ -271,6 +273,7 @@ const matchId = route.params.id
 const { fetchMatch, updateMatch } = useMatch()
 const { getMyGroups } = useGroups()
 const { venues, fetchVenues } = useVenues()
+const authStore = useAuthStore()
 
 const STATUS_OPTIONS = [
   { label: '🕐 Programado', value: 'scheduled' },
@@ -317,6 +320,19 @@ onMounted(async () => {
     const [myGroups] = await Promise.all([getMyGroups(), fetchVenues().catch(() => [])])
     groups.value = myGroups
     const match = await fetchMatch(matchId)
+
+    // Permiso: admin global, OG/owner/admin del grupo del partido, o quien
+    // lo creó — antes esto solo lo podía hacer un admin global.
+    const canEdit =
+      authStore.isAdmin ||
+      match.createdBy === authStore.user?.uid ||
+      (match.groupId && authStore.isOgInGroup(match.groupId))
+    if (!canEdit) {
+      $q.notify({ type: 'negative', message: 'No tenés permiso para editar este partido.' })
+      router.replace({ name: 'player-dashboard' })
+      return
+    }
+
     form.value = {
       groupId: match.groupId ?? null,
       title: match.title ?? '',
@@ -431,7 +447,7 @@ async function handleSubmit() {
     }
 
     $q.notify({ type: 'positive', message: '¡Partido actualizado!', icon: 'check_circle' })
-    router.push({ name: 'admin-dashboard' })
+    router.push(authStore.isAdmin ? { name: 'admin-dashboard' } : { name: 'player-dashboard' })
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message })
   } finally {
