@@ -19,11 +19,51 @@
       />
     </div>
 
-    <!-- ── Sin partidos próximos ──────────────────────────────────────────── -->
-    <div v-if="upcomingMatches.length === 0" class="column items-center q-mt-xl text-grey-5 q-gutter-sm">
+    <!-- ── Sin grupos: primer ingreso ─────────────────────────────────────── -->
+    <!-- Es la pantalla que ve alguien que llega de un tweet o de un link y
+         todavía no pertenece a ningún grupo. Antes decía "no hay partidos,
+         avisale al admin": un callejón sin salida para quien no conoce a
+         nadie. Ahora explica el modelo (los partidos viven en grupos) y
+         ofrece las dos únicas salidas reales. -->
+    <div
+      v-if="!isAdmin && authStore.memberGroupIds.length === 0"
+      class="column items-center q-mt-xl q-gutter-md text-center"
+    >
+      <q-icon name="groups" size="72px" color="green-9" />
+      <div class="text-h6 text-weight-bold">Todavía no estás en ningún grupo</div>
+      <div class="text-body2 text-grey-7" style="max-width: 320px">
+        Para organizar partidos tenés que formar parte de un grupo: unite al de
+        tus amigos o creá el tuyo e invitalos.
+      </div>
+
+      <q-btn
+        unelevated
+        color="green-9"
+        icon="group_add"
+        label="Crear mi grupo"
+        class="pill-btn q-mt-sm"
+        style="min-width: 240px"
+        :to="{ name: 'groups' }"
+      />
+      <q-btn
+        outline
+        color="green-9"
+        icon="login"
+        label="Tengo un código de invitación"
+        class="pill-btn"
+        style="min-width: 240px"
+        :to="{ name: 'join-group' }"
+      />
+    </div>
+
+    <!-- ── Con grupo pero sin partidos ────────────────────────────────────── -->
+    <div
+      v-else-if="upcomingMatches.length === 0"
+      class="column items-center q-mt-xl text-grey-5 q-gutter-sm"
+    >
       <q-icon name="sports_soccer" size="80px" />
       <div class="text-h6">No hay partidos programados</div>
-      <div class="text-body2">Volvé pronto o avisale al admin</div>
+      <div class="text-body2">Cuando alguien de tu grupo abra una lista, la vas a ver acá</div>
     </div>
 
     <!-- ── Lista de próximos partidos ────────────────────────────────────── -->
@@ -165,16 +205,18 @@
                 />
                 <div class="text-subtitle1 text-weight-bold text-center">
                   <span v-if="!getUserRegistrationForMatch(match.id).isOnWaitlist" class="text-positive">
-                    ¡Sos Titular! &nbsp;·&nbsp; Posición #{{ getUserRegistrationForMatch(match.id).position }}
+                    ¡Sos Titular! &nbsp;·&nbsp; Orden #{{ getUserRegistrationForMatch(match.id).position }}
                   </span>
                   <span v-else class="text-orange-8">
                     Lista de espera &nbsp;·&nbsp; Puesto #{{ getUserRegistrationForMatch(match.id).position - match.maxPlayers }}
                   </span>
                 </div>
                 <div class="text-caption text-grey-6 text-center">
-                  {{ getUserRegistrationForMatch(match.id).isOnWaitlist
-                    ? 'Entrás si alguien cancela antes del partido'
-                    : 'Guardá el día en tu agenda 📅' }}
+                  <template v-if="getUserRegistrationForMatch(match.id).isOnWaitlist">
+                    Si alguien se baja, subís automáticamente y te avisamos.
+                    <br />No hace falta que estés atento.
+                  </template>
+                  <template v-else>Guardá el día en tu agenda 📅</template>
                 </div>
                 <q-btn
                   flat
@@ -194,8 +236,18 @@
             <template v-else-if="match.status === 'scheduled' && msUntilOpen(match) > 0">
               <div class="column items-center q-gutter-xs">
                 <q-icon name="lock_clock" color="blue-grey-5" size="36px" />
-                <div class="text-caption text-grey-6 text-uppercase text-weight-bold q-mt-xs">
-                  La lista abre en
+                <div class="row items-center no-wrap q-gutter-xs text-caption text-grey-6 text-uppercase text-weight-bold q-mt-xs">
+                  <span>La lista abre en</span>
+                  <!-- Quien NO tiene acceso anticipado ve el contador y, al
+                       mismo tiempo, gente ya anotada: sin explicación parece
+                       que el sistema está arreglado para algunos. -->
+                  <q-icon name="help_outline" size="15px" class="cursor-pointer">
+                    <q-tooltip max-width="260px" class="text-body2">
+                      A esa hora se habilita la inscripción para todo el grupo.
+                      Los miembros OG y los administradores pueden anotarse 30
+                      minutos antes, por eso a veces ya hay gente en la lista.
+                    </q-tooltip>
+                  </q-icon>
                 </div>
                 <div
                   class="text-h3 text-weight-bold text-green-9"
@@ -204,6 +256,14 @@
                   {{ getCountdownForMatch(match.id) }}
                 </div>
                 <div class="text-caption text-grey-5">hh : mm : ss</div>
+                <!-- Sin esta línea el contador no dice qué hacer: la gente no
+                     sabía si tenía que poner alarma y estar mirando el celu a
+                     esa hora, o si le avisaban. Es info que necesita el 100%,
+                     por eso va visible y no escondida en un tooltip. -->
+                <div class="row items-center no-wrap q-gutter-xs text-caption text-grey-6 q-mt-sm">
+                  <q-icon name="notifications_active" size="16px" />
+                  <span>Te avisamos con una notificación cuando abra</span>
+                </div>
               </div>
             </template>
 
@@ -228,6 +288,13 @@
                   <q-icon name="bolt" color="blue-8" />
                 </template>
                 Acceso anticipado — te estás anotando antes de que abra la lista.
+                <q-icon name="help_outline" size="16px" class="q-ml-xs cursor-pointer">
+                  <q-tooltip max-width="260px" class="text-body2">
+                    Los miembros OG y los administradores del grupo pueden
+                    anotarse 30 minutos antes que el resto. Lo define el dueño
+                    del grupo desde la lista de miembros.
+                  </q-tooltip>
+                </q-icon>
               </q-banner>
               <q-btn
                 unelevated
@@ -398,6 +465,13 @@
                 class="text-orange-8 text-caption text-uppercase bg-orange-1 q-py-xs q-px-md"
               >
                 <q-icon name="hourglass_empty" size="xs" class="q-mr-xs" />Lista de espera
+                <q-icon name="help_outline" size="15px" class="q-ml-xs cursor-pointer">
+                  <q-tooltip max-width="260px" class="text-body2">
+                    Cuando el cupo se llena, los que se anotan quedan como
+                    suplentes. Si un titular se baja, sube el primero de la
+                    lista automáticamente y le llega una notificación.
+                  </q-tooltip>
+                </q-icon>
               </q-item-label>
 
               <q-item

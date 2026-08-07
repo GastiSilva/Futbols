@@ -120,8 +120,20 @@
       <!-- ── Enlace de invitación (visible para todos los miembros) ────────── -->
       <q-card flat bordered class="q-mb-md">
         <q-card-section>
-          <div class="text-subtitle2 text-weight-bold q-mb-sm">
+          <div class="text-subtitle2 text-weight-bold q-mb-xs">
             <q-icon name="link" class="q-mr-xs text-green-9" />Enlace de invitación
+            <q-icon name="help_outline" size="16px" class="q-ml-xs cursor-pointer text-grey-6">
+              <q-tooltip max-width="260px" class="text-body2">
+                Cualquiera que abra este enlace entra al grupo directamente, sin
+                aprobación. Si se filtra, podés regenerarlo: el anterior deja de
+                funcionar.
+              </q-tooltip>
+            </q-icon>
+          </div>
+          <!-- Quien recién crea el grupo ve un campo de texto sin saber para
+               qué sirve. Esta línea le dice qué hacer con él. -->
+          <div class="text-caption text-grey-6 q-mb-sm">
+            Compartilo por WhatsApp para que tus amigos se sumen al grupo.
           </div>
           <div class="row items-center no-wrap">
             <q-input
