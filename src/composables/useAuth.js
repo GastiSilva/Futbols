@@ -10,6 +10,7 @@ import {
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
   sendEmailVerification,
+  updateProfile,
   signOut,
   onAuthStateChanged,
   getIdTokenResult,
@@ -68,16 +69,26 @@ export function useAuth() {
   }
 
   // ── Registro con email y contraseña ────────────────────────────────────────
-  async function registerWithEmail(email, password) {
+  // `displayName` es OBLIGATORIO: a diferencia de Google, el alta por email no
+  // trae ningún nombre, y firebaseUser.displayName queda null. Como las
+  // inscripciones se guardan con `nickname || displayName`, un usuario sin
+  // nombre se anotaba a los partidos como vacío/"null". Se escribe en el perfil
+  // de Auth ANTES de sincronizar Firestore para que syncUserProfile ya lo vea.
+  async function registerWithEmail(email, password, displayName) {
     loading.value = true
     error.value = null
     try {
+      const name = (displayName ?? '').trim()
+      if (!name) throw new Error('Necesitás ingresar tu nombre para crear la cuenta.')
+
       const result = await createUserWithEmailAndPassword(auth, email, password)
+      await updateProfile(result.user, { displayName: name })
       await sendEmailVerification(result.user)
       await syncUserProfile(result.user)
       await hydrateUserFromFirebase(result.user)
     } catch (err) {
-      error.value = mapAuthError(err.code)
+      // Los errores propios (validación local) no traen `code`: se muestran tal cual.
+      error.value = err.code ? mapAuthError(err.code) : err.message
       throw err
     } finally {
       loading.value = false
@@ -166,7 +177,7 @@ export function useAuth() {
     if (!userDoc.exists()) {
       await setDoc(userRef, {
         uid: firebaseUser.uid,
-        displayName: firebaseUser.displayName,
+        displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Jugador',
         email: firebaseUser.email,
         photoURL: firebaseUser.photoURL,
         fcmToken: null,
@@ -309,7 +320,10 @@ export function useAuth() {
       // Primera vez: crea el documento con stats vacías y rol 'player'
       await setDoc(userRef, {
         uid: firebaseUser.uid,
-        displayName: firebaseUser.displayName,
+        // Nunca null: el alta por email setea displayName en Auth antes de
+        // llegar acá, pero si por algo faltara se cae al email para que la
+        // persona nunca aparezca sin nombre en una lista de anotados.
+        displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Jugador',
         email: firebaseUser.email,
         photoURL: firebaseUser.photoURL,
         fcmToken: null,

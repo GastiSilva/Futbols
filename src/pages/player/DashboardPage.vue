@@ -302,36 +302,30 @@
               />
             </div>
 
-          </q-card-section>
-        </q-expansion-item>
-      </div>
-
-      <!-- ── Seleccionar el match de la expansion actual para los inscritos ──── -->
-
-      <template v-if="selectedMatch">
+            <q-separator class="q-my-lg" />
 
         <!-- ── Lista de inscriptos (visible desde el horario de acceso de cada uno) ── -->
-        <template v-if="!canSeeRegistrations(selectedMatch)">
+        <template v-if="!canSeeRegistrations(match)">
           <q-card flat bordered class="q-pa-md row items-center q-gutter-sm text-grey-6">
             <q-icon name="visibility_off" size="22px" />
-            <span class="text-body2">La lista se va a ver a las {{ myRegistrationsVisibleAtLabel }}.</span>
+            <span class="text-body2">La lista se va a ver a las {{ registrationsVisibleAtLabel(match) }}.</span>
           </q-card>
         </template>
 
         <template v-else>
         <div class="row items-center justify-between q-mb-sm">
           <div class="text-overline text-grey-6 dash-overline">
-            ANOTADOS ({{ titularesSeleccionado.length }})
-            <span v-if="suplentesSelectorado.length > 0"> · SUPLENTES ({{ suplentesSelectorado.length }})</span>
+            ANOTADOS ({{ titularesDe(match.id).length }})
+            <span v-if="suplentesDe(match.id).length > 0"> · SUPLENTES ({{ suplentesDe(match.id).length }})</span>
           </div>
           <q-btn
-            v-if="registrationsSeleccionadas.length > 0"
+            v-if="registrationsDe(match.id).length > 0"
             flat
             dense
             round
             icon="share"
             color="green-9"
-            @click="shareList"
+            @click="shareList(match)"
           >
             <q-tooltip>Compartir lista</q-tooltip>
           </q-btn>
@@ -342,7 +336,7 @@
 
             <!-- Titulares -->
             <q-item
-              v-for="reg in titularesSeleccionado"
+              v-for="reg in titularesDe(match.id)"
               :key="reg.id"
               class="q-py-sm"
               :class="{ 'bg-green-1': reg.userId === user?.uid }"
@@ -397,7 +391,7 @@
             </q-item>
 
             <!-- Separador suplentes -->
-            <template v-if="suplentesSelectorado.length > 0">
+            <template v-if="suplentesDe(match.id).length > 0">
               <q-separator />
               <q-item-label
                 header
@@ -407,7 +401,7 @@
               </q-item-label>
 
               <q-item
-                v-for="reg in suplentesSelectorado"
+                v-for="reg in suplentesDe(match.id)"
                 :key="reg.id"
                 class="q-py-sm"
                 :class="{ 'bg-orange-1': reg.userId === user?.uid }"
@@ -436,7 +430,7 @@
                     <q-badge
                       color="orange-8"
                       text-color="white"
-                      :label="`Esp. #${reg.position - selectedMatch.maxPlayers}`"
+                      :label="`Esp. #${reg.position - match.maxPlayers}`"
                     />
                     <q-btn
                       v-if="canRemoveReg(reg)"
@@ -452,7 +446,7 @@
             </template>
 
             <!-- Lista vacía -->
-            <q-item v-if="registrationsSeleccionadas.length === 0" class="q-py-md">
+            <q-item v-if="registrationsDe(match.id).length === 0" class="q-py-md">
               <q-item-section class="text-center text-grey-5">
                 <q-icon name="people_outline" size="28px" class="q-mb-xs" />
                 Nadie anotado todavía — ¡sé el primero!
@@ -463,27 +457,29 @@
         </q-card>
         </template>
 
-        <!-- ── Anotar a otra persona (invitado o miembro del grupo) ──────────── -->
-        <q-btn
-          v-if="canAddOthers(selectedMatch)"
-          outline
-          color="green-9"
-          icon="person_add"
-          label="Anotar a otra persona"
-          class="full-width q-mt-md pill-btn"
-          @click="openAddDialog"
-        />
+            <!-- ── Anotar a otra persona (invitado o miembro del grupo) ──────── -->
+            <q-btn
+              v-if="canAddOthers(match)"
+              outline
+              color="green-9"
+              icon="person_add"
+              label="Anotar a otra persona"
+              class="full-width q-mt-md pill-btn"
+              @click="openAddDialog"
+            />
 
-        <q-btn
-          flat
-          color="green-9"
-          label="Ver estadísticas del grupo"
-          icon-right="arrow_forward"
-          class="full-width q-mt-md"
-          :to="{ name: 'leaderboard' }"
-        />
+          </q-card-section>
+        </q-expansion-item>
+      </div>
 
-      </template>
+      <q-btn
+        flat
+        color="green-9"
+        label="Ver estadísticas del grupo"
+        icon-right="arrow_forward"
+        class="full-width q-mt-md q-mb-lg"
+        :to="{ name: 'leaderboard' }"
+      />
 
       <!-- ── Dialog: anotar a otra persona ──────────────────────────────────── -->
       <q-dialog v-model="showAddDialog">
@@ -640,29 +636,29 @@ function onMatchCollapse(matchId) {
 }
 
 // ── Compartir lista (texto plano para WhatsApp) ──────────────────────────────
-function buildListText() {
-  const m = selectedMatch.value
+function buildListText(m) {
   const lines = []
   lines.push(`⚽ ${m.title}`)
   if (m.location) lines.push(`📍 ${m.location}`)
   const when = [formatMatchDate(m.date), formatMatchTime(m.date)].filter(Boolean).join(' - ')
   if (when) lines.push(`🕒 ${when}`)
   lines.push('')
-  titularesSeleccionado.value.forEach((r) => {
+  titularesDe(m.id).forEach((r) => {
     lines.push(`${r.position}. ${r.displayName}`)
   })
-  if (suplentesSelectorado.value.length > 0) {
+  const suplentes = suplentesDe(m.id)
+  if (suplentes.length > 0) {
     lines.push('')
     lines.push('Suplentes:')
-    suplentesSelectorado.value.forEach((r) => {
+    suplentes.forEach((r) => {
       lines.push(`${r.position - m.maxPlayers}. ${r.displayName}`)
     })
   }
   return lines.join('\n')
 }
 
-async function shareList() {
-  const text = buildListText()
+async function shareList(m) {
+  const text = buildListText(m)
   if (navigator.share) {
     try {
       await navigator.share({ text })
@@ -682,30 +678,39 @@ async function shareList() {
 
 // Hora en la que ESTE usuario puntual va a poder ver la lista de anotados
 // (creador: siempre; OG: 30 min antes; miembro común: la hora oficial).
-const myRegistrationsVisibleAtLabel = computed(() => {
-  if (!selectedMatch.value) return ''
-  const ms = msUntilOpen(selectedMatch.value)
+function registrationsVisibleAtLabel(m) {
+  if (!m) return ''
+  const ms = msUntilOpen(m)
   if (ms <= 0) return ''
   const d = new Date(Date.now() + ms)
   return new Intl.DateTimeFormat('es-AR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(d)
-})
+}
 
 // ── Registraciones globales ──────────────────────────────────────────────────
 // Un Map<matchId, registraciones[]> para mantener registraciones por match
 const registracionesPorMatch = ref(new Map())
 
-// ── Registraciones del match seleccionado ───────────────────────────────────
-const registrationsSeleccionadas = computed(() =>
-  registracionesPorMatch.value.get(selectedMatchId.value) ?? [],
-)
+// ── Registraciones POR match ────────────────────────────────────────────────
+// Son funciones (no computed sobre selectedMatchId) porque la lista de anotados
+// se renderiza dentro de cada q-expansion-item: cada partido muestra la suya.
+// Antes eran computeds atadas al match seleccionado y la lista se dibujaba
+// fuera del v-for, así que aparecía debajo de TODAS las cards — visualmente
+// pegada al partido equivocado cuando había otro partido en el medio.
+function registrationsDe(matchId) {
+  return registracionesPorMatch.value.get(matchId) ?? []
+}
 
-const titularesSeleccionado = computed(() =>
-  registrationsSeleccionadas.value.filter((r) => !r.isOnWaitlist),
-)
+function titularesDe(matchId) {
+  return registrationsDe(matchId).filter((r) => !r.isOnWaitlist)
+}
 
-const suplentesSelectorado = computed(() =>
-  registrationsSeleccionadas.value.filter((r) => r.isOnWaitlist),
-)
+function suplentesDe(matchId) {
+  return registrationsDe(matchId).filter((r) => r.isOnWaitlist)
+}
+
+// El match expandido sigue siendo el "seleccionado" para los diálogos
+// (anotar a otra persona, etc.), que operan sobre uno solo a la vez.
+const registrationsSeleccionadas = computed(() => registrationsDe(selectedMatchId.value))
 
 // ── Datos derivados globales ────────────────────────────────────────────────
 const firstName = computed(() => user.value?.displayName?.split(' ')[0] ?? 'jugador')

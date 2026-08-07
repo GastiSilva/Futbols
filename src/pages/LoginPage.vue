@@ -42,6 +42,22 @@
 
           <!-- Email / contraseña -->
           <q-form class="column q-gutter-sm" @submit.prevent="handleEmailSubmit">
+            <!-- El nombre es obligatorio al crear la cuenta: es con lo que la
+                 persona aparece en las listas de anotados. Google ya lo trae;
+                 el alta por email no, así que se pide acá. -->
+            <q-input
+              v-if="mode === 'register'"
+              v-model="displayName"
+              outlined
+              dense
+              label="Nombre y apellido"
+              autocomplete="name"
+              maxlength="60"
+              :rules="[
+                (val) => !!val?.trim() || 'Ingresá tu nombre',
+                (val) => val.trim().length >= 2 || 'El nombre es muy corto',
+              ]"
+            />
             <q-input
               v-model="email"
               type="email"
@@ -121,6 +137,7 @@ const { loginWithGoogle, loginWithEmail, registerWithEmail, resetPassword, loadi
 const mode = ref('login') // 'login' | 'register'
 const email = ref('')
 const password = ref('')
+const displayName = ref('')
 const lastAction = ref(null) // 'google' | 'email' — para saber qué botón mostraba el spinner
 const info = ref(null)
 
@@ -142,11 +159,12 @@ async function handleGoogleLogin() {
 
 async function handleEmailSubmit() {
   if (!email.value || !password.value) return
+  if (mode.value === 'register' && !displayName.value.trim()) return
   lastAction.value = 'email'
   info.value = null
   try {
     if (mode.value === 'register') {
-      await registerWithEmail(email.value, password.value)
+      await registerWithEmail(email.value, password.value, displayName.value)
       // Cuenta recién creada: el guard del router la intercepta y manda a
       // /verificar-email igual (needsEmailVerification), pero le dejamos
       // dicho que después de confirmar el mail vaya a completar el perfil
