@@ -14,17 +14,20 @@
       <template #avatar>
         <q-icon name="link" color="green-9" size="28px" />
       </template>
-      <div class="text-subtitle1 text-weight-bold">Tienes una invitación</div>
+      <div class="text-subtitle1 text-weight-bold">
+        {{ joiningByLink ? 'Uniéndote al grupo…' : 'Tenés una invitación' }}
+      </div>
       <div class="text-body2 q-mt-xs">
         Código: <strong>{{ inviteCode }}</strong>
       </div>
       <template #action>
+        <q-spinner-dots v-if="joiningByLink" color="green-9" size="28px" class="q-mr-md" />
         <q-btn
+          v-else
           unelevated
           color="primary"
           label="Aceptar invitación"
           class="pill-btn"
-          :loading="joiningByLink"
           @click="handleJoinByLink"
         />
       </template>
@@ -124,6 +127,13 @@ const requestingId = ref(null)
 const requestedIds = ref(new Set())
 const inviteCode = ref(route.query.code ? String(route.query.code).toUpperCase() : null)
 const joiningByLink = ref(false)
+
+// Si el link ya trae el código, unirse es automático: pedir un click de
+// "Aceptar invitación" sobre un link que la persona abrió a propósito es un
+// trámite de más. El botón del banner queda como reintento si esto falla.
+onMounted(() => {
+  if (inviteCode.value) handleJoinByLink()
+})
 
 async function handleSearch(val) {
   if (!val || val.length < 2) {

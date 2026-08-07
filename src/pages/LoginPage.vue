@@ -146,12 +146,20 @@ function toggleMode() {
   info.value = null
 }
 
+// Destino guardado por el guard cuando alguien entró a un link protegido sin
+// sesión (típicamente una invitación a un grupo). Se consume una sola vez.
+function takePostLoginRedirect() {
+  const dest = sessionStorage.getItem('postLoginRedirect')
+  sessionStorage.removeItem('postLoginRedirect')
+  return dest || '/'
+}
+
 async function handleGoogleLogin() {
   lastAction.value = 'google'
   info.value = null
   try {
     await loginWithGoogle()
-    router.push('/')
+    router.push(takePostLoginRedirect())
   } catch {
     // El error ya está en la ref `error` del composable
   }
@@ -163,17 +171,19 @@ async function handleEmailSubmit() {
   lastAction.value = 'email'
   info.value = null
   try {
+    const dest = takePostLoginRedirect()
     if (mode.value === 'register') {
       await registerWithEmail(email.value, password.value, displayName.value)
       // Cuenta recién creada: el guard del router la intercepta y manda a
       // /verificar-email igual (needsEmailVerification), pero le dejamos
-      // dicho que después de confirmar el mail vaya a completar el perfil
-      // en vez de al dashboard — es su primera vez, todavía no tiene nickname.
-      sessionStorage.setItem('postVerifyRedirect', '/perfil')
+      // dicho a dónde ir después de confirmar el mail. Si venía de una
+      // invitación, esa gana: unirse al grupo importa más que completar el
+      // perfil, y el perfil lo puede editar cuando quiera.
+      sessionStorage.setItem('postVerifyRedirect', dest !== '/' ? dest : '/perfil')
     } else {
       await loginWithEmail(email.value, password.value)
     }
-    router.push('/')
+    router.push(dest)
   } catch {
     // El error ya está en la ref `error` del composable
   }

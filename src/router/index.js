@@ -41,6 +41,17 @@ export default route(function ({ store }) {
     const isPublic = to.matched.some((r) => r.meta.public)
 
     if (requiresAuth && !authStore.isAuthenticated) {
+      // Guarda a dónde quería ir para retomarlo después de loguearse. Sin esto,
+      // un link de invitación (/grupos/unirse?code=ABC123) abierto sin sesión
+      // perdía el código: el guard mandaba a /login y la persona terminaba en
+      // el dashboard vacío, sin haberse unido a nada. Era el motivo por el que
+      // toda invitación a alguien nuevo había que explicarla a mano.
+      // Solo se guardan destinos que valga la pena retomar (hoy: invitaciones
+      // a grupos). Guardar cualquier ruta hacía que un intento abandonado
+      // desviara un login posterior sin relación.
+      if (to.name === 'join-group') {
+        sessionStorage.setItem('postLoginRedirect', to.fullPath)
+      }
       return { path: '/login' }
     }
 
