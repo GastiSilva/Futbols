@@ -14,6 +14,19 @@
 
     <!-- Detalle del partido -->
     <template v-else>
+      <!-- Aviso permanente para el invitado del link: qué puede hacer acá y
+           cómo pasar a una cuenta real cuando quiera (sin perder el lugar). -->
+      <q-banner v-if="authStore.isGuest" dense class="bg-blue-1 text-blue-10 rounded-borders q-mb-md">
+        <template #avatar><q-icon name="person_outline" color="blue-8" /></template>
+        <div class="text-body2">
+          Estás como <strong>invitado</strong>: podés anotarte a este partido y ver la lista.
+          Las estadísticas, los grupos y el perfil necesitan una cuenta.
+        </div>
+        <template #action>
+          <q-btn flat dense no-caps color="blue-9" label="Crear cuenta" @click="goToRegister" />
+        </template>
+      </q-banner>
+
       <div class="row items-center q-mb-md no-wrap">
         <q-btn flat round icon="arrow_back" @click="$router.back()" />
         <div class="col q-ml-sm">
@@ -417,57 +430,12 @@
             {{ match.scoreA }} — {{ match.scoreB }}
           </div>
 
-          <!-- MVP ya decidido (votación cerrada) -->
-          <div v-if="match.mvpVotingClosed" class="q-mt-sm">
-            <q-chip v-if="match.mvpName" color="amber-8" text-color="white" icon="military_tech">
-              MVP: {{ match.mvpName }}
-            </q-chip>
-            <div v-else class="text-caption text-grey-6">Empate en la votación — sin MVP</div>
-          </div>
-
-          <!-- Votación de MVP abierta -->
-          <div v-else class="q-mt-md text-left">
-            <q-separator class="q-mb-md" />
-            <div class="text-overline text-amber-9 text-weight-bold q-mb-sm text-center">
-              <q-icon name="military_tech" class="q-mr-xs" />Votá al MVP
-            </div>
-
-            <div v-if="myMvpVote" class="text-center text-body2 text-grey-7 q-mb-sm">
-              Ya votaste a <b>{{ candidateName(myMvpVote) }}</b> — podés cambiar tu voto.
-            </div>
-
-            <q-list separator dense>
-              <q-item
-                v-for="c in mvpCandidates"
-                :key="c.userId"
-                clickable
-                @click="handleVote(c.userId)"
-              >
-                <q-item-section>{{ c.displayName }}</q-item-section>
-                <q-item-section side>
-                  <span class="text-caption text-grey-6">{{ mvpTally.get(c.userId) ?? 0 }} votos</span>
-                </q-item-section>
-                <q-item-section side v-if="myMvpVote === c.userId">
-                  <q-icon name="check_circle" color="amber-8" />
-                </q-item-section>
-              </q-item>
-            </q-list>
-            <div v-if="mvpCandidates.length === 0" class="text-caption text-grey-5 text-center q-py-sm">
-              No hay candidatos para votar.
-            </div>
-
-            <q-btn
-              v-if="canLoadResult"
-              flat
-              dense
-              color="amber-9"
-              label="Cerrar votación"
-              icon="how_to_vote"
-              class="full-width q-mt-sm"
-              :loading="votingLoading"
-              @click="handleCloseVoting"
-            />
-          </div>
+          <MatchMvpVoting
+            :match="match"
+            :match-id="route.params.id"
+            :player-stats="playerStats"
+            :can-close-voting="canLoadResult"
+          />
 
           <!-- Goleadores por equipo -->
           <template v-if="scorers.length > 0">
@@ -510,6 +478,25 @@
         :to="{ name: 'post-match', params: { id: match.id } }"
       />
     </template>
+
+    <!-- El invitado tocó una sección que necesita cuenta: se le explica por
+         qué, en vez de rebotarlo sin más (el guard ya lo trajo hasta acá). -->
+    <q-dialog v-model="showRegisterPrompt">
+      <q-card style="max-width: 380px">
+        <q-card-section class="row items-center q-gutter-sm">
+          <q-icon name="lock_open" color="green-8" size="28px" />
+          <div class="text-subtitle1 text-weight-bold">Esa sección necesita cuenta</div>
+        </q-card-section>
+        <q-card-section class="q-pt-none text-body2 text-grey-8">
+          Los grupos, el ranking y tu perfil guardan datos tuyos, así que hace falta
+          una cuenta. Creala en un minuto — <strong>tu lugar en la lista se mantiene</strong>.
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn v-close-popup flat no-caps color="grey-7" label="Seguir como invitado" />
+          <q-btn unelevated no-caps color="primary" class="pill-btn" label="Crear cuenta" @click="goToRegister" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -521,11 +508,15 @@ import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { usePlayerStats } from 'src/composables/usePlayerStats'
 import { useRegistration } from 'src/composables/useRegistration'
-import { useMvpVoting } from 'src/composables/useMvpVoting'
 import { useWeather } from 'src/composables/useWeather'
+import { useVenues } from 'src/composables/useVenues'
 import { useTeamBalancer } from 'src/composables/useTeamBalancer'
+import { useAuth } from 'src/composables/useAuth'
 import { useAuthStore } from 'src/stores/auth.store'
+import { useMatchInvite, setPendingInvite } from 'src/composables/useMatchInvite'
+import { buildListText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
+import MatchMvpVoting from 'src/components/MatchMvpVoting.vue'
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 
@@ -536,14 +527,18 @@ const router = useRouter()
 // Invitados (isGuest, sin cuenta) no tienen perfil — no navega para esos
 function goToProfile(reg) {
   if (!reg.userId) return
+  // El invitado del link no puede ver perfiles (el guard lo rebotaría)
+  if (authStore.isGuest) return
   router.push({ name: 'profile-view', params: { uid: reg.userId } })
 }
 const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved } = useMatch()
 const { getMyRole } = useGroups()
 const { fetchPlayerStats } = usePlayerStats()
-const { castVote, getMyVote, subscribeToVotes, closeMvpVoting } = useMvpVoting()
 const { fetchForecast } = useWeather()
+const { getVenue } = useVenues()
 const { suggestTeams } = useTeamBalancer()
+const { joinMatchGroup } = useMatchInvite()
+const { logout } = useAuth()
 const authStore = useAuthStore()
 const {
   registrations,
@@ -560,9 +555,41 @@ const {
   assignTeams,
 } = useRegistration()
 
-onMounted(() => {
+// ── Llegada por link de invitación ──────────────────────────────────────────
+// `?invitado=1` lo pone el guard del router después de un login disparado
+// desde la landing de invitación: ahí se completa el circuito entero sumando
+// a la persona al grupo que organiza el partido (el link vale como invitación
+// al grupo). `?registrate=1` lo pone el guard cuando un invitado anónimo
+// intentó entrar a una sección que no le corresponde — solo abre el diálogo
+// que lo invita a crear la cuenta, sin tocar datos.
+const showRegisterPrompt = ref(false)
+
+onMounted(async () => {
   subscribeToMatch(route.params.id)
   subscribeToRegistrations(route.params.id)
+
+  if (route.query.registrate === '1') {
+    showRegisterPrompt.value = true
+  }
+
+  if (route.query.invitado === '1' && authStore.isAuthenticated && !authStore.isGuest) {
+    try {
+      const { joined } = await joinMatchGroup(route.params.id)
+      if (joined) {
+        $q.notify({
+          type: 'positive',
+          icon: 'group_add',
+          message: 'Te sumamos al grupo del partido.',
+          caption: 'Ya podés anotarte y ver el resto de sus listas.',
+          timeout: 5000,
+        })
+      }
+    } catch (err) {
+      // Que falle sumarlo al grupo no debe romper la pantalla: igual puede
+      // ver el partido, y el motivo real aparece en el aviso.
+      $q.notify({ type: 'warning', message: `No pudimos sumarte al grupo: ${err.message}` })
+    }
+  }
 })
 onUnmounted(() => {
   stopListening()
@@ -580,7 +607,9 @@ const openAtLabel = computed(() =>
 const myRegistrationsVisibleAtLabel = computed(() => {
   if (!match.value) return ''
   const ms = msUntilOpen(match.value)
-  if (ms <= 0) return ''
+  // Infinity = no tiene derecho a este partido (no es del grupo): no hay hora
+  // que anunciar, la lista no se le abre nunca.
+  if (ms <= 0 || !Number.isFinite(ms)) return ''
   return date.formatDate(new Date(Date.now() + ms), 'DD/MM HH:mm')
 })
 // Cupos "engaño visual": antes del horario de acceso de cada uno se muestran
@@ -685,59 +714,37 @@ async function handleAcceptTeams() {
 }
 
 // ── Compartir lista (texto plano para WhatsApp) ──────────────────────────────
-function buildListText() {
-  const m = match.value
-  const lines = []
-  lines.push(`⚽ ${m.title}`)
-  if (m.location) lines.push(`📍 ${m.location}`)
-  const when = [matchDate.value, matchTime.value].filter(Boolean).join(' - ')
-  if (when) lines.push(`🕒 ${when}`)
-  lines.push('')
-
-  if (teamsAssigned.value) {
-    lines.push('Equipo A:')
-    startersTeamA.value.forEach((r) => lines.push(`- ${r.displayName}`))
-    lines.push('')
-    lines.push('Equipo B:')
-    startersTeamB.value.forEach((r) => lines.push(`- ${r.displayName}`))
-    if (startersNoTeam.value.length > 0) {
-      lines.push('')
-      lines.push('Sin equipo asignado:')
-      startersNoTeam.value.forEach((r) => lines.push(`- ${r.displayName}`))
-    }
-  } else {
-    starters.value.forEach((r) => {
-      lines.push(`${r.position}. ${r.displayName}`)
-    })
-  }
-
-  if (waitlist.value.length > 0) {
-    lines.push('')
-    lines.push('Suplentes:')
-    waitlist.value.forEach((r) => {
-      lines.push(`${r.position - m.maxPlayers}. ${r.displayName}`)
-    })
-  }
-  return lines.join('\n')
+// La construcción del texto vive en src/utils/shareList.js, compartida con
+// DashboardPage.
+function shareList() {
+  const text = buildListText({
+    match: match.value,
+    when: [matchDate.value, matchTime.value].filter(Boolean).join(' - '),
+    starters: starters.value,
+    waitlist: waitlist.value,
+    teamsAssigned: teamsAssigned.value,
+    teamA: startersTeamA.value,
+    teamB: startersTeamB.value,
+    noTeam: startersNoTeam.value,
+    includeInviteLink: !authStore.isGuest,
+  })
+  return shareListText(text, $q.notify)
 }
 
-async function shareList() {
-  const text = buildListText()
-  if (navigator.share) {
-    try {
-      await navigator.share({ text })
-      return
-    } catch {
-      // usuario canceló el share nativo — no hacer nada más
-      return
-    }
-  }
+// El invitado pasa a tener cuenta. Se deja la invitación pendiente para que,
+// al terminar de registrarse, el guard lo traiga de vuelta a ESTE partido y le
+// sume el grupo — el circuito completo, sin que tenga que buscar nada.
+async function goToRegister() {
+  showRegisterPrompt.value = false
+  setPendingInvite(route.params.id)
+  // Cerrar la sesión anónima primero: si no, el guard ve una sesión activa y
+  // rebota /login de vuelta al dashboard.
   try {
-    await navigator.clipboard.writeText(text)
-    $q.notify({ type: 'positive', icon: 'content_copy', message: 'Lista copiada al portapapeles' })
+    await logout()
   } catch {
-    $q.notify({ type: 'negative', message: 'No se pudo copiar la lista' })
+    // aunque falle el signOut, /login puede resolverlo
   }
+  router.push('/login')
 }
 
 async function handleJoin() {
@@ -780,8 +787,27 @@ watch(
   async () => {
     weather.value = null
     const m = match.value
-    if (!m || m.status === 'finished' || m.venueLat == null || m.venueLng == null || !m.date) return
-    weather.value = await fetchForecast(m.venueLat, m.venueLng, m.date.toDate())
+    if (!m || m.status === 'finished' || !m.date) return
+
+    // Las coordenadas se denormalizan en el partido al crearlo/editarlo. Los
+    // partidos creados antes de que las sedes tuvieran lat/lng quedaron con
+    // venueLat null, y como el clima dependía SOLO de ese campo, no se
+    // mostraba nunca (ni siquiera después de geocodificar la sede). Si el
+    // partido no las trae, se leen de la sede en el momento.
+    let lat = m.venueLat
+    let lng = m.venueLng
+    if ((lat == null || lng == null) && m.venueId) {
+      try {
+        const venue = await getVenue(m.venueId)
+        lat = venue?.lat ?? null
+        lng = venue?.lng ?? null
+      } catch {
+        // sede borrada o sin permiso: simplemente no hay clima que mostrar
+      }
+    }
+    if (lat == null || lng == null) return
+
+    weather.value = await fetchForecast(lat, lng, m.date.toDate())
   },
   { immediate: true },
 )
@@ -812,62 +838,8 @@ const scorersNoTeam = computed(() =>
   scorers.value.filter((p) => p.team !== 'A' && p.team !== 'B'),
 )
 
-// ── Votación de MVP (partido finalizado, hasta que se cierre la votación) ───
-const myMvpVote = ref(null)
-const mvpTally = ref(new Map())
-const votingLoading = ref(false)
-let stopVotesListener = null
-
-const mvpCandidates = computed(() =>
-  playerStats.value.filter((p) => p.userId && p.userId !== authStore.user?.uid),
-)
-
-function candidateName(userId) {
-  return playerStats.value.find((p) => p.userId === userId)?.displayName ?? 'alguien'
-}
-
-watch(
-  () => [match.value?.status, match.value?.mvpVotingClosed],
-  ([status, votingClosed]) => {
-    stopVotesListener?.()
-    stopVotesListener = null
-    if (status !== 'finished' || votingClosed) return
-
-    stopVotesListener = subscribeToVotes(route.params.id, ({ tally }) => {
-      mvpTally.value = tally
-    })
-    getMyVote(route.params.id).then((v) => { myMvpVote.value = v })
-  },
-  { immediate: true },
-)
-onUnmounted(() => stopVotesListener?.())
-
-async function handleVote(votedForUserId) {
-  const prev = myMvpVote.value
-  myMvpVote.value = votedForUserId
-  try {
-    await castVote(route.params.id, votedForUserId)
-  } catch (err) {
-    myMvpVote.value = prev
-    $q.notify({ type: 'negative', message: err.message })
-  }
-}
-
-async function handleCloseVoting() {
-  votingLoading.value = true
-  try {
-    const result = await closeMvpVoting(route.params.id)
-    $q.notify({
-      type: 'positive',
-      icon: 'military_tech',
-      message: result.winnerName ? `MVP: ${result.winnerName}` : 'Votación cerrada — empate, sin MVP',
-    })
-  } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
-  } finally {
-    votingLoading.value = false
-  }
-}
+// La votación de MVP vive en <MatchMvpVoting> (src/components), con su propio
+// estado y su listener de votos.
 
 // ── ¿Puede cargar el resultado? (miembro del grupo del partido, o admin) ─────
 const myGroupRole = ref(null)

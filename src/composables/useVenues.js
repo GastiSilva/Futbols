@@ -33,12 +33,23 @@ async function geocodeAddress(address) {
   try {
     const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(trimmed)}`
     const res = await fetch(url, { headers: { Accept: 'application/json' } })
-    if (!res.ok) return null
+    if (!res.ok) {
+      // Nominatim limita por uso (429) y rechaza clientes sin identificar.
+      // Antes esto se tragaba en silencio y la sede quedaba sin coordenadas
+      // para siempre — con el efecto visible de que el clima del partido no
+      // aparecía nunca, sin ninguna pista de por qué.
+      console.warn(`Geocodificación fallida (${res.status}) para "${trimmed}"`)
+      return null
+    }
     const results = await res.json()
     const first = results?.[0]
-    if (!first) return null
+    if (!first) {
+      console.warn(`Sin resultados de geocodificación para "${trimmed}"`)
+      return null
+    }
     return { lat: parseFloat(first.lat), lng: parseFloat(first.lon) }
-  } catch {
+  } catch (err) {
+    console.warn(`Geocodificación no disponible para "${trimmed}":`, err.message)
     return null // sin conexión o servicio caído: la sede queda sin coordenadas
   }
 }
@@ -131,10 +142,16 @@ export function useVenues() {
         updatedAt: serverTimestamp(),
       }
 
-      // Solo re-geocodificar si la dirección cambió (evita llamar la API en
-      // cada edición trivial de nombre/notas).
+      // Re-geocodificar si la dirección cambió, O si la sede todavía no tiene
+      // coordenadas. Este segundo caso importa: las sedes creadas antes de que
+      // existiera la geocodificación (y las que fallaron por un 429 puntual)
+      // quedaban con lat/lng null PARA SIEMPRE, porque editar el nombre no
+      // dispara el reintento y la dirección nunca "cambia". Sin coordenadas no
+      // hay clima en el partido, que era el síntoma visible.
       const prevVenue = venues.value.find((v) => v.id === venueId)
-      if (prevVenue?.address !== trimmedAddress) {
+      const addressChanged = prevVenue?.address !== trimmedAddress
+      const missingCoords = prevVenue?.lat == null || prevVenue?.lng == null
+      if (addressChanged || missingCoords) {
         const coords = await geocodeAddress(trimmedAddress)
         fields.lat = coords?.lat ?? null
         fields.lng = coords?.lng ?? null

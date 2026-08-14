@@ -302,188 +302,192 @@
               />
             </div>
 
+
+            <q-separator class="q-my-md" />
+
+            <!-- Lista de anotados de ESTE partido, visible desde el horario de
+                 acceso de cada uno. Vive DENTRO de la tarjeta expandida a
+                 propósito: antes colgaba al final del v-for y se dibujaba
+                 debajo del siguiente partido, como si perteneciera a otro. -->
+            <template v-if="!canSeeRegistrations(match)">
+              <q-card flat bordered class="q-pa-md row items-center q-gutter-sm text-grey-6">
+                <q-icon name="visibility_off" size="22px" />
+                <span class="text-body2">La lista se va a ver a las {{ myRegistrationsVisibleAtLabel }}.</span>
+              </q-card>
+            </template>
+
+            <template v-else>
+            <div class="row items-center justify-between q-mb-sm">
+              <div class="text-overline text-grey-6 dash-overline">
+                ANOTADOS ({{ titularesDe(match.id).length }})
+                <span v-if="suplentesDe(match.id).length > 0"> · SUPLENTES ({{ suplentesDe(match.id).length }})</span>
+              </div>
+              <q-btn
+                v-if="registrationsDe(match.id).length > 0"
+                flat
+                dense
+                round
+                icon="share"
+                color="green-9"
+                @click="shareList"
+              >
+                <q-tooltip>Compartir lista</q-tooltip>
+              </q-btn>
+            </div>
+
+            <q-card flat bordered>
+              <q-list separator>
+
+                <!-- Titulares -->
+                <q-item
+                  v-for="reg in titularesDe(match.id)"
+                  :key="reg.id"
+                  class="q-py-sm"
+                  :class="{ 'bg-green-1': reg.userId === user?.uid }"
+                  :clickable="!!reg.userId"
+                  @click="goToProfile(reg)"
+                >
+                  <q-item-section avatar>
+                    <q-avatar size="36px">
+                      <img
+                        v-if="reg.photoURL"
+                        :src="reg.photoURL"
+                        :alt="reg.displayName"
+                        referrerpolicy="no-referrer"
+                      />
+                      <q-icon v-else :name="reg.isGuest ? 'person_outline' : 'person'" />
+                    </q-avatar>
+                  </q-item-section>
+
+                  <q-item-section>
+                    <q-item-label>
+                      {{ reg.displayName }}
+                      <q-icon
+                        v-if="reg.userId === user?.uid"
+                        name="star"
+                        color="amber-7"
+                        size="14px"
+                        class="q-ml-xs"
+                      />
+                    </q-item-label>
+                    <q-item-label v-if="regSubtitle(reg)" caption>{{ regSubtitle(reg) }}</q-item-label>
+                  </q-item-section>
+
+                  <q-item-section side>
+                    <div class="row items-center no-wrap q-gutter-xs">
+                      <q-badge
+                        v-if="reg.team === 'A' || reg.team === 'B'"
+                        :color="reg.team === 'A' ? 'blue-8' : 'red-8'"
+                        text-color="white"
+                        :label="reg.team"
+                      />
+                      <q-badge color="primary" text-color="dark" :label="`#${reg.position}`" />
+                      <q-btn
+                        v-if="canRemoveReg(reg)"
+                        flat round dense size="sm"
+                        icon="close"
+                        color="grey-6"
+                        :loading="loading"
+                        @click.stop="handleRemoveReg(reg)"
+                      />
+                    </div>
+                  </q-item-section>
+                </q-item>
+
+                <!-- Separador suplentes -->
+                <template v-if="suplentesDe(match.id).length > 0">
+                  <q-separator />
+                  <q-item-label
+                    header
+                    class="text-orange-8 text-caption text-uppercase bg-orange-1 q-py-xs q-px-md"
+                  >
+                    <q-icon name="hourglass_empty" size="xs" class="q-mr-xs" />Lista de espera
+                  </q-item-label>
+
+                  <q-item
+                    v-for="reg in suplentesDe(match.id)"
+                    :key="reg.id"
+                    class="q-py-sm"
+                    :class="{ 'bg-orange-1': reg.userId === user?.uid }"
+                    :clickable="!!reg.userId"
+                    @click="goToProfile(reg)"
+                  >
+                    <q-item-section avatar>
+                      <q-avatar size="36px">
+                        <img
+                          v-if="reg.photoURL"
+                          :src="reg.photoURL"
+                          :alt="reg.displayName"
+                          referrerpolicy="no-referrer"
+                        />
+                        <q-icon v-else :name="reg.isGuest ? 'person_outline' : 'person'" />
+                      </q-avatar>
+                    </q-item-section>
+
+                    <q-item-section>
+                      <q-item-label>{{ reg.displayName }}</q-item-label>
+                      <q-item-label v-if="regSubtitle(reg)" caption>{{ regSubtitle(reg) }}</q-item-label>
+                    </q-item-section>
+
+                    <q-item-section side>
+                      <div class="row items-center no-wrap q-gutter-xs">
+                        <q-badge
+                          color="orange-8"
+                          text-color="white"
+                          :label="`Esp. #${reg.position - match.maxPlayers}`"
+                        />
+                        <q-btn
+                          v-if="canRemoveReg(reg)"
+                          flat round dense size="sm"
+                          icon="close"
+                          color="grey-6"
+                          :loading="loading"
+                          @click.stop="handleRemoveReg(reg)"
+                        />
+                      </div>
+                    </q-item-section>
+                  </q-item>
+                </template>
+
+                <!-- Lista vacía -->
+                <q-item v-if="registrationsDe(match.id).length === 0" class="q-py-md">
+                  <q-item-section class="text-center text-grey-5">
+                    <q-icon name="people_outline" size="28px" class="q-mb-xs" />
+                    Nadie anotado todavía — ¡sé el primero!
+                  </q-item-section>
+                </q-item>
+
+              </q-list>
+            </q-card>
+            </template>
+
+            <!-- ── Anotar a otra persona (invitado o miembro del grupo) ──────────── -->
+            <q-btn
+              v-if="canAddOthers(match)"
+              outline
+              color="green-9"
+              icon="person_add"
+              label="Anotar a otra persona"
+              class="full-width q-mt-md pill-btn"
+              @click="openAddDialog"
+            />
+
+            <!-- El ranking necesita cuenta: no se le ofrece al invitado del link
+                 (el guard lo rebotaría igual, mejor no mostrarle la puerta). -->
+            <q-btn
+              v-if="!authStore.isGuest"
+              flat
+              color="green-9"
+              label="Ver estadísticas del grupo"
+              icon-right="arrow_forward"
+              class="full-width q-mt-md"
+              :to="{ name: 'leaderboard' }"
+            />
+
           </q-card-section>
         </q-expansion-item>
       </div>
 
-      <!-- ── Seleccionar el match de la expansion actual para los inscritos ──── -->
-
-      <template v-if="selectedMatch">
-
-        <!-- ── Lista de inscriptos (visible desde el horario de acceso de cada uno) ── -->
-        <template v-if="!canSeeRegistrations(selectedMatch)">
-          <q-card flat bordered class="q-pa-md row items-center q-gutter-sm text-grey-6">
-            <q-icon name="visibility_off" size="22px" />
-            <span class="text-body2">La lista se va a ver a las {{ myRegistrationsVisibleAtLabel }}.</span>
-          </q-card>
-        </template>
-
-        <template v-else>
-        <div class="row items-center justify-between q-mb-sm">
-          <div class="text-overline text-grey-6 dash-overline">
-            ANOTADOS ({{ titularesSeleccionado.length }})
-            <span v-if="suplentesSelectorado.length > 0"> · SUPLENTES ({{ suplentesSelectorado.length }})</span>
-          </div>
-          <q-btn
-            v-if="registrationsSeleccionadas.length > 0"
-            flat
-            dense
-            round
-            icon="share"
-            color="green-9"
-            @click="shareList"
-          >
-            <q-tooltip>Compartir lista</q-tooltip>
-          </q-btn>
-        </div>
-
-        <q-card flat bordered>
-          <q-list separator>
-
-            <!-- Titulares -->
-            <q-item
-              v-for="reg in titularesSeleccionado"
-              :key="reg.id"
-              class="q-py-sm"
-              :class="{ 'bg-green-1': reg.userId === user?.uid }"
-              :clickable="!!reg.userId"
-              @click="goToProfile(reg)"
-            >
-              <q-item-section avatar>
-                <q-avatar size="36px">
-                  <img
-                    v-if="reg.photoURL"
-                    :src="reg.photoURL"
-                    :alt="reg.displayName"
-                    referrerpolicy="no-referrer"
-                  />
-                  <q-icon v-else :name="reg.isGuest ? 'person_outline' : 'person'" />
-                </q-avatar>
-              </q-item-section>
-
-              <q-item-section>
-                <q-item-label>
-                  {{ reg.displayName }}
-                  <q-icon
-                    v-if="reg.userId === user?.uid"
-                    name="star"
-                    color="amber-7"
-                    size="14px"
-                    class="q-ml-xs"
-                  />
-                </q-item-label>
-                <q-item-label v-if="regSubtitle(reg)" caption>{{ regSubtitle(reg) }}</q-item-label>
-              </q-item-section>
-
-              <q-item-section side>
-                <div class="row items-center no-wrap q-gutter-xs">
-                  <q-badge
-                    v-if="reg.team === 'A' || reg.team === 'B'"
-                    :color="reg.team === 'A' ? 'blue-8' : 'red-8'"
-                    text-color="white"
-                    :label="reg.team"
-                  />
-                  <q-badge color="primary" text-color="dark" :label="`#${reg.position}`" />
-                  <q-btn
-                    v-if="canRemoveReg(reg)"
-                    flat round dense size="sm"
-                    icon="close"
-                    color="grey-6"
-                    :loading="loading"
-                    @click.stop="handleRemoveReg(reg)"
-                  />
-                </div>
-              </q-item-section>
-            </q-item>
-
-            <!-- Separador suplentes -->
-            <template v-if="suplentesSelectorado.length > 0">
-              <q-separator />
-              <q-item-label
-                header
-                class="text-orange-8 text-caption text-uppercase bg-orange-1 q-py-xs q-px-md"
-              >
-                <q-icon name="hourglass_empty" size="xs" class="q-mr-xs" />Lista de espera
-              </q-item-label>
-
-              <q-item
-                v-for="reg in suplentesSelectorado"
-                :key="reg.id"
-                class="q-py-sm"
-                :class="{ 'bg-orange-1': reg.userId === user?.uid }"
-                :clickable="!!reg.userId"
-                @click="goToProfile(reg)"
-              >
-                <q-item-section avatar>
-                  <q-avatar size="36px">
-                    <img
-                      v-if="reg.photoURL"
-                      :src="reg.photoURL"
-                      :alt="reg.displayName"
-                      referrerpolicy="no-referrer"
-                    />
-                    <q-icon v-else :name="reg.isGuest ? 'person_outline' : 'person'" />
-                  </q-avatar>
-                </q-item-section>
-
-                <q-item-section>
-                  <q-item-label>{{ reg.displayName }}</q-item-label>
-                  <q-item-label v-if="regSubtitle(reg)" caption>{{ regSubtitle(reg) }}</q-item-label>
-                </q-item-section>
-
-                <q-item-section side>
-                  <div class="row items-center no-wrap q-gutter-xs">
-                    <q-badge
-                      color="orange-8"
-                      text-color="white"
-                      :label="`Esp. #${reg.position - selectedMatch.maxPlayers}`"
-                    />
-                    <q-btn
-                      v-if="canRemoveReg(reg)"
-                      flat round dense size="sm"
-                      icon="close"
-                      color="grey-6"
-                      :loading="loading"
-                      @click.stop="handleRemoveReg(reg)"
-                    />
-                  </div>
-                </q-item-section>
-              </q-item>
-            </template>
-
-            <!-- Lista vacía -->
-            <q-item v-if="registrationsSeleccionadas.length === 0" class="q-py-md">
-              <q-item-section class="text-center text-grey-5">
-                <q-icon name="people_outline" size="28px" class="q-mb-xs" />
-                Nadie anotado todavía — ¡sé el primero!
-              </q-item-section>
-            </q-item>
-
-          </q-list>
-        </q-card>
-        </template>
-
-        <!-- ── Anotar a otra persona (invitado o miembro del grupo) ──────────── -->
-        <q-btn
-          v-if="canAddOthers(selectedMatch)"
-          outline
-          color="green-9"
-          icon="person_add"
-          label="Anotar a otra persona"
-          class="full-width q-mt-md pill-btn"
-          @click="openAddDialog"
-        />
-
-        <q-btn
-          flat
-          color="green-9"
-          label="Ver estadísticas del grupo"
-          icon-right="arrow_forward"
-          class="full-width q-mt-md"
-          :to="{ name: 'leaderboard' }"
-        />
-
-      </template>
 
       <!-- ── Dialog: anotar a otra persona ──────────────────────────────────── -->
       <q-dialog v-model="showAddDialog">
@@ -578,6 +582,7 @@ import { useRegistration } from 'src/composables/useRegistration'
 import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
+import { buildListText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 
 const $q = useQuasar()
@@ -588,6 +593,8 @@ const { user, isAdmin } = useAuth()
 // cuenta) no tienen perfil, así que para esos no navega.
 function goToProfile(reg) {
   if (!reg.userId) return
+  // El invitado del link no puede ver perfiles (el guard lo rebotaría)
+  if (authStore.isGuest) return
   router.push({ name: 'profile-view', params: { uid: reg.userId } })
 }
 const {
@@ -640,44 +647,27 @@ function onMatchCollapse(matchId) {
 }
 
 // ── Compartir lista (texto plano para WhatsApp) ──────────────────────────────
-function buildListText() {
+// La construcción del texto vive en src/utils/shareList.js, compartida con
+// MatchDetailPage. De paso esta pantalla ahora también respeta los equipos
+// A/B armados, cosa que su copia local nunca contempló.
+function shareList() {
   const m = selectedMatch.value
-  const lines = []
-  lines.push(`⚽ ${m.title}`)
-  if (m.location) lines.push(`📍 ${m.location}`)
-  const when = [formatMatchDate(m.date), formatMatchTime(m.date)].filter(Boolean).join(' - ')
-  if (when) lines.push(`🕒 ${when}`)
-  lines.push('')
-  titularesSeleccionado.value.forEach((r) => {
-    lines.push(`${r.position}. ${r.displayName}`)
-  })
-  if (suplentesSelectorado.value.length > 0) {
-    lines.push('')
-    lines.push('Suplentes:')
-    suplentesSelectorado.value.forEach((r) => {
-      lines.push(`${r.position - m.maxPlayers}. ${r.displayName}`)
-    })
-  }
-  return lines.join('\n')
-}
+  const titulares = titularesSeleccionado.value
+  const teamA = titulares.filter((r) => r.team === 'A')
+  const teamB = titulares.filter((r) => r.team === 'B')
 
-async function shareList() {
-  const text = buildListText()
-  if (navigator.share) {
-    try {
-      await navigator.share({ text })
-      return
-    } catch {
-      // usuario canceló el share nativo — no hacer nada más
-      return
-    }
-  }
-  try {
-    await navigator.clipboard.writeText(text)
-    $q.notify({ type: 'positive', icon: 'content_copy', message: 'Lista copiada al portapapeles' })
-  } catch {
-    $q.notify({ type: 'negative', message: 'No se pudo copiar la lista' })
-  }
+  const text = buildListText({
+    match: m,
+    when: [formatMatchDate(m.date), formatMatchTime(m.date)].filter(Boolean).join(' - '),
+    starters: titulares,
+    waitlist: suplentesSelectorado.value,
+    teamsAssigned: teamA.length > 0 && teamB.length > 0,
+    teamA,
+    teamB,
+    noTeam: titulares.filter((r) => r.team !== 'A' && r.team !== 'B'),
+    includeInviteLink: !authStore.isGuest,
+  })
+  return shareListText(text, $q.notify)
 }
 
 // Hora en la que ESTE usuario puntual va a poder ver la lista de anotados
@@ -685,7 +675,9 @@ async function shareList() {
 const myRegistrationsVisibleAtLabel = computed(() => {
   if (!selectedMatch.value) return ''
   const ms = msUntilOpen(selectedMatch.value)
-  if (ms <= 0) return ''
+  // Infinity = no tiene derecho a este partido (no es del grupo): no hay hora
+  // que anunciar, la lista no se le abre nunca.
+  if (ms <= 0 || !Number.isFinite(ms)) return ''
   const d = new Date(Date.now() + ms)
   return new Intl.DateTimeFormat('es-AR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(d)
 })
@@ -706,6 +698,22 @@ const titularesSeleccionado = computed(() =>
 const suplentesSelectorado = computed(() =>
   registrationsSeleccionadas.value.filter((r) => r.isOnWaitlist),
 )
+
+// ── Registraciones por partido puntual ──────────────────────────────────────
+// La lista de anotados se dibuja DENTRO de la tarjeta de cada partido (dentro
+// del v-for), así que no alcanza con las computed del "seleccionado": cada
+// tarjeta necesita las suyas, por id.
+function registrationsDe(matchId) {
+  return registracionesPorMatch.value.get(matchId) ?? []
+}
+
+function titularesDe(matchId) {
+  return registrationsDe(matchId).filter((r) => !r.isOnWaitlist)
+}
+
+function suplentesDe(matchId) {
+  return registrationsDe(matchId).filter((r) => r.isOnWaitlist)
+}
 
 // ── Datos derivados globales ────────────────────────────────────────────────
 const firstName = computed(() => user.value?.displayName?.split(' ')[0] ?? 'jugador')
@@ -796,8 +804,10 @@ function tickCountdown(matchId) {
   if (!match) return
 
   const ms = msUntilOpen(match)
-  if (ms <= 0) {
-    countdownsPerMatch.value.set(matchId, '00:00:00')
+  // Infinity = el usuario no tiene derecho a este partido: no hay cuenta
+  // regresiva posible, así que se corta el timer en vez de dejarlo girando.
+  if (ms <= 0 || !Number.isFinite(ms)) {
+    countdownsPerMatch.value.set(matchId, Number.isFinite(ms) ? '00:00:00' : '--:--:--')
     if (countdownTimers.has(matchId)) {
       clearInterval(countdownTimers.get(matchId))
       countdownTimers.delete(matchId)
@@ -893,6 +903,8 @@ const loadingMembers = ref(false)
 function canAddOthers(match) {
   if (!match) return false
   if (match.status === 'closed' || match.status === 'finished') return false
+  // Un invitado del link solo puede anotarse a sí mismo
+  if (authStore.isGuest) return false
 
   const now = Date.now()
   const openAt = match.openAt?.toMillis?.() ?? 0

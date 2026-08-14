@@ -24,6 +24,10 @@ export const ROLE_COLORS = {
   player: 'green-8',
 }
 
+// Partido del link que trajo al invitado anónimo. En sessionStorage para
+// sobrevivir a un refresh sin quedar pegado en el dispositivo para siempre.
+const GUEST_MATCH_KEY = 'guestMatchId'
+
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const initialized = ref(false)  // true cuando onAuthStateChanged ha respondido
@@ -50,6 +54,23 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.isAdmin === true)
   const role = computed(() => user.value?.role ?? USER_ROLES.PLAYER)
+
+  // ── Modo invitado ──────────────────────────────────────────────────────────
+  // Alguien que entró por un link de partido compartido y eligió "seguir como
+  // invitado": tiene una sesión ANÓNIMA de Firebase (uid real, sin email ni
+  // doc en users/). Puede anotarse al partido del link y ver la sección
+  // Partidos — nada más: no acumula estadísticas, no tiene perfil ni grupos.
+  // Es un usuario autenticado a los ojos de Firebase, así que TODA pantalla
+  // que dé por sentado "autenticado ⇒ jugador con perfil" tiene que
+  // preguntar por este flag (el guard del router lo hace de forma central).
+  const isGuest = computed(() => user.value?.isAnonymous === true)
+
+  // El partido cuyo link trajo al invitado: es el ÚNICO en el que puede
+  // anotarse. Sin esto, un anónimo podría sumarse a cualquier partido suelto.
+  // Se persiste en sessionStorage porque la sesión anónima de Firebase
+  // sobrevive a un refresh (F5, volver de otra app): sin persistirlo, el
+  // invitado volvería con sesión pero sin partido y no podría anotarse.
+  const guestMatchId = ref(sessionStorage.getItem(GUEST_MATCH_KEY) || null)
 
   // Bloquea el acceso solo a cuentas de email/contraseña sin verificar.
   // Google ya llega verificado (emailVerified true de por sí), así que
@@ -82,10 +103,18 @@ export const useAuthStore = defineStore('auth', () => {
     memberGroupIds.value = Array.isArray(ids) ? ids : []
   }
 
+  function setGuestMatchId(matchId) {
+    guestMatchId.value = matchId ?? null
+    if (matchId) sessionStorage.setItem(GUEST_MATCH_KEY, matchId)
+    else sessionStorage.removeItem(GUEST_MATCH_KEY)
+  }
+
   function clearUser() {
     user.value = null
     ogGroupIds.value = []
     memberGroupIds.value = []
+    guestMatchId.value = null
+    sessionStorage.removeItem(GUEST_MATCH_KEY)
     superAdminMode.value = false
     initialized.value = true
   }
@@ -113,8 +142,10 @@ export const useAuthStore = defineStore('auth', () => {
     ogGroupIds,
     memberGroupIds,
     superAdminMode,
+    guestMatchId,
     isAuthenticated,
     isAdmin,
+    isGuest,
     role,
     needsEmailVerification,
     isOgInGroup,
@@ -122,6 +153,7 @@ export const useAuthStore = defineStore('auth', () => {
     setUser,
     setOgGroups,
     setMemberGroups,
+    setGuestMatchId,
     setSuperAdminMode,
     clearUser,
     updateFcmToken,

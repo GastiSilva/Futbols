@@ -6,6 +6,7 @@
 import { ref, computed } from 'vue'
 import {
   signInWithPopup,
+  signInAnonymously,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
@@ -29,6 +30,15 @@ import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage
 import { auth, googleProvider, db, storage } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
 import { normalizePositions } from 'src/utils/positions'
+
+// Nombre elegido por un invitado anónimo. En sessionStorage (no localStorage)
+// a propósito: la sesión de invitado es de esa pestaña y de ese rato, no algo
+// que deba quedar pegado en el dispositivo.
+const GUEST_NAME_KEY = 'guestDisplayName'
+
+export function guestDisplayName() {
+  return sessionStorage.getItem(GUEST_NAME_KEY) || null
+}
 
 export function useAuth() {
   const authStore = useAuthStore()
@@ -62,6 +72,44 @@ export function useAuth() {
         error.value = err.message
         throw err
       }
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // ── Entrar como invitado (sesión anónima) ──────────────────────────────────
+  // Para quien abre el link de un partido compartido y no quiere (todavía)
+  // crear una cuenta. Firebase le da un uid real pero sin email ni perfil, que
+  // es lo mínimo que exigen las reglas de Firestore para poder anotarse.
+  // El nombre que escribe se guarda en sessionStorage: la sesión anónima
+  // sobrevive a un refresh, y sin esto el invitado volvería como "Invitado".
+  async function loginAsGuest(guestName) {
+    const name = (guestName ?? '').trim()
+    if (!name) throw new Error('Necesitamos tu nombre para anotarte en la lista.')
+
+    loading.value = true
+    error.value = null
+    try {
+      sessionStorage.setItem(GUEST_NAME_KEY, name)
+      const result = await signInAnonymously(auth)
+      // El token tiene que estar EMITIDO antes de que el caller navegue: la
+      // pantalla del partido abre dos onSnapshot (match + registrations) apenas
+      // monta, y si el SDK todavía no adjuntó las credenciales anónimas, ambos
+      // listeners mueren con permission-denied. Se veía como dos errores en
+      // consola al entrar como invitado, que desaparecían al refrescar (con la
+      // sesión ya lista). Mismo motivo que el hydrate de loginWithGoogle.
+      await result.user.getIdToken()
+      await hydrateUserFromFirebase(result.user)
+      return result.user
+    } catch (err) {
+      sessionStorage.removeItem(GUEST_NAME_KEY)
+      // El provider Anónimo se habilita en Firebase Console → Authentication.
+      // Sin eso, Firebase devuelve auth/operation-not-allowed.
+      error.value =
+        err.code === 'auth/operation-not-allowed'
+          ? 'El acceso como invitado no está habilitado. Probá iniciando sesión.'
+          : 'No pudimos entrar como invitado. Intentá de nuevo.'
+      throw new Error(error.value)
     } finally {
       loading.value = false
     }
@@ -146,6 +194,7 @@ export function useAuth() {
     loading.value = true
     try {
       await signOut(auth)
+      sessionStorage.removeItem(GUEST_NAME_KEY)
       authStore.clearUser()
     } finally {
       loading.value = false
@@ -158,6 +207,32 @@ export function useAuth() {
   // loginWithGoogle/loginWithEmail puedan esperar a que el store quede
   // realmente actualizado antes de resolver (evita la carrera con el router).
   async function hydrateUserFromFirebase(firebaseUser) {
+    // Invitado anónimo (link de partido compartido): NO tiene documento en
+    // users/ y las reglas no lo dejan crearlo. Se hidrata un usuario mínimo,
+    // sin stats ni grupos — el resto de la app lo distingue con
+    // authStore.isGuest y le muestra solo lo que puede usar.
+    if (firebaseUser.isAnonymous) {
+      authStore.setUser({
+        uid: firebaseUser.uid,
+        displayName: guestDisplayName() ?? 'Invitado',
+        email: null,
+        photoURL: null,
+        emailVerified: false,
+        providerId: 'anonymous',
+        isAnonymous: true,
+        isAdmin: false,
+        role: 'player',
+        nickname: null,
+        description: '',
+        preferredFoot: null,
+        stats: defaultStats(),
+        statsByGroup: {},
+      })
+      authStore.setMemberGroups([])
+      authStore.setOgGroups([])
+      return
+    }
+
     const tokenResult = await getIdTokenResult(firebaseUser, true)
     const userRef = doc(db, 'users', firebaseUser.uid)
     let userDoc = await getDoc(userRef)
@@ -193,6 +268,7 @@ export function useAuth() {
       photoURL: userData.photoURL ?? firebaseUser.photoURL,
       emailVerified: firebaseUser.emailVerified,
       providerId: firebaseUser.providerData?.[0]?.providerId ?? null,
+      isAnonymous: false,
       isAdmin: tokenResult.claims.admin === true,
       role: userData.role ?? 'player',
       nickname: userData.nickname ?? null,
@@ -245,6 +321,22 @@ export function useAuth() {
       authStore.setOgGroups([])
       console.error('No se pudieron cargar los grupos del usuario:', err)
     }
+  }
+
+  // Vuelve a leer la membresía del usuario y refresca el store.
+  //
+  // memberGroupIds/ogGroupIds se cargan UNA vez en el login, así que cualquier
+  // cambio de membresía posterior (te aceptaron una solicitud, te sumaron a un
+  // grupo, te dieron OG, te sacaron) dejaba el store desactualizado hasta el
+  // próximo login: el botón "Anotarme" seguía deshabilitado en un partido al
+  // que ya tenías derecho, o habilitado en uno del que ya te habían sacado
+  // (ahí la transacción de registerEntry, que sí lee Firestore, lo frenaba —
+  // pero recién al tocar el botón). Llamar a esto después de cualquier
+  // operación que cambie membresía deja cliente y servidor en la misma página.
+  async function refreshMyGroups() {
+    const uid = authStore.user?.uid
+    if (!uid || authStore.isGuest) return
+    await loadOgGroups(uid)
   }
 
   // ── Actualizar el perfil editable del usuario (apodo, descripción, pie) ────
@@ -342,6 +434,8 @@ export function useAuth() {
     loading,
     error,
     loginWithGoogle,
+    loginAsGuest,
+    refreshMyGroups,
     registerWithEmail,
     loginWithEmail,
     resetPassword,

@@ -108,8 +108,28 @@
                 </template>
               </q-input>
 
+              <!-- Abrir la lista YA (sin ventana anticipada) -->
+              <div class="row items-center no-wrap">
+                <q-toggle
+                  v-model="openNow"
+                  color="green-9"
+                  label="Abrir la lista ahora"
+                  dense
+                  @update:model-value="onOpenNowToggle"
+                />
+                <q-icon name="help_outline" size="20px" color="grey-6" class="q-ml-xs cursor-pointer">
+                  <q-tooltip max-width="280px" class="text-body2">
+                    La lista se abre en el momento de crear el partido: le llega la
+                    notificación a <strong>todos</strong> los miembros del grupo al
+                    mismo tiempo y nadie tiene los 30 minutos de acceso anticipado.
+                    Todos se anotan en igualdad de condiciones.
+                  </q-tooltip>
+                </q-icon>
+              </div>
+
               <!-- Hora de apertura de lista -->
               <q-input
+                v-if="!openNow"
                 :model-value="formatDateDisplay(form.openAt)"
                 label="Hora de inicio de lista (apertura de inscripción)"
                 outlined
@@ -143,6 +163,7 @@
 
               <!-- Primera notificación -->
               <q-input
+                v-if="!openNow"
                 :model-value="formatDateDisplay(form.notifyAt)"
                 label="Primera notificación"
                 outlined
@@ -286,6 +307,21 @@ function onVenueSelected(venueId) {
   }
 }
 
+// Tilde "abrir la lista ahora": la inscripción arranca en el instante en que
+// se crea el partido. Se apaga la ventana de acceso anticipado (openNow marca
+// el partido con instantOpen: true, que useRegistration y las reglas leen para
+// NO adelantarle 30 min a los OG) y la notificación sale para todo el grupo
+// junta. Como openAt pasa a ser "ahora", los campos de horario de apertura y
+// de recordatorio previo dejan de tener sentido y se ocultan.
+const openNow = ref(false)
+
+function onOpenNowToggle(enabled) {
+  if (enabled) {
+    form.value.openAt = ''
+    form.value.notifyAt = ''
+  }
+}
+
 // Tilde "sede manual": desactiva el select y habilita el texto libre
 const manualLocation = ref(false)
 
@@ -347,8 +383,18 @@ async function handleSubmit() {
     // (para mostrarlos sin lecturas extra, y para que sobrevivan si la sede
     // se borra — venueLat/venueLng habilitan mostrar el clima del partido)
     const selectedVenue = venues.value.find((v) => v.id === form.value.venueId) ?? null
+
+    // "Abrir ahora": openAt es este mismo instante. Se calcula acá (una sola
+    // vez) para que el partido y la notificación programada usen exactamente
+    // el mismo valor — la CF abre el partido de inmediato porque openAt ya pasó.
+    if (openNow.value) {
+      form.value.openAt = toDatetimeLocal(new Date())
+      form.value.notifyAt = ''
+    }
+
     const matchId = await createMatch({
       ...form.value,
+      instantOpen: openNow.value,
       venueMapsUrl: selectedVenue?.mapsUrl ?? null,
       venueLat: selectedVenue?.lat ?? null,
       venueLng: selectedVenue?.lng ?? null,

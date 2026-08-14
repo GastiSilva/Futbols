@@ -100,6 +100,16 @@ export function useGroups() {
         groups.value = [...groups.value, { id: newGroupSnap.id, ...newGroupSnap.data() }]
       }
 
+      // El creador entra como 'owner', o sea miembro CON acceso anticipado.
+      // Sin reflejarlo en el store, quien acaba de crear el grupo no podía
+      // anotarse a sus propios partidos hasta volver a iniciar sesión.
+      if (!authStore.memberGroupIds.includes(groupRef.id)) {
+        authStore.setMemberGroups([...authStore.memberGroupIds, groupRef.id])
+      }
+      if (!authStore.ogGroupIds.includes(groupRef.id)) {
+        authStore.setOgGroups([...authStore.ogGroupIds, groupRef.id])
+      }
+
       return groupRef.id
     } catch (err) {
       error.value = err.message
@@ -302,10 +312,24 @@ export function useGroups() {
         })
       })
 
+      // Espejo en users/{uid}/groups — es lo que lee getMyGroups. Sin esto el
+      // grupo recién unido no aparecía en "Mis grupos" hasta el siguiente
+      // login (acceptJoinRequest sí lo escribía; esta rama se lo salteaba).
+      await setDoc(doc(db, 'users', uid, 'groups', groupId), {
+        joinedAt: serverTimestamp(),
+      })
+
       // Actualizar estado reactivo al instante
       const joinedSnap = await getDoc(doc(db, 'groups', groupId))
       if (joinedSnap.exists() && !groups.value.some(g => g.id === groupId)) {
         groups.value = [...groups.value, { id: joinedSnap.id, ...joinedSnap.data() }]
+      }
+
+      // El store de membresía se carga en el login: sin esto, el usuario recién
+      // unido seguía viendo el botón "Anotarme" deshabilitado en los partidos
+      // de este grupo hasta cerrar y volver a entrar (ver refreshMyGroups).
+      if (!authStore.memberGroupIds.includes(groupId)) {
+        authStore.setMemberGroups([...authStore.memberGroupIds, groupId])
       }
 
       return { groupId, alreadyMember: false }
@@ -383,6 +407,10 @@ export function useGroups() {
       })
       // Actualizar estado reactivo al instante
       groups.value = groups.value.filter(g => g.id !== groupId)
+      // Y también la membresía del store: si no, los partidos de un grupo del
+      // que ya me fui me seguían apareciendo como propios hasta re-loguear.
+      authStore.setMemberGroups(authStore.memberGroupIds.filter(id => id !== groupId))
+      authStore.setOgGroups(authStore.ogGroupIds.filter(id => id !== groupId))
     } catch (err) {
       error.value = err.message
       throw err
@@ -392,19 +420,37 @@ export function useGroups() {
   }
 
   // ── Expulsar miembro (admin/owner) ─────────────────────────────────────────
+  // Al expulsar se ROTA el código de invitación del grupo. Sin eso, el
+  // expulsado se vuelve a meter solo: el código que ya conoce sigue siendo
+  // válido, así que echarlo no servía de nada. El costo es que los links
+  // viejos dejan de andar para todos — es el precio de que la expulsión
+  // signifique algo, y el owner/admin puede volver a compartir el nuevo.
   async function removeMember(groupId, userId) {
     loading.value = true
     error.value = null
     try {
+      const newCode = generateInviteCode()
       await runTransaction(db, async tx => {
+        // Lecturas primero (requisito de las transacciones de Firestore)
+        const groupSnap = await tx.get(doc(db, 'groups', groupId))
+        const prevCount = groupSnap.exists() ? (groupSnap.data().memberCount ?? 0) : 0
+
         tx.delete(doc(db, 'groups', groupId, 'members', userId))
         // También borrar de /users/{userId}/groups/{groupId}
         tx.delete(doc(db, 'users', userId, 'groups', groupId))
         tx.update(doc(db, 'groups', groupId), {
-          memberCount: increment(-1),
+          // Nunca por debajo de 0: las reglas rechazan un memberCount negativo,
+          // y con increment(-1) sobre un contador ya en 0 la expulsión fallaba.
+          memberCount: Math.max(0, prevCount - 1),
+          inviteCode: newCode,
           updatedAt: serverTimestamp(),
         })
       })
+      // Reflejar el código nuevo en el estado compartido, sin recargar
+      groups.value = groups.value.map(g =>
+        g.id === groupId ? { ...g, inviteCode: newCode } : g,
+      )
+      return { newInviteCode: newCode }
     } catch (err) {
       error.value = err.message
       throw err

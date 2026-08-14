@@ -60,10 +60,69 @@ export const REGISTRATION_ERRORS = {
   EARLY_TARGET_NOT_ALLOWED:
     'Esa persona no tiene acceso anticipado — podés anotarla cuando abra la lista.',
   NOT_GROUP_MEMBER: 'Este partido es de un grupo del que no formás parte.',
+  GUEST_OTHER_MATCH:
+    'Como invitado solo podés anotarte al partido del link que te compartieron. Creá una cuenta para sumarte a los demás.',
+  GUEST_CANNOT_ADD: 'Como invitado solo podés anotarte a vos mismo.',
 }
 
 // Ventana de acceso anticipado (OG / owner / admin del grupo): 30 minutos
 export const EARLY_ACCESS_MS = 30 * 60 * 1000
+
+/**
+ * Milisegundos de adelanto que le corresponden a ESTE partido para quien
+ * tiene acceso anticipado. Normalmente 30 min; 0 si el partido se creó con
+ * "abrir la lista ahora" (`instantOpen`), donde la gracia del anticipo no
+ * existe: la lista se abrió en el momento y arrancan todos juntos.
+ * Centralizado acá porque el cálculo del umbral se repite en registerEntry,
+ * canRegister y msUntilOpen — y las tres tienen que coincidir.
+ */
+export function earlyAccessMsFor(match) {
+  return match?.instantOpen === true ? 0 : EARLY_ACCESS_MS
+}
+
+/**
+ * ÚNICA fuente de verdad del "¿cuándo puede este usuario tocar este partido?".
+ *
+ * Antes esto vivía duplicado en canRegister, msUntilOpen y canSeeRegistrations,
+ * y las tres divergieron: msUntilOpen no chequeaba membresía ni modo invitado,
+ * así que canSeeRegistrations (que se apoya en él) dejaba ver la lista de
+ * inscriptos de un grupo ajeno. Ahora las tres consumen esto.
+ *
+ * @returns {{ allowed: boolean, threshold: number }}
+ *   allowed   → el usuario tiene derecho a este partido (membresía / link de
+ *               invitado / creador). Si es false, no hay umbral que esperar:
+ *               nunca se le habilita.
+ *   threshold → epoch ms a partir del cual se le abre la lista.
+ */
+function registrationAccessFor(match, authStore) {
+  const denied = { allowed: false, threshold: Infinity }
+  if (!match) return denied
+
+  const openAt = match.openAt?.toMillis?.() ?? 0
+
+  // Invitado anónimo: solo el partido de su link, y recién desde openAt
+  // (nunca en la ventana anticipada). No pertenece a ningún grupo, así que
+  // no pasa por la validación de membresía.
+  if (authStore.isGuest) {
+    if (match.id !== authStore.guestMatchId) return denied
+    return { allowed: true, threshold: openAt }
+  }
+
+  // El creador no espera: para él la lista está abierta desde el momento cero.
+  if (match.createdBy && match.createdBy === authStore.user?.uid) {
+    return { allowed: true, threshold: 0 }
+  }
+
+  // Partido de grupo: solo miembros. Un admin global NO tiene bypass para
+  // participar en partidos de grupos ajenos (sí para verlos en superAdminMode).
+  if (match.groupId && !authStore.isMemberOfGroup(match.groupId)) return denied
+
+  // Acceso anticipado (OG / owner / admin del grupo): 30 min antes, salvo en
+  // partidos de apertura inmediata, donde no hay adelanto para nadie.
+  const hasEarlyAccess = authStore.isOgInGroup(match.groupId)
+  const threshold = hasEarlyAccess ? openAt - earlyAccessMsFor(match) : openAt
+  return { allowed: true, threshold }
+}
 
 export function useRegistration() {
   const authStore = useAuthStore()
@@ -95,8 +154,14 @@ export function useRegistration() {
       } else {
         // Si no, mantiene el comportamiento anterior (para compatibilidad)
         registrations.value = regs
-        userRegistration.value =
-          regs.find((r) => r.userId === authStore.user?.uid) ?? null
+        const uid = authStore.user?.uid
+        // Un invitado anónimo se anota como isGuest con userId null, así que
+        // buscarlo por userId no lo encontraría nunca y se quedaría sin el
+        // botón de cancelar. Su docId ES su uid (ver registerEntry), que es
+        // además lo que las reglas usan para atarlo a SU inscripción.
+        userRegistration.value = authStore.isGuest
+          ? (regs.find((r) => r.id === uid) ?? null)
+          : (regs.find((r) => r.userId === uid) ?? null)
       }
     })
 
@@ -134,16 +199,28 @@ export function useRegistration() {
     if (!user) throw new Error('Usuario no autenticado')
 
     const matchRef = doc(db, 'matches', matchId)
-    // Invitado → docId autogenerado; usuario/miembro → docId = uid (1 por persona)
+    // docId de la inscripción:
+    //  - miembro con cuenta        → su uid (una inscripción por persona)
+    //  - invitado ANÓNIMO (link)   → su propio uid anónimo. Así las reglas
+    //    pueden verificar que el contador de cupos que mueve corresponde a SU
+    //    inscripción y no a la de otro (guestHasEntryInMatch). Además le impide
+    //    anotarse dos veces al mismo partido, que antes era posible.
+    //  - invitado SIN cuenta       → docId autogenerado, porque una misma
+    //    persona puede anotar a varios invitados distintos.
+    const isAnonSelfGuest = entry.isGuest && authStore.isGuest
     const regRef = entry.isGuest
-      ? doc(collection(db, 'matches', matchId, 'registrations'))
+      ? (isAnonSelfGuest
+          ? doc(db, 'matches', matchId, 'registrations', user.uid)
+          : doc(collection(db, 'matches', matchId, 'registrations')))
       : doc(db, 'matches', matchId, 'registrations', entry.targetUserId)
 
     try {
       const result = await runTransaction(db, async (transaction) => {
         // ── 1. LECTURAS (siempre primero en una transacción de Firestore) ──
         const matchSnap = await transaction.get(matchRef)
-        const regSnap = entry.isGuest ? null : await transaction.get(regRef)
+        // El invitado anónimo también se lee: ahora su docId es su uid, así que
+        // se puede detectar (y rechazar) que se anote dos veces al mismo partido.
+        const regSnap = entry.isGuest && !isAnonSelfGuest ? null : await transaction.get(regRef)
 
         // ── 2. VALIDACIONES ───────────────────────────────────────────────
         if (!matchSnap.exists()) throw new Error(REGISTRATION_ERRORS.MATCH_NOT_FOUND)
@@ -163,7 +240,26 @@ export function useRegistration() {
         const isCreator = match.createdBy === user.uid
         const creatorSelf = isCreator && isSelf
 
-        if (!creatorSelf) {
+        // Invitado anónimo (link compartido): no es miembro de ningún grupo,
+        // así que la validación de membresía de abajo lo rechazaría. Se lo
+        // exceptúa SOLO para el partido cuyo link lo trajo (guestMatchId) y
+        // SOLO desde openAt — nunca en la ventana anticipada, igual que
+        // cualquier otro invitado. Que se anote a otra persona no tiene
+        // sentido: solo puede anotarse a sí mismo.
+        const isAnonGuest = authStore.isGuest
+        if (isAnonGuest) {
+          if (matchId !== authStore.guestMatchId) {
+            throw new Error(REGISTRATION_ERRORS.GUEST_OTHER_MATCH)
+          }
+          if (now < openAtMillis) {
+            throw new Error(REGISTRATION_ERRORS.EARLY_NO_GUESTS)
+          }
+          if (!entry.isGuest) {
+            throw new Error(REGISTRATION_ERRORS.GUEST_CANNOT_ADD)
+          }
+        }
+
+        if (!creatorSelf && !isAnonGuest) {
           // Partido de grupo: solo miembros de ese grupo pueden anotarse o
           // anotar a otra persona. Un admin global NO tiene bypass acá — un
           // admin del sistema no debe poder sumarse a partidos de grupos
@@ -180,7 +276,8 @@ export function useRegistration() {
           }
 
           const hasEarlyAccess = authStore.isOgInGroup(match.groupId) || isCreator
-          const threshold = hasEarlyAccess ? openAtMillis - EARLY_ACCESS_MS : openAtMillis
+          const earlyMs = earlyAccessMsFor(match)
+          const threshold = hasEarlyAccess ? openAtMillis - earlyMs : openAtMillis
           if (now < threshold) {
             throw new Error(REGISTRATION_ERRORS.MATCH_NOT_OPEN)
           }
@@ -268,9 +365,29 @@ export function useRegistration() {
 
   // Inscribe al usuario autenticado. En la lista aparece con su APODO
   // (nickname del perfil) si lo tiene; si no, con su nombre de Google.
+  //
+  // Caso invitado anónimo (entró por un link compartido): se anota como
+  // INVITADO (isGuest: true, userId null) aunque tenga una sesión de Firebase.
+  // Es a propósito — así queda igual que un invitado anotado a mano por otro
+  // jugador: aparece en la lista pero no acumula estadísticas ni recibe MVP,
+  // que es exactamente lo que se le prometió en la pantalla de invitación.
+  // El uid anónimo igual queda en `addedBy`, así puede darse de baja solo.
   function joinMatch(matchId) {
     const user = authStore.user
     if (!user) throw new Error('Usuario no autenticado')
+
+    if (authStore.isGuest) {
+      const name = (user.displayName ?? '').trim()
+      if (!name) throw new Error('Necesitamos tu nombre para anotarte en la lista.')
+      return registerEntry(matchId, {
+        targetUserId: null,
+        isGuest: true,
+        guestName: name,
+        displayName: name,
+        photoURL: null,
+      })
+    }
+
     return registerEntry(matchId, {
       targetUserId: user.uid,
       isGuest: false,
@@ -369,7 +486,9 @@ export function useRegistration() {
     }
   }
 
-  // Cancela la inscripción del propio usuario (docId = su uid).
+  // Cancela la inscripción del propio usuario. El docId es su uid en los dos
+  // casos —usuario con cuenta e invitado anónimo del link—, así que no hace
+  // falta distinguir: ver el docId del invitado en registerEntry.
   function leaveMatch(matchId) {
     const user = authStore.user
     if (!user) throw new Error('Usuario no autenticado')
@@ -416,23 +535,8 @@ export function useRegistration() {
     if (effectiveStatus === 'closed' || effectiveStatus === 'finished') return false
     if (userRegistration.value) return false
 
-    // El creador del partido puede anotarse desde el momento cero
-    if (match.createdBy === authStore.user?.uid) return true
-
-    // Partido de grupo: solo miembros de ese grupo. Un admin global no tiene
-    // bypass para participar en partidos de grupos ajenos.
-    if (match.groupId && !authStore.isMemberOfGroup(match.groupId)) {
-      return false
-    }
-
-    const now = Date.now()
-    const openAt = match.openAt?.toMillis?.() ?? 0
-
-    // Acceso anticipado (OG / owner / admin del grupo): umbral 30 min antes.
-    const hasEarlyAccess = authStore.isOgInGroup(match.groupId)
-    const threshold = hasEarlyAccess ? openAt - EARLY_ACCESS_MS : openAt
-
-    return now >= threshold
+    const { allowed, threshold } = registrationAccessFor(match, authStore)
+    return allowed && Date.now() >= threshold
   }
 
   /**
@@ -440,13 +544,10 @@ export function useRegistration() {
    * @param {{ openAt: Timestamp, createdBy: string }} match
    */
   function msUntilOpen(match) {
-    // El creador no espera: para él la lista está siempre abierta
-    if (match?.createdBy === authStore.user?.uid) return 0
-
-    const openAt = match?.openAt?.toMillis?.() ?? 0
-    const hasEarlyAccess = authStore.isOgInGroup(match?.groupId)
-    const threshold = hasEarlyAccess ? openAt - EARLY_ACCESS_MS : openAt
-
+    const { allowed, threshold } = registrationAccessFor(match, authStore)
+    // Sin derecho al partido (no sos del grupo, o sos invitado de otro link):
+    // no hay countdown que mostrar y la lista nunca se le abre.
+    if (!allowed) return Infinity
     return Math.max(0, threshold - Date.now())
   }
 
@@ -471,8 +572,10 @@ export function useRegistration() {
   function isInEarlyWindow(match) {
     const openAt = match?.openAt?.toMillis?.() ?? 0
     if (!openAt) return false
+    const earlyMs = earlyAccessMsFor(match)
+    if (earlyMs === 0) return false  // apertura inmediata: no existe la ventana
     const now = Date.now()
-    return now >= openAt - EARLY_ACCESS_MS && now < openAt
+    return now >= openAt - earlyMs && now < openAt
   }
 
   function stopListening() {

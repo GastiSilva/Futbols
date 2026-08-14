@@ -8,6 +8,18 @@
         <div class="text-subtitle2 text-green-3">Organizá tus partidos de fútbol amateur</div>
       </div>
 
+      <!-- Viene de un link de partido: se le recuerda a dónde va a volver, así
+           no parece que el login lo desvió de lo que estaba haciendo. -->
+      <q-banner v-if="fromInvite" dense rounded class="bg-green-1 text-green-10 q-mb-md text-left">
+        <template #avatar>
+          <q-icon name="sports_soccer" color="green-9" />
+        </template>
+        <div class="text-body2">
+          Entrá o creá tu cuenta y te llevamos derecho al partido — te sumamos
+          al grupo automáticamente.
+        </div>
+      </q-banner>
+
       <!-- Card de login -->
       <q-card class="q-pa-lg text-left" style="width: 100%">
         <q-card-section>
@@ -113,10 +125,15 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
+import { peekPendingInvite } from 'src/composables/useMatchInvite'
 
 const router = useRouter()
 const $q = useQuasar()
 const { loginWithGoogle, loginWithEmail, registerWithEmail, resetPassword, loading, error } = useAuth()
+
+// Hay una invitación a un partido esperando (llegó por un link compartido).
+// Se lee una sola vez al montar: el guard la consume después del login.
+const fromInvite = ref(!!peekPendingInvite())
 
 const mode = ref('login') // 'login' | 'register'
 const email = ref('')
@@ -151,7 +168,14 @@ async function handleEmailSubmit() {
       // /verificar-email igual (needsEmailVerification), pero le dejamos
       // dicho que después de confirmar el mail vaya a completar el perfil
       // en vez de al dashboard — es su primera vez, todavía no tiene nickname.
-      sessionStorage.setItem('postVerifyRedirect', '/perfil')
+      //
+      // Salvo que haya llegado por un link de partido compartido: ahí lo que
+      // vino a hacer es anotarse, no armar su perfil. Se deja que el guard
+      // consuma la invitación (lo lleva al partido y lo suma al grupo) y el
+      // perfil queda para cuando él quiera.
+      if (!peekPendingInvite()) {
+        sessionStorage.setItem('postVerifyRedirect', '/perfil')
+      }
     } else {
       await loginWithEmail(email.value, password.value)
     }

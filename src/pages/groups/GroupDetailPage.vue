@@ -552,15 +552,23 @@ function handleLeave() {
 function handleRemove(member) {
   $q.dialog({
     title: 'Expulsar miembro',
-    message: `¿Expulsar a ${member.displayName} del grupo?`,
+    message: `¿Expulsar a ${member.displayName} del grupo? Se va a generar un código de invitación nuevo, así no puede volver a entrar con el anterior. Los links que hayas compartido antes dejan de funcionar.`,
     cancel: { flat: true, label: 'Cancelar' },
     ok: { unelevated: true, color: 'negative', label: 'Expulsar' },
   }).onOk(async () => {
     try {
-      await removeMember(groupId, member.userId)
+      const { newInviteCode } = await removeMember(groupId, member.userId)
       members.value = members.value.filter(m => m.userId !== member.userId)
-      if (group.value) group.value.memberCount--
-      $q.notify({ type: 'positive', message: `${member.displayName} fue expulsado del grupo` })
+      if (group.value) {
+        group.value.memberCount = Math.max(0, (group.value.memberCount ?? 1) - 1)
+        group.value.inviteCode = newInviteCode
+      }
+      $q.notify({
+        type: 'positive',
+        message: `${member.displayName} fue expulsado del grupo`,
+        caption: `Nuevo código de invitación: ${newInviteCode}`,
+        timeout: 7000,
+      })
     } catch (err) {
       $q.notify({ type: 'negative', message: err.message })
     }

@@ -6,8 +6,22 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+    // Usuario con CUENTA real (Google o email/password). Los invitados
+    // anónimos (link de partido compartido) quedan deliberadamente afuera:
+    // isAuthenticated() es la base de casi todos los permisos de escritura de
+    // la app —crear partidos, sedes, grupos, perfil, votar MVP— y nada de eso
+    // les corresponde. Lo único que pueden hacer tiene su propia rama
+    // explícita: leer un partido y anotarse como invitado (ver isAnonGuest).
     function isAuthenticated() {
-      return request.auth != null;
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    // Invitado anónimo: entró por un link de partido compartido y todavía no
+    // creó una cuenta. Solo puede leer el partido/su lista y anotarse.
+    function isAnonGuest() {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider == 'anonymous';
     }
 
     function isAdmin() {
@@ -40,6 +54,16 @@ service cloud.firestore {
 
     function matchData(matchId) {
       return get(/databases/$(database)/documents/matches/$(matchId)).data;
+    }
+
+    // ¿El invitado anónimo tiene (o está creando) una inscripción en ESTE
+    // partido? Es lo que lo ata al partido de su link: sin esto, cualquier
+    // sesión anónima podía tocar el contador de cupos de cualquier partido.
+    // Se mira el estado FUTURO además del actual porque el alta crea el doc de
+    // inscripción y mueve currentPlayers en la misma transacción.
+    function guestHasEntryInMatch(matchId) {
+      return existsAfter(/databases/$(database)/documents/matches/$(matchId)/registrations/$(request.auth.uid))
+        || exists(/databases/$(database)/documents/matches/$(matchId)/registrations/$(request.auth.uid));
     }
 
     // ¿El caller tiene acceso anticipado en el grupo del partido?
@@ -224,7 +248,25 @@ service cloud.firestore {
     // ─────────────────────────────────────────────────────────────────────────
     match /matches/{matchId} {
 
-      allow read: if isAuthenticated();
+      // Leer un partido: un admin global, o alguien del grupo que lo organiza.
+      // Los partidos sin grupo (groupId null) son globales y los ve cualquier
+      // usuario con cuenta. Antes esto era `isAuthenticated()` a secas: CUALQUIER
+      // usuario logueado podía leer los partidos de TODOS los grupos, incluidos
+      // aquellos a los que no pertenece.
+      //
+      // Los invitados anónimos leen SOLO el partido del link que les compartieron
+      // (matchId == su guestMatchId, que el cliente fija al entrar). Como las
+      // reglas no ven el sessionStorage del cliente, se valida distinto: el
+      // invitado solo puede leer un partido puntual por id — nunca listarlos.
+      allow get: if
+        isAdmin()
+        || isAnonGuest()
+        || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)));
+
+      // Listar/consultar partidos (query): nunca un invitado anónimo. El filtro
+      // por grupo lo aplica el cliente (useMatch.subscribeToUpcoming); esta regla
+      // impide que un anónimo enumere la colección entera.
+      allow list: if isAuthenticated();
 
       // Crean partidos: admins globales, o CUALQUIER miembro del grupo del
       // partido (no hace falta ser owner/admin del grupo para armar una lista).
@@ -251,8 +293,20 @@ service cloud.firestore {
         // "== mismo valor" solo se permite cuando ya estaba en 0 (clamp de
         // useRegistration.removeRegistration al bajarse con el contador ya
         // en cero, un borde de estado inconsistente que no debe bloquearse).
+        // isAnonGuest incluido porque la transacción de inscripción/baja de un
+        // invitado del link también mueve este contador — con las mismas
+        // restricciones que todos: ±1, entero >= 0, y nada más que este campo.
+        // Un invitado anónimo solo mueve el contador del partido en el que
+        // TIENE una inscripción propia (la que acaba de crear, o la que está
+        // por borrar). Antes bastaba con ser anónimo: podía sumar o restar
+        // cupos en partidos de cualquier grupo, sin pertenecer a ninguno.
         (
-          (isAdmin() || isGroupless(matchId) || isMemberOfMatchGroup(matchId))
+          (
+            isAdmin()
+            || isGroupless(matchId)
+            || isMemberOfMatchGroup(matchId)
+            || (isAnonGuest() && guestHasEntryInMatch(matchId))
+          )
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['currentPlayers', 'updatedAt'])
           && request.resource.data.currentPlayers is int
@@ -297,7 +351,11 @@ service cloud.firestore {
                .hasOnly(['scoreA', 'scoreB', 'status', 'finishedAt', 'updatedAt'])
           && request.resource.data.scoreA is int && request.resource.data.scoreA >= 0
           && request.resource.data.scoreB is int && request.resource.data.scoreB >= 0
-          && request.resource.data.status in ['scheduled', 'open', 'closed', 'finished']
+          // Cargar un resultado SOLO puede dejar el partido en 'finished'. Antes
+          // se aceptaba cualquiera de los cuatro estados, así que un miembro
+          // común podía mandar `status: 'closed'` por esta rama y cerrarle la
+          // lista a todo el grupo en pleno horario de inscripción.
+          && request.resource.data.status == 'finished'
         )
 
         ||
@@ -325,7 +383,44 @@ service cloud.firestore {
       // ──────────────────────────────────────────────────────────────────────
       match /registrations/{userId} {
 
-        allow read: if isAuthenticated();
+        // Ver quién está anotado: gente del grupo del partido (o admin, o
+        // partido global). Antes cualquier autenticado leía las listas de
+        // todos los grupos.
+        //
+        // ⚠️ `get` y `list` van SEPARADOS, y el invitado anónimo NO puede
+        // condicionarse a "tener ya una inscripción". Dos motivos:
+        //
+        //  (1) Dependencia circular en el alta. `registerEntry` abre la
+        //      transacción leyendo su propio doc de inscripción para detectar
+        //      si ya se anotó (matches/{id}/registrations/{su-uid}). Ese doc
+        //      todavía NO existe, así que una condición tipo
+        //      guestHasEntryInMatch() lo rechaza: no lo dejan leer porque no
+        //      está anotado, y no se puede anotar porque no lo dejan leer.
+        //      Ese era el 403 (PERMISSION_DENIED en :batchGet) al apretar
+        //      "Anotarme". `existsAfter` tampoco lo salva: en la fase de
+        //      LECTURA de la transacción no hay estado futuro que mirar.
+        //
+        //  (2) Una condición que dependa de un documento puntual es
+        //      incompatible con `list`: Firestore evalúa las reglas de query
+        //      SIN leer los docs, así que la query entera (el onSnapshot con
+        //      orderBy('position') de subscribeToRegistrations) se rechaza
+        //      aunque el invitado ya estuviera anotado.
+        //
+        // Lo que ata al invitado a SU partido no se pierde: sigue vigente
+        // donde importa — mover el contador de cupos (guestHasEntryInMatch en
+        // el update de matches) y crear/borrar su propia inscripción. Leer la
+        // lista de un partido cuyo id no conoce no es un riesgo real: para
+        // llegar acá necesita el matchId exacto, que es justamente el link que
+        // le compartieron.
+        allow get: if
+          isAdmin()
+          || isAnonGuest()
+          || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)));
+
+        allow list: if
+          isAdmin()
+          || isAnonGuest()
+          || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)));
 
         // ── ALTA ──────────────────────────────────────────────────────────
         // Tres ventanas posibles:
@@ -337,13 +432,36 @@ service cloud.firestore {
         //      y SOLO puede anotarse a sí mismo o a otro miembro que TAMBIÉN
         //      tenga acceso anticipado. Invitados no.
         allow create: if
-          isAuthenticated()
+          (isAuthenticated() || isAnonGuest())
           && (
             // (0) creador del partido → él mismo, sin restricción de horario
             (
               isOwner(userId)
               && request.resource.data.userId == request.auth.uid
               && isMatchCreator(matchId)
+            )
+
+            ||
+
+            // (0b) INVITADO ANÓNIMO (link de partido compartido): tiene sesión
+            // de Firebase pero sin cuenta (provider anónimo), así que no es
+            // miembro de ningún grupo y ninguna otra rama lo dejaría entrar.
+            // Se anota como invitado (isGuest, userId null) — no acumula
+            // estadísticas — y SOLO a partir de openAt: nunca en la ventana
+            // anticipada, igual que cualquier otro invitado.
+            //
+            // `isOwner(userId)` NO sirve acá (excluye anónimos): se compara el
+            // docId contra el uid a mano. Que el docId sea su propio uid es lo
+            // que ata al invitado a UNA inscripción por partido y permite que
+            // el resto de las reglas verifiquen que el contador de cupos que
+            // mueve es el de SU partido (guestHasEntryInMatch).
+            (
+              isAnonGuest()
+              && userId == request.auth.uid
+              && request.time >= matchData(matchId).openAt
+              && request.resource.data.isGuest == true
+              && request.resource.data.userId == null
+              && request.resource.data.addedBy == request.auth.uid
             )
 
             ||
@@ -383,9 +501,13 @@ service cloud.firestore {
 
             ||
 
-            // (2) ventana anticipada (30 min antes de openAt)
+            // (2) ventana anticipada (30 min antes de openAt). No aplica a los
+            // partidos de apertura inmediata (instantOpen): ahí la lista se
+            // abrió en el momento y arrancan todos juntos, sin adelanto para
+            // los OG — solo queda la rama (1), que exige request.time >= openAt.
             (
-              request.time >= matchData(matchId).openAt - duration.value(30, 'm')
+              matchData(matchId).get('instantOpen', false) == false
+              && request.time >= matchData(matchId).openAt - duration.value(30, 'm')
               && (hasEarlyAccessInMatchGroup(matchId) || isMatchCreator(matchId))
               && (
                 // me anoto yo mismo
@@ -421,7 +543,10 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['team'])
           );
 
-        // Cancelar inscripción: uno mismo, admin, o quien lo anotó (invitado/miembro)
+        // Cancelar inscripción: uno mismo, admin, o quien lo anotó (invitado/
+        // miembro). El invitado anónimo entra por la última condición: su
+        // propio uid quedó en `addedBy` al anotarse, así que puede bajarse
+        // solo — pero solo de SU inscripción, no de la de otro.
         allow delete: if
           isOwner(userId)
           || isAdmin()
@@ -514,8 +639,22 @@ service cloud.firestore {
         // moviéndose de a UNO por vez (mismo patrón que currentPlayers en
         // matches) — antes cualquier autenticado, ni siquiera miembro, podía
         // pisarlo con cualquier valor.
+        // ⚠️ BUG CORREGIDO: acá decía `isOwner(request.auth.uid)`, que compara
+        // el uid del que llama CONSIGO MISMO — siempre true para cualquier
+        // usuario autenticado. Eso anulaba el `isMemberOfGroup` de al lado y
+        // dejaba que CUALQUIERA moviera el contador de CUALQUIER grupo.
+        //
+        // El caso legítimo que se quería cubrir es el alta propia: joinGroup y
+        // acceptJoinRequest crean el doc de member y actualizan memberCount en
+        // la MISMA transacción, y cuando se evalúa esta regla el member doc
+        // todavía no existe. Se resuelve mirando el estado FUTURO
+        // (getAfter) en vez de confiar en una comparación tautológica.
         (
-          (isMemberOfGroup(groupId, request.auth.uid) || isOwner(request.auth.uid))
+          (
+            isMemberOfGroup(groupId, request.auth.uid)
+            || exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+            || existsAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid))
+          )
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['memberCount', 'updatedAt'])
           && request.resource.data.memberCount is int

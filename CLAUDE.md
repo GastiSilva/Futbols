@@ -2,6 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Cómo explicarle las cosas al usuario
+
+**El usuario habla español. Respondé siempre en español.**
+
+Cuando expliques un problema —sobre todo de **seguridad**, de datos o de arquitectura— usá SIEMPRE dos capas, en este orden:
+
+1. **La técnica**: qué pasa, en qué archivo/línea, con el vocabulario preciso.
+2. **La cotidiana**: la misma idea con una analogía simple, preferentemente **de fútbol** (el vestuario, el árbitro, la lista del partido, el DT, la cancha).
+
+Ejemplo del formato esperado:
+
+> **Técnico:** `isOwner(request.auth.uid)` compara el uid del que llama consigo mismo, así que siempre devuelve `true` y anula el `isMemberOfGroup` contiguo.
+>
+> **En criollo:** es como poner un tipo en la puerta del vestuario que, para dejarte pasar, te pide que muestres tu DNI y lo compara… con tu propio DNI. Obvio que coincide. Con eso entra cualquiera.
+
+La analogía no reemplaza a la explicación técnica: van las dos, siempre. Sin la técnica no se puede arreglar; sin la cotidiana no se entiende qué está en juego.
+
 ## Project Overview
 
 **Futbols** is a PWA for organizing amateur football matches. Players register for matches, track stats, and get FCM push notifications when lists open. Global roles: `player` (default) and `admin` (Firebase custom claim `admin === true`). Per-group, members can have **early access** (30-min early registration): OG flag (`members.og`) or group `owner`/`admin` role.
@@ -19,6 +36,9 @@ npm run build:pwa   # PWA build — this is what gets deployed to Firebase Hosti
 # Lint / Format
 npm run lint        # ESLint (auto-fix enabled via quasar.config.js)
 npm run format      # Prettier
+
+# Tests de las reglas de seguridad (requiere Java para el emulador)
+npm run test:rules  # levanta el emulador de Firestore, corre los tests y lo baja
 
 # Deploy (Firebase)
 firebase deploy                    # full deploy
@@ -58,6 +78,13 @@ firebase emulators:start
 - The **match creator can register HIMSELF from moment zero** (no time restriction at all) — client (`creatorSelf` in `registerEntry`, `canRegister`, `msUntilOpen`) and rules (`isMatchCreator(matchId)`, branch (0) of registrations create).
 - During the early window, **only members who ALSO have early access can be registered** (by themselves or by someone with early access / the creator). Guests and regular members must wait for `openAt`. Enforced in `registerEntry` (reads the target's member doc inside the transaction) and in rules branch (2).
 - Early-access members (OG + owner + admins) get the push 30 min before `openAt` via `_matchOgNotifyQueue` → `processMatchOgNotifyQueue` → `sendFCMToGroupOGs` (queries both `og == true` and `role in ['owner','admin']`). Matches with no `groupId` have no early access.
+
+**Instant-open lists (`instantOpen`)**: the "Abrir la lista ahora" toggle in `CreateMatchPage` sets `openAt = now` and `matches/{id}.instantOpen = true`. That flag **cancels the 30-min early-access window entirely** — everyone in the group registers from the same instant and the FCM goes out to the whole group at once (no OG head start). Enforced in three places that must agree: `earlyAccessMsFor(match)` in `useRegistration.js` (returns 0 instead of `EARLY_ACCESS_MS`, used by `registerEntry`/`canRegister`/`msUntilOpen`/`isInEarlyWindow`), branch (2) of the registrations `create` rule (`instantOpen == false`), and `scheduleMatchOpenNotification` (skips `enqueueOgEarlyNotify`). Since `openAt` is already past, the callable flips the match to `open` immediately, which fires `onMatchOpened` → `sendFCMToGroupMembers`.
+
+**Shared match links / guest mode**: "Compartir lista" appends `/invitacion/{matchId}` (`buildMatchInviteLink`). That public route (`MatchInvitePage`) branches three ways: already logged in → straight to the match; **guest** → Firebase **anonymous auth** (`loginAsGuest`), which registers them as `isGuest: true` (auto-id doc, `userId: null`, so no stats/MVP — exactly what the UI promises); or log in / sign up → full circuit (login → match → auto-join the group via `useMatchInvite.joinMatchGroup`, triggered by `?invitado=1`).
+- **`isAuthenticated()` in the rules now EXCLUDES anonymous users** (`sign_in_provider != 'anonymous'`) — it gates nearly every write in the app. Guests get narrow explicit branches instead (`isAnonGuest()`): read matches/registrations, branch (0b) of registrations create (only `isGuest` docs, only from `openAt`), and `currentPlayers` for their transaction.
+- Guests are confined to `allowGuest` routes (`player-dashboard`, `match-detail`) by the router guard; anything else bounces them back to their match with `?registrate=1`, which opens the "create an account" dialog. `authStore.isGuest` / `guestMatchId` (persisted in sessionStorage, since the anonymous session survives a refresh) gate the UI; `guestMatchId` is also the only match they may join.
+- The pending-invite intent survives the `/login` round trip via sessionStorage (`useMatchInvite.setPendingInvite`/`consumePendingInvite`), same pattern as group invites. The FCM boot skips anonymous users (no `users/` doc to write a token to).
 
 **Registering others**: `useRegistration.registerEntry` is the shared transactional core. `joinMatch` (self), `addGuestToMatch` (guest with no account → auto-id docId, `userId: null`, `isGuest: true`, `guestName`), and `addMemberToMatch` (another existing member → docId = their uid) all go through it. Every registration records `addedBy`/`addedByName`. `removeRegistration(matchId, registrationId)` cancels any entry (self via `leaveMatch`, or whoever set `addedBy`, or admin). UI lives in `DashboardPage` (the "Anotar a otra persona" dialog, which hides the guest option and filters members during the early window).
 
@@ -123,16 +150,26 @@ All functions deployed to `southamerica-east1`. Written with Firebase Functions 
 | Export | Type | Purpose |
 |---|---|---|
 | `scheduleMatchOpenNotification` | Callable | Enqueues a match to `_matchOpenQueue`, and (if it has a group) the OG early-notify to `_matchOgNotifyQueue`. Callable by a global admin OR the owner/admin of the match's group (`assertCanManageMatchNotifications`) |
-| `processMatchOpenQueue` | Scheduled (every 1 min) | Opens matches whose `openAt` has passed |
 | `scheduleMatchReminderNotification` | Callable | Enqueues a reminder to `_matchReminderQueue` (same permission as above) |
 | `onPlayerStatsWritten` | Firestore trigger | On any write to `matches/{id}/playerStats/{uid}`, delta-updates the user's `stats`/`statsByGroup` accumulator — idempotent, so clients never write another user's doc and re-saving a result doesn't double-count |
-| `processMatchReminderQueue` | Scheduled (every 1 min) | Sends FCM reminders via `sendFCMToAllUsers` |
-| `processMatchOgNotifyQueue` | Scheduled (every 1 min) | Sends the 30-min-early push to the group's early-access members (OG + owner/admin) via `sendFCMToGroupOGs` |
+| **`processScheduledTasks`** | **Scheduled (every 1 min) — ÚNICO job** | Despachador de TODO el trabajo periódico (ver abajo) |
 | `setAdminClaim` | Callable | Sets Firebase custom claim `admin` (admin-only) |
 | `setUserRole` | Callable | Updates both Firestore role field and custom claim |
 | `onMatchOpened` | Firestore trigger | Sends FCM broadcast when match status → `open` |
 | `onRegistrationDeleted` | Firestore trigger | On registration delete: renumbers positions, recomputes `isOnWaitlist`, notifies promoted substitutes (`sendFCMToUser`); if no substitute filled the gap and the list is open, **broadcasts a free-spot alert to everyone** (`sendFCMToAllUsers`, minus those already registered); otherwise notifies the match creator |
 | `recalcAllStats` | Callable (admin-only) | Full rebuild of every user's `stats`/`statsByGroup` from all `playerStats` docs (collectionGroup scan). Needed because the delta accumulator can't recover results saved while `onPlayerStatsWritten` was undeployed. Triggered from the "Recalcular estadísticas" card in `AdminDashboardPage` |
+
+**Schedulers unificados**: Cloud Scheduler regala **3 jobs por proyecto**; el proyecto tenía **5** (los 2 extra se facturaban). Ahora hay **un solo job**, `processScheduledTasks`, que corre cada minuto y despacha las tareas de `SCHEDULED_TASKS` según su `everyMinutes`:
+
+| Tarea (función interna) | Cada | Qué hace |
+|---|---|---|
+| `runMatchOpenQueue` | 1 min | Abre los partidos cuyo `openAt` ya pasó |
+| `runMatchOgNotifyQueue` | 1 min | Push anticipado (30 min antes) a los OG del grupo |
+| `runMatchReminderQueue` | 1 min | Recordatorios de que la lista abre pronto |
+| `runMatchLowSignupAlert` | 10 min | Avisa si faltan jugadores 6-8hs antes |
+| `runAutoCloseMatches` | 60 min | Bloquea resultado/votación a las 36hs de terminado |
+
+El intervalo se respeta con `minuteOfEpoch % everyMinutes`. **Cada tarea corre dentro de su propio `try/catch`**: si una falla, se loguea y las demás siguen — antes cada job fallaba aislado por definición, y sin ese catch un error habría tumbado a todas. Para agregar una tarea periódica nueva, sumá una entrada a `SCHEDULED_TASKS`, **no** un `onSchedule` nuevo.
 
 `sendFCMToAllUsers(title, body, data, excludeUserIds = [])` reads all users' `fcmToken`/`fcmTokens`, sends in batches of 500 via `sendEachForMulticast`, and cleans up invalid tokens automatically. **`excludeUserIds` skips users already registered to the match** — the `match_reminder`, `match_open` (via `onMatchOpened`), and open-queue notifications all pass `getRegisteredUserIds(matchId)` so people already signed up don't get pinged (guests have `userId: null` and are naturally excluded). `sendFCMToUser(userId, ...)` targets a single user.
 
@@ -152,6 +189,11 @@ The SW calls `clientsClaim()` unconditionally, but deliberately does **not** cal
 - **Registration create** has 3 branches: (0) match creator registering himself — anytime; (1) `request.time >= openAt` — self/guest/member; (2) early window (`openAt - 30m`) — caller must have early access (or be creator) and the target member must ALSO have early access; guests never allowed early
 - Users can update their own profile fields but never `stats`/`statsByGroup`/`role`; those are writable from the client ONLY by a global admin (normally written by the `onPlayerStatsWritten` CF via admin SDK, which bypasses rules)
 - **Create a match**: global admin, OR the owner/admin of the group set in `groupId` (`createdBy` must be self). **Load a result** (`scoreA`/`scoreB`/`status`/`mvpUserId`/`mvpName` + `playerStats`): any member of the match's group, or admin
+- **Aislamiento entre grupos** (corregido): leer un partido y su lista de inscriptos exige ser **miembro del grupo** del partido (o admin, o partido sin grupo). Antes era `isAuthenticated()` a secas, o sea cualquier usuario logueado veía los partidos y las listas de TODOS los grupos. `allow get` / `allow list` están separados para que un invitado anónimo pueda leer su partido puntual pero nunca enumerar la colección.
+- **Invitado anónimo confinado a su partido**: su inscripción usa **`docId = su uid`** (antes era auto-id). Eso permite que las reglas verifiquen, vía `guestHasEntryInMatch(matchId)`, que el `currentPlayers` que mueve es el del partido donde está anotado — antes bastaba con ser anónimo para tocar el contador de cualquier partido. También le impide anotarse dos veces al mismo partido. Los invitados **sin cuenta** (anotados por otro jugador) siguen usando auto-id, porque una persona puede anotar a varios.
+  - ⚠️ `guestHasEntryInMatch` sirve **solo en escrituras**, nunca en `read`. Condicionar la LECTURA de `registrations` a "ya tenés una inscripción" genera una **dependencia circular** que rompe el alta: `registerEntry` abre la transacción leyendo su propio doc de inscripción (que todavía no existe) para detectar dobles altas → `PERMISSION_DENIED` en `:batchGet` al apretar "Anotarme". `existsAfter` tampoco lo salva: en la fase de lectura de la transacción no hay estado futuro. Además, una condición que dependa de un doc puntual es incompatible con `list` (Firestore evalúa las queries sin leer documentos), así que el `onSnapshot` de la lista se rechazaba entero. Por eso `registrations` tiene `get` y `list` **separados** y el invitado anónimo puede leer cualquier lista: para llegar necesita el matchId exacto, que es el link que le compartieron, y lo que de verdad lo confina (mover cupos, crear/borrar su inscripción) sigue verificado.
+- **`memberCount`**: solo miembros del grupo (o quien se está uniendo en esa misma transacción, verificado con `existsAfter`). La versión anterior usaba `isOwner(request.auth.uid)`, que compara el uid consigo mismo y **siempre da true** — cualquiera podía pisar el contador de cualquier grupo.
+- **Cargar un resultado solo puede dejar `status: 'finished'`**. Antes aceptaba cualquiera de los cuatro estados, así que un miembro común podía mandar `'closed'` por esa rama y cerrarle la lista al grupo en pleno horario de inscripción.
 - `currentPlayers` on a match can be updated by any authenticated user (required for the transaction pattern)
 - `joinRequests` can never be deleted (even by admins); they are soft-deleted via status field
 - `venues`: read by any authenticated user; create requires `createdBy == request.auth.uid`; **update by any authenticated user** (the "only OGs can edit" intent is UI-only via `canEditVenue` — OG is per-group and venues are global, so rules can't verify cross-group OG status; venues are low-risk and denormalized into matches); **delete** only by creator or global admin (`canDeleteVenue`)
@@ -169,6 +211,14 @@ VITE_FIREBASE_APP_ID
 VITE_FIREBASE_MEASUREMENT_ID
 VITE_FIREBASE_VAPID_KEY      ← required for FCM getToken()
 ```
+
+## Tests
+
+`tests/firestore.rules.test.js` — 26 tests de las reglas de seguridad contra el emulador (`npm run test:rules`, necesita Java). Cubren: aislamiento entre grupos (leer partidos y listas), quién puede borrar un partido, la rama de resultado que no debe poder cerrar listas, `memberCount`, el confinamiento del invitado anónimo a su partido, campos de perfil no escribibles (`stats`/`role`) y la auto-promoción a admin/OG de un grupo.
+
+Detalle de implementación: todos los datos de prueba se escriben en el `beforeEach` **global** con `withSecurityRulesDisabled`, y los contextos de auth se cachean en `ctxCache`. Abrir `withSecurityRulesDisabled` dentro de un `describe` anidado, después de que un contexto ya se usó, rompe con `Firestore has already been started`.
+
+Al agregar o cambiar una regla en `firestore.rules`, sumá el test correspondiente acá.
 
 ## Known Issues
 

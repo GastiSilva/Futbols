@@ -32,10 +32,17 @@ exports.scheduleMatchOpenNotification = onCall(
 
     // Grupo del partido (para el aviso anticipado a los OG). Puede no tener grupo.
     const matchSnap = await db.collection('matches').doc(matchId).get()
-    const groupId = matchSnap.exists ? (matchSnap.data().groupId ?? null) : null
+    const matchInfo = matchSnap.exists ? matchSnap.data() : {}
+    const groupId = matchInfo.groupId ?? null
+    const instantOpen = matchInfo.instantOpen === true
 
     // Programa el aviso anticipado a los OG del grupo (30 min antes de abrir).
-    await enqueueOgEarlyNotify(db, { matchId, matchTitle, groupId, openAtDate })
+    // En un partido de apertura inmediata no va: la lista abre ahora y el
+    // aviso le llega a TODO el grupo de una sola vez (vía onMatchOpened), sin
+    // que los OG reciban nada antes que el resto.
+    if (!instantOpen) {
+      await enqueueOgEarlyNotify(db, { matchId, matchTitle, groupId, openAtDate })
+    }
 
     // Si ya pasó la hora de apertura, abrir el partido directamente
     if (openAtDate <= new Date()) {
@@ -82,10 +89,22 @@ async function enqueueOgEarlyNotify(db, { matchId, matchTitle, groupId, openAtDa
   logger.info(`Aviso OG encolado: ${matchId} (grupo ${groupId}) a ${ogNotifyAt.toISOString()}`)
 }
 
-// ── Scheduled: cada minuto, enviar avisos anticipados a los OG ───────────────
-exports.processMatchOgNotifyQueue = onSchedule(
-  { region: LOCATION, schedule: 'every 1 minutes' },
-  async () => {
+// ─────────────────────────────────────────────────────────────────────────────
+//  SCHEDULERS
+//
+//  Todo el trabajo periódico corre en UN SOLO job de Cloud Scheduler
+//  (`processScheduledTasks`, más abajo) que cada minuto despacha estas tareas.
+//  Antes eran 5 jobs separados; Cloud Scheduler regala 3 por proyecto, así que
+//  el 4° y 5° se facturaban. Cada tarea sigue siendo una función independiente
+//  y testeable — lo único que cambió es quién las dispara.
+//
+//  Las que no necesitan correr cada minuto llevan su propio intervalo interno
+//  (ver TASK_INTERVALS): el despachador se saltea las que no toca.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Tarea: enviar avisos anticipados a los OG ────────────────────────────────
+async function runMatchOgNotifyQueue() {
+  {
     const now = admin.firestore.Timestamp.now()
     const db = admin.firestore()
 
@@ -117,13 +136,12 @@ exports.processMatchOgNotifyQueue = onSchedule(
       )
       logger.info(`Aviso OG enviado: ${matchId} (grupo ${groupId})`)
     }
-  },
-)
+  }
+}
 
-// ── 2. Scheduled: cada minuto, abrir partidos que llegaron a su hora ─────────
-exports.processMatchOpenQueue = onSchedule(
-  { region: LOCATION, schedule: 'every 1 minutes' },
-  async () => {
+// ── Tarea: abrir partidos que llegaron a su hora ─────────────────────────────
+async function runMatchOpenQueue() {
+  {
     const now = admin.firestore.Timestamp.now()
     const db = admin.firestore()
 
@@ -146,7 +164,7 @@ exports.processMatchOpenQueue = onSchedule(
 
     await writeBatch.commit()
 
-    for (const { matchId, matchTitle } of toProcess) {
+    for (const { matchId } of toProcess) {
       await db.collection('matches').doc(matchId).update({
         status: 'open',
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -157,8 +175,8 @@ exports.processMatchOpenQueue = onSchedule(
       // después volvía a notificar a los mismos usuarios (doble push).
       logger.info(`Partido abierto por scheduler: ${matchId}`)
     }
-  },
-)
+  }
+}
 
 // ── 3. Callable: programar recordatorio ──────────────────────────────────────
 exports.scheduleMatchReminderNotification = onCall(
@@ -200,10 +218,9 @@ exports.scheduleMatchReminderNotification = onCall(
   },
 )
 
-// ── 4. Scheduled: cada minuto, enviar recordatorios ──────────────────────────
-exports.processMatchReminderQueue = onSchedule(
-  { region: LOCATION, schedule: 'every 1 minutes' },
-  async () => {
+// ── Tarea: enviar recordatorios ──────────────────────────────────────────────
+async function runMatchReminderQueue() {
+  {
     const now = admin.firestore.Timestamp.now()
     const db = admin.firestore()
 
@@ -240,8 +257,8 @@ exports.processMatchReminderQueue = onSchedule(
       }
       logger.info(`Recordatorio enviado por scheduler: ${matchId}`)
     }
-  },
-)
+  }
+}
 
 // ── 5b. Scheduled: avisar 6-8hs antes del partido si faltan jugadores ────────
 // Corre cada 10 min. Para cada partido cuya `date` cae dentro de la ventana
@@ -249,9 +266,8 @@ exports.processMatchReminderQueue = onSchedule(
 // le faltan jugadores, manda UN aviso (marca `lowSignupAlertSent` para no
 // repetirlo) a los miembros del grupo del partido (o a todos si no tiene
 // grupo), excluyendo a quienes ya están anotados.
-exports.processMatchLowSignupAlert = onSchedule(
-  { region: LOCATION, schedule: 'every 10 minutes' },
-  async () => {
+async function runMatchLowSignupAlert() {
+  {
     const db = admin.firestore()
     const now = new Date()
     const windowStart = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + 6 * 60 * 60 * 1000))
@@ -301,8 +317,8 @@ exports.processMatchLowSignupAlert = onSchedule(
       }
       logger.info(`Aviso de faltan jugadores enviado: ${matchId} (faltan ${missing})`)
     }
-  },
-)
+  }
+}
 
 // ── 5c. Scheduled: auto-cerrar resultado/votación de MVP a las 36hs ──────────
 // Corre cada hora. Un partido 'finished' hace más de 36hs (desde finishedAt,
@@ -310,9 +326,8 @@ exports.processMatchLowSignupAlert = onSchedule(
 // la votación de MVP (si no se cerró antes a mano) y marca resultLocked:true,
 // lo que bloquea en las reglas la edición de scoreA/scoreB/status/playerStats.
 // Un admin global siempre puede seguir editando después de esto.
-exports.processAutoCloseMatches = onSchedule(
-  { region: LOCATION, schedule: 'every 60 minutes' },
-  async () => {
+async function runAutoCloseMatches() {
+  {
     const db = admin.firestore()
     const threshold = admin.firestore.Timestamp.fromDate(new Date(Date.now() - 36 * 60 * 60 * 1000))
 
@@ -341,6 +356,41 @@ exports.processAutoCloseMatches = onSchedule(
         logger.info(`processAutoCloseMatches: ${docSnap.id} bloqueado (finishedAt hace más de 36hs)`)
       } catch (error) {
         logger.error(`processAutoCloseMatches: error en ${docSnap.id}`, error)
+      }
+    }
+  }
+}
+
+// ── Despachador único de tareas periódicas ───────────────────────────────────
+// Un solo job de Cloud Scheduler (de los 3 gratuitos) en vez de 5.
+//
+// Cada tarea declara cada cuántos minutos corre. El despachador arranca cada
+// minuto y ejecuta las que corresponden según el minuto absoluto del reloj
+// (epoch / 60000), así que el ritmo de cada una se mantiene igual que cuando
+// tenía su propio job.
+//
+// Las tareas se ejecutan de forma AISLADA: si una falla, se registra el error
+// y las demás siguen. Antes, cada job fallaba por su cuenta sin afectar al
+// resto; sin este try/catch por tarea, un error habría tumbado a todas.
+const SCHEDULED_TASKS = [
+  { name: 'matchOpenQueue',     everyMinutes: 1,  run: runMatchOpenQueue },
+  { name: 'matchOgNotifyQueue', everyMinutes: 1,  run: runMatchOgNotifyQueue },
+  { name: 'matchReminderQueue', everyMinutes: 1,  run: runMatchReminderQueue },
+  { name: 'lowSignupAlert',     everyMinutes: 10, run: runMatchLowSignupAlert },
+  { name: 'autoCloseMatches',   everyMinutes: 60, run: runAutoCloseMatches },
+]
+
+exports.processScheduledTasks = onSchedule(
+  { region: LOCATION, schedule: 'every 1 minutes' },
+  async () => {
+    const minuteOfEpoch = Math.floor(Date.now() / 60000)
+
+    for (const task of SCHEDULED_TASKS) {
+      if (minuteOfEpoch % task.everyMinutes !== 0) continue
+      try {
+        await task.run()
+      } catch (error) {
+        logger.error(`processScheduledTasks: falló la tarea "${task.name}"`, error)
       }
     }
   },
@@ -942,7 +992,11 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           return null
         }
 
-        const maxPlayers = match.maxPlayers ?? 0
+        // Formato libre (maxPlayers null) = sin límite: NUNCA hay suplentes.
+        // No colapsar a 0 — `pos > 0` sería true para todos y marcaría a todo
+        // el partido como lista de espera. Mismo criterio que registerEntry
+        // (useRegistration.js), que chequea `maxPlayers != null` explícitamente.
+        const maxPlayers = match.maxPlayers ?? null
         const regsSnap = await tx.get(
           matchRef.collection('registrations').orderBy('position', 'asc'),
         )
@@ -953,7 +1007,7 @@ exports.onRegistrationDeleted = onDocumentDeleted(
         regsSnap.docs.forEach((docSnap) => {
           pos += 1
           const reg = docSnap.data()
-          const isOnWaitlist = pos > maxPlayers
+          const isOnWaitlist = maxPlayers != null && pos > maxPlayers
 
           if (reg.position !== pos || reg.isOnWaitlist !== isOnWaitlist) {
             tx.update(docSnap.ref, { position: pos, isOnWaitlist })
@@ -978,9 +1032,12 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           // 'scheduled' → 'open' corre cada 1 min y puede tener lag; el mismo
           // criterio que getEffectiveStatus() en el cliente (useMatch.js) es
           // "no está cerrado ni terminado", no el string exacto 'open'.
+          // En formato libre (maxPlayers null) nunca hay "lugar que se liberó":
+          // no hay cupo que llenar, así que no corresponde el broadcast masivo.
           spotOpen:
             match.status !== 'closed' &&
             match.status !== 'finished' &&
+            maxPlayers != null &&
             regsSnap.size < maxPlayers,
           registeredUserIds,
         }
@@ -1106,11 +1163,27 @@ exports.onUserDescriptionChanged = onDocumentUpdated(
 )
 
 // ── Helper: ¿el caller es owner/admin del grupo del partido? ─────────────────
-async function isCallerGroupManagerOfMatch(uid, matchId) {
+// ¿Puede este uid programar las notificaciones de ESTE partido?
+//
+// Las reglas de Firestore dejan crear un partido a CUALQUIER miembro del grupo,
+// pero esta comprobación exigía owner/admin: un `member` creaba la lista y
+// después no podía programarle la apertura (permission-denied).
+//
+// Con listas programadas a futuro el problema quedaba tapado —el partido nacía
+// 'scheduled' y la cola lo abría igual—, pero con `instantOpen` la apertura
+// depende por completo de esta llamada: si falla, el partido queda 'scheduled'
+// PARA SIEMPRE y no se envía ninguna notificación. Por eso el permiso ahora
+// coincide con el de crear: el CREADOR del partido puede programar lo suyo.
+async function canCallerScheduleMatchNotifications(uid, matchId) {
   const db = admin.firestore()
   const matchSnap = await db.collection('matches').doc(matchId).get()
   if (!matchSnap.exists) return false
-  const groupId = matchSnap.data().groupId
+  const match = matchSnap.data()
+
+  // El creador del partido siempre puede programar SUS notificaciones
+  if (match.createdBy === uid) return true
+
+  const groupId = match.groupId
   if (!groupId) return false
   const memberSnap = await db
     .collection('groups').doc(groupId)
@@ -1125,7 +1198,7 @@ async function isCallerGroupManagerOfMatch(uid, matchId) {
 async function assertCanManageMatchNotifications(auth, matchId) {
   if (auth?.token?.admin === true) return
   const uid = auth?.uid
-  if (uid && (await isCallerGroupManagerOfMatch(uid, matchId))) return
+  if (uid && (await canCallerScheduleMatchNotifications(uid, matchId))) return
   throw new HttpsError(
     'permission-denied',
     'No tenés permiso para programar notificaciones de este partido.',

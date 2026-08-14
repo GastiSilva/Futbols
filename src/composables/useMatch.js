@@ -106,13 +106,21 @@ export function useMatch() {
     const rawMatches = ref([])
 
     function applyGroupFilter() {
+      // Invitado del link: solo su partido. No pertenece a ningún grupo, así
+      // que el filtro de abajo le dejaría ver todos los partidos globales —
+      // que no le corresponden y no puede usar para nada.
+      if (authStore.isGuest) {
+        matches.value = rawMatches.value.filter((m) => m.id === authStore.guestMatchId)
+        return
+      }
+
       matches.value = authStore.superAdminMode
         ? rawMatches.value
         : rawMatches.value.filter((m) => !m.groupId || authStore.isMemberOfGroup(m.groupId))
     }
 
     const stopWatch = watch(
-      () => [authStore.memberGroupIds.slice(), authStore.superAdminMode],
+      () => [authStore.memberGroupIds.slice(), authStore.superAdminMode, authStore.guestMatchId],
       applyGroupFilter,
     )
 
@@ -184,6 +192,10 @@ export function useMatch() {
         format: formData.format,
         maxPlayers,
         currentPlayers: 0,
+        // Lista abierta en el momento: no hay ventana de acceso anticipado.
+        // Todos (OG, owner/admin y miembros comunes) se anotan desde el mismo
+        // instante y la notificación sale para todo el grupo a la vez.
+        instantOpen: formData.instantOpen === true,
         status: MATCH_STATUS.SCHEDULED,
         scoreA: null,
         scoreB: null,

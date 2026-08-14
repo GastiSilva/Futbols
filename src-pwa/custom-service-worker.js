@@ -59,7 +59,7 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
-      icon:  '/icons/brazuca.png',       // pelota de futbol
+      icon:  '/icons/notification-icon.png',   // escudo YASTA
       badge: '/icons/icon-128x128.png',
       data,
     })

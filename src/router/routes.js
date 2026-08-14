@@ -8,6 +8,17 @@ const routes = [
     meta: { public: true },
   },
   {
+    // Landing del link de partido compartido (`/invitacion/{matchId}`).
+    // Pública a propósito: quien la abre puede no tener cuenta todavía. Desde
+    // acá elige entrar como invitado (sesión anónima), con su cuenta, o —si ya
+    // tiene sesión— seguir derecho al partido. Fuera del MainLayout: no tiene
+    // sentido mostrarle el drawer de la app a alguien que aún no entró.
+    path: '/invitacion/:id',
+    name: 'match-invite',
+    component: () => import('src/pages/player/MatchInvitePage.vue'),
+    meta: { public: true, allowGuest: true },
+  },
+  {
     // Pantalla de espera para cuentas de email/contraseña sin verificar.
     // requiresAuth (necesita sesión) pero NO public — el guard la deja
     // pasar aunque needsEmailVerification esté activo (ver router/index.js).
@@ -24,16 +35,21 @@ const routes = [
     children: [
       // Jugador
       {
+        // allowGuest: las dos únicas pantallas que ve un invitado anónimo
+        // (llegó por un link compartido y todavía no creó cuenta). El resto
+        // — perfil, ranking, grupos, sedes — lo rebota el guard a la
+        // invitación a registrarse, porque sin doc en users/ ni grupos esas
+        // pantallas no tendrían nada que mostrarle.
         path: '',
         name: 'player-dashboard',
         component: () => import('src/pages/player/DashboardPage.vue'),
-        meta: { requiresAuth: true },
+        meta: { requiresAuth: true, allowGuest: true },
       },
       {
         path: 'partidos/:id',
         name: 'match-detail',
         component: () => import('src/pages/player/MatchDetailPage.vue'),
-        meta: { requiresAuth: true },
+        meta: { requiresAuth: true, allowGuest: true },
       },
       {
         path: 'ranking',

@@ -3,6 +3,7 @@ import { route } from 'quasar/wrappers'
 import { createRouter, createMemoryHistory, createWebHistory, createWebHashHistory } from 'vue-router'
 import routes from './routes'
 import { useAuthStore } from 'src/stores/auth.store'
+import { consumePendingInvite } from 'src/composables/useMatchInvite'
 
 export default route(function ({ store }) {
   const createHistory = process.env.SERVER
@@ -39,9 +40,45 @@ export default route(function ({ store }) {
     const requiresAuth = to.matched.some((r) => r.meta.requiresAuth)
     const requiresAdmin = to.matched.some((r) => r.meta.requiresAdmin)
     const isPublic = to.matched.some((r) => r.meta.public)
+    // allowGuest se declara en la ruta hoja, no en el layout padre: `some`
+    // sobre matched alcanza porque ninguna ruta padre lo define.
+    const allowGuest = to.matched.some((r) => r.meta.allowGuest)
 
     if (requiresAuth && !authStore.isAuthenticated) {
       return { path: '/login' }
+    }
+
+    // ── Invitación a partido pendiente ────────────────────────────────────
+    // Alguien abrió un link compartido y eligió "Entrar con mi cuenta": la
+    // intención quedó guardada y el login lo devuelve acá. Se consume UNA vez
+    // y se lo manda al partido, que es donde esperaba terminar. Los invitados
+    // anónimos quedan afuera: ellos ya fueron al partido por su propio camino
+    // y no deben disparar el circuito de "sumarse al grupo".
+    // Se excluye la propia landing de invitación (`match-invite`): quien está
+    // parado ahí todavía no decidió nada, y consumirla lo sacaría de la
+    // pantalla que justamente vino a ver.
+    if (
+      authStore.isAuthenticated &&
+      !authStore.isGuest &&
+      !authStore.needsEmailVerification &&
+      to.name !== 'match-invite' &&
+      to.name !== 'match-detail'
+    ) {
+      const pendingMatchId = consumePendingInvite()
+      if (pendingMatchId) {
+        return { name: 'match-detail', params: { id: pendingMatchId }, query: { invitado: '1' } }
+      }
+    }
+
+    // ── Invitado anónimo fuera de su corral ───────────────────────────────
+    // Solo puede estar en las rutas marcadas allowGuest. Si toca cualquier
+    // otra (perfil, grupos, ranking…), se lo devuelve a su partido con un
+    // aviso — la UI le ofrece crear la cuenta desde ahí. Nunca se lo expulsa
+    // a /login, que sería perder su lugar en la lista sin explicación.
+    if (authStore.isAuthenticated && authStore.isGuest && requiresAuth && !allowGuest) {
+      return authStore.guestMatchId
+        ? { name: 'match-detail', params: { id: authStore.guestMatchId }, query: { registrate: '1' } }
+        : { name: 'player-dashboard' }
     }
 
     // Cuenta de email/contraseña sin verificar: solo puede estar en
@@ -58,8 +95,12 @@ export default route(function ({ store }) {
       return { path: '/' }  // redirige al dashboard del jugador
     }
 
-    if (isPublic && authStore.isAuthenticated) {
-      return { path: '/' }  // ya logueado, no volver al login
+    // Ya logueado, no volver al login. Se excluye la landing de invitación:
+    // también es `public`, pero tiene sentido para alguien CON sesión (le
+    // muestra la ficha del partido y un botón para seguir), así que rebotarla
+    // a "/" rompería el camino (a) del link compartido.
+    if (isPublic && authStore.isAuthenticated && !allowGuest) {
+      return { path: '/' }
     }
   })
 

@@ -38,7 +38,7 @@ async function initFCMInBackground() {
       // Mostrar notificación
       swReg.showNotification(title ?? '⚽ YASTA', {
         body: body ?? 'Tienes un nuevo mensaje',
-        icon: '/icons/brazuca.png',       // pelota de futbol
+        icon: '/icons/notification-icon.png',   // escudo YASTA
         badge: '/icons/icon-128x128.png',
         data: payload.data,
       })
@@ -47,6 +47,15 @@ async function initFCMInBackground() {
     // Escuchar cambios de auth
     onAuthStateChanged(auth, async (user) => {
       if (!user) {
+        return
+      }
+
+      // Invitado anónimo (entró por un link de partido compartido): no tiene
+      // doc en users/, así que guardar el token fallaría contra las reglas.
+      // Además sería invasivo pedirle permiso de notificaciones a alguien que
+      // todavía no decidió si se queda — el pedido se le hace recién si crea
+      // una cuenta de verdad.
+      if (user.isAnonymous) {
         return
       }
 

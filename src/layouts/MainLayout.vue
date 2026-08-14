@@ -63,6 +63,7 @@
             </q-item-label>
 
             <q-item
+              v-if="!isGuest"
               clickable
               v-ripple
               class="drawer-item"
@@ -89,61 +90,81 @@
               <q-item-section>Partidos</q-item-section>
             </q-item>
 
+            <!-- Un invitado (link compartido, sin cuenta) solo ve Partidos:
+                 el resto necesita perfil/grupos, que no tiene. En vez de
+                 mostrarle items que el guard le va a rebotar, se los oculta
+                 y se le ofrece crear la cuenta. -->
+            <template v-if="!isGuest">
+              <q-item
+                clickable
+                v-ripple
+                class="drawer-item"
+                :to="{ name: 'leaderboard' }"
+                active-class="drawer-item--active"
+              >
+                <q-item-section avatar>
+                  <q-icon name="emoji_events" size="22px" />
+                </q-item-section>
+                <q-item-section>Estadísticas</q-item-section>
+              </q-item>
+
+              <q-item
+                clickable
+                v-ripple
+                class="drawer-item"
+                :to="{ name: 'venues' }"
+                active-class="drawer-item--active"
+              >
+                <q-item-section avatar>
+                  <q-icon name="stadium" size="22px" />
+                </q-item-section>
+                <q-item-section>Sedes</q-item-section>
+              </q-item>
+
+              <!-- Grupos -->
+              <q-item-label header class="drawer-section-label">
+                Grupos
+              </q-item-label>
+
+              <q-item
+                clickable
+                v-ripple
+                class="drawer-item"
+                :to="{ name: 'groups' }"
+                active-class="drawer-item--active"
+              >
+                <q-item-section avatar>
+                  <q-icon name="group" size="22px" />
+                </q-item-section>
+                <q-item-section>Mis Grupos</q-item-section>
+              </q-item>
+
+              <q-item
+                clickable
+                v-ripple
+                class="drawer-item"
+                :to="{ name: 'join-group' }"
+                active-class="drawer-item--active"
+              >
+                <q-item-section avatar>
+                  <q-icon name="person_add" size="22px" />
+                </q-item-section>
+                <q-item-section>Buscar Grupo</q-item-section>
+              </q-item>
+            </template>
+
+            <!-- Invitado: la salida hacia una cuenta real -->
             <q-item
+              v-else
               clickable
               v-ripple
               class="drawer-item"
-              :to="{ name: 'leaderboard' }"
-              active-class="drawer-item--active"
+              @click="handleGuestRegister"
             >
               <q-item-section avatar>
-                <q-icon name="emoji_events" size="22px" />
+                <q-icon name="how_to_reg" size="22px" />
               </q-item-section>
-              <q-item-section>Estadísticas</q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-ripple
-              class="drawer-item"
-              :to="{ name: 'venues' }"
-              active-class="drawer-item--active"
-            >
-              <q-item-section avatar>
-                <q-icon name="stadium" size="22px" />
-              </q-item-section>
-              <q-item-section>Sedes</q-item-section>
-            </q-item>
-
-            <!-- Grupos -->
-            <q-item-label header class="drawer-section-label">
-              Grupos
-            </q-item-label>
-
-            <q-item
-              clickable
-              v-ripple
-              class="drawer-item"
-              :to="{ name: 'groups' }"
-              active-class="drawer-item--active"
-            >
-              <q-item-section avatar>
-                <q-icon name="group" size="22px" />
-              </q-item-section>
-              <q-item-section>Mis Grupos</q-item-section>
-            </q-item>
-
-            <q-item
-              clickable
-              v-ripple
-              class="drawer-item"
-              :to="{ name: 'join-group' }"
-              active-class="drawer-item--active"
-            >
-              <q-item-section avatar>
-                <q-icon name="person_add" size="22px" />
-              </q-item-section>
-              <q-item-section>Buscar Grupo</q-item-section>
+              <q-item-section>Crear mi cuenta</q-item-section>
             </q-item>
 
             <!-- Admin (solo visible si isAdmin) -->
@@ -225,6 +246,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
+import { setPendingInvite } from 'src/composables/useMatchInvite'
 import { useAuthStore } from 'src/stores/auth.store'
 import { ROLE_LABELS, ROLE_COLORS } from 'src/stores/auth.store'
 
@@ -233,8 +255,21 @@ const $q = useQuasar()
 const { user, isAdmin, logout } = useAuth()
 const authStore = useAuthStore()
 
-const roleBadgeLabel = computed(() => ROLE_LABELS[authStore.role] ?? 'Jugador')
-const roleBadgeColor = computed(() => ROLE_COLORS[authStore.role] ?? 'green-8')
+const isGuest = computed(() => authStore.isGuest)
+
+const roleBadgeLabel = computed(() =>
+  isGuest.value ? 'Invitado' : (ROLE_LABELS[authStore.role] ?? 'Jugador'),
+)
+const roleBadgeColor = computed(() =>
+  isGuest.value ? 'blue-grey-6' : (ROLE_COLORS[authStore.role] ?? 'green-8'),
+)
+
+// El invitado pasa a cuenta real: se conserva la invitación al partido para
+// que, tras registrarse, vuelva ahí y se lo sume al grupo.
+async function handleGuestRegister() {
+  if (authStore.guestMatchId) setPendingInvite(authStore.guestMatchId)
+  await handleLogout()
+}
 
 const drawer = ref(false)
 const loggingOut = ref(false)

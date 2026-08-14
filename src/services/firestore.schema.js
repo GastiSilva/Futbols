@@ -164,6 +164,13 @@ const MatchSchema = {
   openAt:         'Timestamp',    // Cuándo se habilita la inscripción
   notifyAt:       'Timestamp | null', // Primera notificación (default: openAt - 3h)
 
+  instantOpen:    'boolean',      // Lista abierta EN EL MOMENTO de crear el partido
+                                  // ("Abrir la lista ahora"). Anula la ventana de
+                                  // acceso anticipado: nadie tiene los 30 min de
+                                  // ventaja y la notificación sale para todo el
+                                  // grupo a la vez. Ver earlyAccessMsFor() en
+                                  // useRegistration.js y la rama (2) de las reglas.
+
   groupId:        'string | null', // ID del grupo asociado al partido
 
   format:         "'5v5' | '7v7' | '8v8' | '11v11' | 'libre'",

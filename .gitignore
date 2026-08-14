@@ -32,3 +32,4 @@ firebase-debug.*.log
 
 serviceAccount.json
 
+graphify-out*
