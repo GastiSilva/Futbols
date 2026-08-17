@@ -31,26 +31,17 @@ export const NOTIFICATION_DEFAULTS = {
 }
 
 // Cómo se muestran en el perfil. El orden es el de la lista en pantalla.
+//
+// ⚠️ Solo aparecen acá las categorías que YA tienen una feature funcionando
+// detrás. APPLICATIONS, CHAT y PUBLIC_NEARBY existen como categoría (el
+// backend ya las filtra) porque son de los partidos públicos — pero esa
+// feature todavía no está construida, así que mostrarlas sería un toggle que
+// no hace nada visible todavía. Sumarlas a esta lista cuando esa fase arranque.
 export const NOTIFICATION_OPTIONS = [
   {
     key: NOTIFICATION_CATEGORIES.MY_GROUPS,
     label: 'Mis grupos',
     description: 'Se abre una lista, recordatorios, se liberó un cupo, entrás de suplente.',
-  },
-  {
-    key: NOTIFICATION_CATEGORIES.APPLICATIONS,
-    label: 'Postulaciones',
-    description: 'Alguien se quiere sumar a tu partido, o te aceptaron en uno.',
-  },
-  {
-    key: NOTIFICATION_CATEGORIES.CHAT,
-    label: 'Chat del partido',
-    description: 'Mensajes nuevos en los partidos donde estás anotado.',
-  },
-  {
-    key: NOTIFICATION_CATEGORIES.PUBLIC_NEARBY,
-    label: 'Partidos abiertos',
-    description: 'Cuando se publica un partido que busca jugadores. Viene apagado.',
   },
 ]
 

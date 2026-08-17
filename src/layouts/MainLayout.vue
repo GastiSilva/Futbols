@@ -10,15 +10,7 @@
           <q-icon name="sports_soccer" size="22px" class="text-primary q-mr-xs" />Partidos de fútbol
         </q-toolbar-title>
 
-        <!-- Avatar del usuario en el header -->
-        <!-- <q-avatar size="34px" class="cursor-pointer" @click="drawer = true">
-          <img
-            :src="user?.photoURL ?? 'icons/icon-128x128.png'"
-            :alt="user?.displayName ?? 'usuario'"
-            referrerpolicy="no-referrer"
-          />
-          <q-tooltip>{{ user?.displayName }}</q-tooltip>
-        </q-avatar> -->
+        <NotificationBell />
       </q-toolbar>
     </q-header>
 
@@ -249,6 +241,7 @@ import { useAuth } from 'src/composables/useAuth'
 import { setPendingInvite } from 'src/composables/useMatchInvite'
 import { useAuthStore } from 'src/stores/auth.store'
 import { ROLE_LABELS, ROLE_COLORS } from 'src/stores/auth.store'
+import NotificationBell from 'src/components/NotificationBell.vue'
 
 const router = useRouter()
 const $q = useQuasar()
