@@ -307,6 +307,32 @@ export function useMatch() {
     unsubscribe = null
   }
 
+  // ── Finalizar un partido a mano ────────────────────────────────────────────
+  // El scheduler abre y cierra listas por horario, pero el partido de verdad
+  // termina cuando termina: sin esto había que esperar al timer para poder
+  // cargar las estadísticas. Cualquier miembro del grupo puede finalizarlo
+  // apenas se juega (misma rama de reglas que cargar el resultado, que exige
+  // status == 'finished'). No toca el marcador: eso se carga después en
+  // PostMatchPage, y el partido queda listo para recibirlo.
+  async function finishMatch(matchId) {
+    loading.value = true
+    error.value = null
+    try {
+      await updateDoc(doc(db, 'matches', matchId), {
+        scoreA: 0,
+        scoreB: 0,
+        status: MATCH_STATUS.FINISHED,
+        finishedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   // ── Borrar un partido (y sus subcolecciones) ───────────────────────────────
   // Para listas creadas por error o que nadie usó. Firestore no borra en
   // cascada: hay que limpiar a mano registrations/playerStats/mvpVotes, o
@@ -343,6 +369,7 @@ export function useMatch() {
     updateMatch,
     deleteMatch,
     saveMatchResult,
+    finishMatch,
     toggleVenueReserved,
     stopListening,
     FORMAT_OPTIONS,

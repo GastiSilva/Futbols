@@ -467,6 +467,19 @@
         </q-card-section>
       </q-card>
 
+      <!-- Finalizar el partido a mano: sin esperar al timer, para poder cargar
+           las estadísticas apenas se termina de jugar. Cualquier miembro. -->
+      <q-btn
+        v-if="canFinishMatch"
+        unelevated
+        color="teal-7"
+        class="full-width pill-btn q-mt-sm"
+        icon="sports_score"
+        label="Finalizar partido"
+        :loading="finishing"
+        @click="handleFinishMatch"
+      />
+
       <!-- Cargar / editar resultado (miembros del grupo o admin) -->
       <q-btn
         v-if="canLoadResult"
@@ -531,7 +544,7 @@ function goToProfile(reg) {
   if (authStore.isGuest) return
   router.push({ name: 'profile-view', params: { uid: reg.userId } })
 }
-const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved } = useMatch()
+const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved, finishMatch } = useMatch()
 const { getMyRole } = useGroups()
 const { fetchPlayerStats } = usePlayerStats()
 const { fetchForecast } = useWeather()
@@ -852,14 +865,45 @@ watch(
   { immediate: true },
 )
 
-// A las 36hs de finalizado, resultLocked bloquea la edición para cualquiera
-// que no sea admin global (lo fija processAutoCloseMatches en Cloud Functions).
+// Cargar el resultado es tarea de TODO el grupo, sin ventana de tiempo: basta
+// con ser miembro del grupo del partido. Antes se exigía además que el partido
+// no estuviera bloqueado (resultLocked, a las 36hs), pero esa condición se
+// saltaba para el admin global — así que en la práctica el dueño de la app
+// cargaba siempre y al resto le saltaba PERMISSION_DENIED.
 const canLoadResult = computed(() => {
   const st = getEffectiveStatus(match.value)
   const done = st === 'closed' || st === 'finished' || st === 'full'
-  if (authStore.isAdmin) return done
-  return done && !match.value?.resultLocked && !!myGroupRole.value
+  return done && (authStore.isAdmin || !!myGroupRole.value)
 })
+
+// Finalizar a mano: mientras el partido NO esté finalizado todavía. Cubre el
+// caso de "ya jugamos, queremos cargar las stats ahora" sin esperar a que el
+// scheduler lo cierre por horario.
+const canFinishMatch = computed(() => {
+  if (!match.value) return false
+  if (getEffectiveStatus(match.value) === 'finished') return false
+  return authStore.isAdmin || !!myGroupRole.value
+})
+
+const finishing = ref(false)
+async function handleFinishMatch() {
+  $q.dialog({
+    title: 'Finalizar partido',
+    message: '¿Dar por terminado el partido? Después vas a poder cargar el resultado y las estadísticas.',
+    cancel: { flat: true, noCaps: true, label: 'Cancelar', color: 'grey-7' },
+    ok: { unelevated: true, noCaps: true, label: 'Finalizar', color: 'teal-7' },
+  }).onOk(async () => {
+    finishing.value = true
+    try {
+      await finishMatch(match.value.id)
+      $q.notify({ type: 'positive', icon: 'sports_score', message: 'Partido finalizado. Ya podés cargar las estadísticas.' })
+    } catch (err) {
+      $q.notify({ type: 'negative', message: err.message })
+    } finally {
+      finishing.value = false
+    }
+  })
+}
 
 // ── Cancha reservada: mismo permiso que cargar resultado, pero sin exigir
 // que el partido haya terminado (se reserva ANTES de jugar).

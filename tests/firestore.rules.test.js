@@ -194,6 +194,81 @@ describe('Partidos: no cerrar la lista por la rama de resultado', () => {
   })
 })
 
+describe('playerStats: cualquier miembro carga las estadísticas', () => {
+  // Este bloque fija el bug que dejaba cargar stats SOLO al admin global:
+  // la regla comparaba `request.resource.data.team in ['A','B',null]`, pero un
+  // jugador sin equipo asignado no trae el campo `team` (Firestore descarta los
+  // undefined), y sobre un campo AUSENTE esa comparación da falso. El admin se
+  // colaba por la rama `|| isAdmin()`, así que el dueño de la app no veía nunca
+  // el error y a todos los demás les saltaba PERMISSION_DENIED.
+  test('un miembro común puede cargar stats CON equipo asignado', async () => {
+    await assertSucceeds(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'playerStats', BOB), {
+      userId: BOB, displayName: 'Bob', goals: 2, assists: 1, team: 'A', groupId: GROUP_A,
+    }))
+  })
+
+  test('un miembro común puede cargar stats SIN equipo (campo team ausente)', async () => {
+    await assertSucceeds(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'playerStats', BOB), {
+      userId: BOB, displayName: 'Bob', goals: 1, assists: 0, groupId: GROUP_A,
+    }))
+  })
+
+  test('un miembro puede cargar las stats DE OTRO jugador del partido', async () => {
+    // Cargar el resultado es tarea de uno solo para todo el equipo: el que
+    // carga anota los goles de los demás, no solo los propios.
+    await assertSucceeds(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'playerStats', ALICE), {
+      userId: ALICE, displayName: 'Alice', goals: 3, assists: 0, team: 'B', groupId: GROUP_A,
+    }))
+  })
+
+  test('alguien de OTRO grupo NO puede cargar stats', async () => {
+    await assertFails(setDoc(doc(ctx(MALLORY), 'matches', MATCH_A, 'playerStats', MALLORY), {
+      userId: MALLORY, displayName: 'Mallory', goals: 9, assists: 0, team: 'A', groupId: GROUP_A,
+    }))
+  })
+
+  test('no se puede escribir stats a nombre de otro uid (userId != docId)', async () => {
+    await assertFails(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'playerStats', BOB), {
+      userId: ALICE, displayName: 'Bob', goals: 5, assists: 0, team: 'A', groupId: GROUP_A,
+    }))
+  })
+
+  test('un miembro NO puede fijar el mvp a mano (lo decide la votación)', async () => {
+    await assertFails(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'playerStats', BOB), {
+      userId: BOB, displayName: 'Bob', goals: 1, assists: 0, team: 'A', mvp: true, groupId: GROUP_A,
+    }))
+  })
+
+  test('goles negativos rechazados', async () => {
+    await assertFails(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'playerStats', BOB), {
+      userId: BOB, displayName: 'Bob', goals: -1, assists: 0, team: 'A', groupId: GROUP_A,
+    }))
+  })
+})
+
+describe('Resultado: sin límite de 36hs (resultLocked)', () => {
+  // El auto-cierre marcaba resultLocked a las 36hs y la regla lo exigía en false
+  // para los miembros pero no para el admin: un grupo que tardaba dos días en
+  // cargar el partido se quedaba afuera de sus propias estadísticas.
+  test('un miembro puede cargar el resultado aunque el partido esté bloqueado', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await updateDoc(doc(c.firestore(), 'matches', MATCH_A), { resultLocked: true })
+    })
+    await assertSucceeds(updateDoc(doc(ctx(BOB), 'matches', MATCH_A), {
+      scoreA: 2, scoreB: 2, status: 'finished',
+    }))
+  })
+
+  test('un miembro puede cargar stats aunque el partido esté bloqueado', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await updateDoc(doc(c.firestore(), 'matches', MATCH_A), { resultLocked: true })
+    })
+    await assertSucceeds(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'playerStats', BOB), {
+      userId: BOB, displayName: 'Bob', goals: 1, assists: 1, team: 'A', groupId: GROUP_A,
+    }))
+  })
+})
+
 describe('memberCount: solo miembros del grupo', () => {
   test('alguien de otro grupo NO puede tocar el memberCount', async () => {
     // Este era el agujero: isOwner(request.auth.uid) siempre daba true.

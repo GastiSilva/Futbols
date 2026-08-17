@@ -92,6 +92,23 @@ service cloud.firestore {
            );
     }
 
+    // Validación del payload de una fila de playerStats. El `userId` del doc
+    // tiene que coincidir con el docId (no se cargan stats "a nombre de otro"
+    // pisando el uid real), los contadores son enteros >= 0 y el equipo es A,
+    // B o ninguno.
+    //
+    // ⚠️ `team` se lee con get() y no como `request.resource.data.team`: un
+    // jugador sin equipo asignado NO trae el campo (Firestore descarta los
+    // `undefined` al escribir), y comparar un campo AUSENTE contra la lista
+    // daba falso. Ese era el PERMISSION_DENIED que solo sufrían los miembros
+    // comunes — el admin global se colaba por la rama `|| isAdmin()`.
+    function statsPayloadIsValid(userId) {
+      return request.resource.data.userId == userId
+        && request.resource.data.goals is int && request.resource.data.goals >= 0
+        && request.resource.data.assists is int && request.resource.data.assists >= 0
+        && request.resource.data.get('team', null) in ['A', 'B', null];
+    }
+
     // Un partido sin grupo (groupId null) es global: lo crea un admin y queda
     // abierto a cualquier usuario autenticado.
     function isGroupless(matchId) {
@@ -338,15 +355,17 @@ service cloud.firestore {
 
         ||
 
-        // Cargar el resultado: cualquier miembro del grupo (o admin), pero
-        // SOLO si el partido no está bloqueado (resultLocked lo fija el
-        // scheduler de auto-cierre a las 36hs de finalizado; después de eso
-        // únicamente un admin puede seguir editando el resultado). El MVP
-        // ya NO se escribe acá — lo decide la votación (mvpVotes) y lo fija
-        // la Cloud Function closeMvpVoting (Admin SDK, ignora estas reglas).
+        // Cargar el resultado: CUALQUIER miembro del grupo (o admin), apenas
+        // termina el partido y sin límite de tiempo. Antes se exigía además
+        // `resultLocked == false` (lo fija el auto-cierre a las 36hs), lo que
+        // dejaba al grupo sin poder cargar su propio resultado si tardaban un
+        // par de días — y como la rama `isAdmin()` no pasaba por esa condición,
+        // el dueño de la app podía cargar siempre y nadie más. El MVP ya NO se
+        // escribe acá — lo decide la votación (mvpVotes) y lo fija la Cloud
+        // Function closeMvpVoting (Admin SDK, ignora estas reglas).
         // scoreA/scoreB deben ser enteros >= 0 y status un valor válido.
         (
-          (isAdmin() || (isMemberOfMatchGroup(matchId) && matchData(matchId).get('resultLocked', false) == false))
+          (isAdmin() || isMemberOfMatchGroup(matchId))
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['scoreA', 'scoreB', 'status', 'finishedAt', 'updatedAt'])
           && request.resource.data.scoreA is int && request.resource.data.scoreA >= 0
@@ -560,27 +579,49 @@ service cloud.firestore {
 
         allow read: if isAuthenticated();
 
-        // Cargar stats individuales (goals/assists/team): cualquier miembro del
-        // grupo del partido, mientras el partido no esté bloqueado
-        // (resultLocked, a las 36hs de finalizado). El campo `mvp` queda
+        // Cargar stats individuales (goals/assists/team): CUALQUIER miembro del
+        // grupo del partido, apenas termina el partido. El campo `mvp` queda
         // excluido de esta rama — solo lo escribe la Cloud Function
         // closeMvpVoting (Admin SDK) según el resultado de la votación; un
         // admin global puede corregir cualquier cosa a mano como escape
-        // hatch de emergencia, incluso con el partido bloqueado.
+        // hatch de emergencia.
         // goals/assists deben ser enteros >= 0, y el userId del doc debe
         // coincidir con el docId (no se pueden cargar stats "a nombre de
         // otro" pisando el uid real).
         // El acumulador en users/{uid} lo escribe la Cloud Function
         // onPlayerStatsWritten (admin SDK), no el cliente.
-        allow create, update: if
+        //
+        // ⚠️ `team` se valida con get(): un jugador sin equipo asignado NO trae
+        // el campo (Firestore descarta los `undefined` al escribir), y la
+        // comparación directa `request.resource.data.team in ['A','B',null]`
+        // daba FALSO sobre un campo ausente. Ese era el PERMISSION_DENIED que
+        // solo sufrían los miembros comunes: un admin global se colaba igual
+        // por la rama `|| isAdmin()`, así que el bug era invisible para el
+        // dueño de la app y bloqueaba a todos los demás.
+        //
+        // Tampoco se exige ya `resultLocked == false`: cargar las estadísticas
+        // es la tarea de todo el grupo apenas termina de jugar, y bloquearlas
+        // a las 36hs dejaba al grupo sin poder registrar su propio partido.
+        // El bloqueo se mantiene para la votación de MVP, que sí necesita
+        // cerrarse para poder contar los votos.
+        // ⚠️ `create` y `update` van SEPARADOS: en un create el documento no
+        // existe todavía, así que `resource.data` es NULL y
+        // `.diff(resource.data)` aborta la evaluación con "Null value error"
+        // (un PERMISSION_DENIED indistinguible de una regla que deniega). En
+        // el alta se comprueba directamente que `mvp` no venga en el payload.
+        allow create: if
           (
             isMemberOfMatchGroup(matchId)
-            && matchData(matchId).get('resultLocked', false) == false
+            && !('mvp' in request.resource.data)
+            && statsPayloadIsValid(userId)
+          )
+          || isAdmin();
+
+        allow update: if
+          (
+            isMemberOfMatchGroup(matchId)
             && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mvp'])
-            && request.resource.data.userId == userId
-            && request.resource.data.goals is int && request.resource.data.goals >= 0
-            && request.resource.data.assists is int && request.resource.data.assists >= 0
-            && request.resource.data.team in ['A', 'B', null]
+            && statsPayloadIsValid(userId)
           )
           || isAdmin();
 
