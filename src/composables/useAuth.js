@@ -30,6 +30,7 @@ import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage
 import { auth, googleProvider, db, storage } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
 import { normalizePositions } from 'src/utils/positions'
+import { NOTIFICATION_CATEGORIES, withNotificationDefaults } from 'src/utils/notifications'
 
 // Nombre elegido por un invitado anónimo. En sessionStorage (no localStorage)
 // a propósito: la sesión de invitado es de esa pestaña y de ese rato, no algo
@@ -274,6 +275,7 @@ export function useAuth() {
       nickname: userData.nickname ?? null,
       description: userData.description ?? '',
       preferredFoot: userData.preferredFoot ?? null,
+      notificationPrefs: withNotificationDefaults(userData.notificationPrefs),
       stats: { ...defaultStats(), ...(userData.stats ?? {}) },
       statsByGroup: userData.statsByGroup ?? {},
     })
@@ -360,6 +362,31 @@ export function useAuth() {
     return fields
   }
 
+  // ── Preferencias de notificación ───────────────────────────────────────────
+  // Guarda UNA categoría por vez (los toggles del perfil se guardan solos).
+  // Se escribe con notación de punto para no pisar las otras categorías si dos
+  // pestañas tocan preferencias distintas.
+  async function updateNotificationPref(category, enabled) {
+    const uid = authStore.user?.uid
+    if (!uid) throw new Error('Usuario no autenticado')
+    if (!Object.values(NOTIFICATION_CATEGORIES).includes(category)) {
+      throw new Error(`Categoría de notificación desconocida: ${category}`)
+    }
+
+    const value = enabled === true
+    await updateDoc(doc(db, 'users', uid), {
+      [`notificationPrefs.${category}`]: value,
+      updatedAt: serverTimestamp(),
+    })
+
+    const merged = withNotificationDefaults({
+      ...(authStore.user?.notificationPrefs ?? {}),
+      [category]: value,
+    })
+    authStore.patchUser({ notificationPrefs: merged })
+    return merged
+  }
+
   // ── Subir foto de perfil propia ────────────────────────────────────────────
   // Google ya trae photoURL de la cuenta; quien se registró con email no tiene
   // ninguna, así que puede subir la suya. Se guarda en Storage y la URL queda
@@ -444,6 +471,7 @@ export function useAuth() {
     logout,
     initAuthListener,
     updateUserProfile,
+    updateNotificationPref,
     uploadProfilePhoto,
   }
 }

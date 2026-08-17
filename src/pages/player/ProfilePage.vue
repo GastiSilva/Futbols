@@ -423,6 +423,41 @@
           </q-card-section>
         </q-card>
 
+        <!-- ── Notificaciones ──────────────────────────────────────────────
+             Cada categoría se guarda sola al tocarla (sin botón "Guardar"),
+             que es lo esperable en un panel de ajustes. Antes no había forma
+             de bajarle el volumen a un tipo de aviso: la única opción era
+             bloquear las notificaciones del navegador, y eso apagaba TODO,
+             incluidos los avisos del propio grupo. -->
+        <q-card flat bordered class="q-mb-md">
+          <q-card-section>
+            <div class="text-subtitle2 text-weight-bold q-mb-xs">
+              <q-icon name="notifications" class="q-mr-xs text-grey-7" />
+              Notificaciones
+            </div>
+            <div class="text-caption text-grey-7 q-mb-sm">
+              Elegí qué avisos querés recibir. Se guardan solos.
+            </div>
+
+            <q-list separator>
+              <q-item v-for="opt in NOTIFICATION_OPTIONS" :key="opt.key" tag="label" v-ripple>
+                <q-item-section>
+                  <q-item-label>{{ opt.label }}</q-item-label>
+                  <q-item-label caption>{{ opt.description }}</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-toggle
+                    :model-value="notificationPrefs[opt.key]"
+                    color="primary"
+                    :disable="savingPrefs"
+                    @update:model-value="(val) => handleTogglePref(opt.key, val)"
+                  />
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-card-section>
+        </q-card>
+
       </div>
     </div>
   </q-page>
@@ -442,9 +477,14 @@ import PitchPositionPicker from 'src/components/PitchPositionPicker.vue'
 import MundialCoinFlipDialog from 'src/components/MundialCoinFlipDialog.vue'
 import { positionLabel, normalizePositions, MAX_FAVORITE_POSITIONS } from 'src/utils/positions'
 import { TEAM_OPTIONS as ALL_TEAM_OPTIONS, LEAGUE_BADGES, findTeam } from 'src/utils/teams'
+import { NOTIFICATION_OPTIONS, withNotificationDefaults } from 'src/utils/notifications'
 
 const $q = useQuasar()
-const { user, updateUserProfile, uploadProfilePhoto } = useAuth()
+const { user, updateUserProfile, updateNotificationPref, uploadProfilePhoto } = useAuth()
+
+// Preferencias de notificación (toggles que se guardan solos, ver más abajo)
+const notificationPrefs = ref(withNotificationDefaults(null))
+const savingPrefs = ref(false)
 
 // ── Foto de perfil ──────────────────────────────────────────────────────────
 const photoInput = ref(null)
@@ -599,6 +639,7 @@ onMounted(async () => {
           preferredFoot: data.preferredFoot ?? null,
           preferredPositions: data.preferredPositions ?? [],
           favoriteTeam: data.favoriteTeam ?? null,
+          notificationPrefs: withNotificationDefaults(data.notificationPrefs),
           stats: data.stats ?? {},
           statsByGroup: data.statsByGroup ?? {},
         })
@@ -607,6 +648,8 @@ onMounted(async () => {
   } catch {
     // sin conexión se muestran los datos del store
   }
+
+  notificationPrefs.value = withNotificationDefaults(user.value?.notificationPrefs)
 
   form.value = {
     nickname: user.value?.nickname ?? '',
@@ -645,6 +688,23 @@ async function handleSave() {
     $q.notify({ type: 'negative', message: err.message })
   } finally {
     saving.value = false
+  }
+}
+
+// ── Notificaciones ──────────────────────────────────────────────────────────
+// Optimista: el toggle se mueve al instante y se revierte si la escritura
+// falla, para que no quede la sensación de que el control no responde.
+async function handleTogglePref(category, value) {
+  const previous = notificationPrefs.value[category]
+  notificationPrefs.value = { ...notificationPrefs.value, [category]: value }
+  savingPrefs.value = true
+  try {
+    await updateNotificationPref(category, value)
+  } catch (err) {
+    notificationPrefs.value = { ...notificationPrefs.value, [category]: previous }
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    savingPrefs.value = false
   }
 }
 </script>

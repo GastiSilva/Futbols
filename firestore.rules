@@ -115,6 +115,16 @@ service cloud.firestore {
       return matchData(matchId).get('groupId', null) == null;
     }
 
+    // ¿El caller comparte el grupo `groupId` con `otherUid`? Ambos tienen que
+    // ser miembros. Se usa para habilitar acciones que solo tienen sentido
+    // entre gente que se conoce (ej. calificar si la descripción de alguien es
+    // real): un desconocido no tiene forma de saberlo, y dejarlo calificar
+    // convierte la calificación en un arma contra quien se postula de afuera.
+    function sharesGroupWith(groupId, otherUid) {
+      return isMemberOfGroup(groupId, request.auth.uid)
+        && isMemberOfGroup(groupId, otherUid);
+    }
+
     function isGroupAdmin(groupId) {
       return isAuthenticated()
         && get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role
@@ -219,12 +229,26 @@ service cloud.firestore {
 
         allow read: if isOwner(raterId) || isAdmin();
 
+        // Solo puede calificar quien COMPARTE UN GRUPO con el dueño del perfil.
+        // Antes alcanzaba con estar autenticado: cualquiera podía calificar a
+        // cualquiera. Con los partidos públicos eso pasa de ser una imprecisión
+        // a un vector de sabotaje — un desconocido no tiene cómo saber si la
+        // descripción de alguien es real, y su voto solo sirve para hundirle el
+        // promedio a quien se postuló a su partido.
+        //
+        // El grupo compartido viaja en `sharedGroupId` porque las reglas no
+        // pueden recorrer los grupos del usuario: no hay forma de iterar una
+        // colección desde acá, solo de verificar documentos puntuales. El
+        // cliente declara por cuál grupo se conocen y la regla comprueba que
+        // AMBOS sean miembros de ese grupo — si miente, la verificación falla.
         allow create, update: if
           isOwner(raterId)
           && raterId != userId
           && request.resource.data.stars is int
           && request.resource.data.stars >= 1
-          && request.resource.data.stars <= 5;
+          && request.resource.data.stars <= 5
+          && request.resource.data.sharedGroupId is string
+          && sharesGroupWith(request.resource.data.sharedGroupId, userId);
 
         allow delete: if isAdmin();
       }
@@ -280,10 +304,33 @@ service cloud.firestore {
         || isAnonGuest()
         || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)));
 
-      // Listar/consultar partidos (query): nunca un invitado anónimo. El filtro
-      // por grupo lo aplica el cliente (useMatch.subscribeToUpcoming); esta regla
-      // impide que un anónimo enumere la colección entera.
-      allow list: if isAuthenticated();
+      // Listar/consultar partidos (query). Un invitado anónimo nunca lista: lee
+      // su partido puntual por id (allow get de arriba).
+      //
+      // ⚠️ LIMITACIÓN REAL DE FIRESTORE, no una decisión de diseño: las reglas
+      // NO pueden inspeccionar las cláusulas `where` de una query. `request.query`
+      // expone únicamente `limit`, `offset` y `orderBy`. Y como el motor evalúa
+      // las queries sin leer documentos, tampoco hay `resource` que consultar.
+      // El mecanismo previsto por Firestore para esto es escribir la condición
+      // como si fuera de documento y dejar que el motor rechace la query salvo
+      // que sus filtros garanticen que TODO resultado la cumple — pero esa
+      // demostración no puede depender de un `get()` a otra colección, y la
+      // membresía vive en groups/{gid}/members/{uid}. O sea: "solo los partidos
+      // de mis grupos" es INEXPRESABLE en un allow list.
+      //
+      // Por eso el aislamiento por grupo se sostiene en `allow get` (que sí lee
+      // el documento y verifica membresía) y en que la query del cliente pida
+      // solo lo suyo (useMatch.subscribeToUpcoming, que ahora filtra por groupId
+      // en la consulta y ya no se descarga los partidos de todos los grupos).
+      //
+      // Lo que SÍ se endurece acá es el `limit`: sin tope, una sola query podía
+      // barrer la colección entera de una. Con tope, enumerarla cuesta muchas
+      // consultas y deja rastro. Es mitigación, no aislamiento — el aislamiento
+      // de verdad para los datos sensibles del partido está en `allow get` y en
+      // las reglas de `registrations`.
+      allow list: if
+        isAdmin()
+        || (isAuthenticated() && request.query.limit <= 200);
 
       // Crean partidos: admins globales, o CUALQUIER miembro del grupo del
       // partido (no hace falta ser owner/admin del grupo para armar una lista).
@@ -763,6 +810,46 @@ service cloud.firestore {
 
         allow delete: if false;
       }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // REPORTS (denuncias de usuarios)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Mínimo viable de moderación, necesario antes de abrir la app a gente que
+    // no se conoce (partidos públicos). No hay panel ni automatización: los
+    // reportes se revisan a mano desde la consola de Firebase.
+    //
+    // Un reporte es una acusación sobre otra persona, así que NADIE lo lee
+    // salvo un admin global — ni siquiera quien lo escribió. Si el denunciante
+    // pudiera listarlos, sabría quién más denunció a quién; si el denunciado
+    // pudiera leerlos, el reporte se vuelve una invitación a la represalia.
+    match /reports/{reportId} {
+
+      allow read, list: if isAdmin();
+
+      // Cualquiera con cuenta puede reportar, pero solo en su propio nombre y
+      // nunca a sí mismo. `reportedUserId` y `reason` son obligatorios para que
+      // no queden reportes vacíos que no se pueden investigar.
+      allow create: if
+        isAuthenticated()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.reportedUserId is string
+        && request.resource.data.reportedUserId != request.auth.uid
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.reason.size() <= 40
+        && request.resource.data.get('details', '') is string
+        && request.resource.data.get('details', '').size() <= 1000
+        && request.resource.data.status == 'pending';
+
+      // Solo un admin cambia el estado (revisado / desestimado). El
+      // denunciante no puede editar lo que ya mandó — un reporte editable no
+      // sirve como evidencia.
+      allow update: if isAdmin();
+
+      // Nunca se borran, ni por un admin: es el registro de la denuncia.
+      // Se dan de baja cambiando `status`, igual que joinRequests.
+      allow delete: if false;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

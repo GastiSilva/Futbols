@@ -15,11 +15,19 @@ import {
   query,
   where,
   orderBy,
+  limit,
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
+
+// Tope de resultados de cualquier query a `matches`. Las reglas EXIGEN un
+// `limit` explícito y no mayor a este valor (ver `allow list` en
+// firestore.rules): sin tope, una sola consulta podía barrer la colección
+// entera. Toda query nueva a `matches` tiene que llevarlo o Firestore la
+// rechaza con permission-denied.
+export const MATCH_QUERY_LIMIT = 200
 
 // ── Formatos de partido → cupos máximos ───────────────────────────────────────
 // 'libre' no tiene tope: maxPlayers queda null, cualquiera se anota siempre
@@ -89,54 +97,101 @@ export function useMatch() {
   // filtrado de visibilidad en el cliente — la autorización real de anotarse
   // vive en useRegistration.registerEntry y en firestore.rules.
   function subscribeToUpcoming() {
-    const q = query(
-      collection(db, 'matches'),
-      where('status', 'in', [MATCH_STATUS.SCHEDULED, MATCH_STATUS.OPEN]),
-      orderBy('date', 'asc'),
-    )
+    // Una suscripción por "fuente" de partidos: los globales (groupId null) y
+    // una por cada tanda de grupos del usuario. Los resultados se van juntando
+    // en este mapa y se emiten combinados y ordenados por fecha.
+    //
+    // Antes esto era UNA sola query sin filtro de grupo (`where status in [...]`
+    // a secas) y el recorte por membresía se hacía en JavaScript sobre lo ya
+    // recibido. O sea: el dispositivo se descargaba los partidos de TODOS los
+    // grupos — título, sede, fecha, creador — y solo dibujaba los propios. El
+    // filtro era cosmético; con la consola abierta se veía todo. Ahora la
+    // consulta pide únicamente lo que corresponde, y firestore.rules exige que
+    // así sea (allow list de /matches).
+    const perSourceMatches = new Map()
+    const subscriptions = []
 
-    // Los partidos "crudos" de Firestore se guardan aparte del filtro, porque
-    // authStore.memberGroupIds se carga de forma asíncrona en el login
-    // (loadOgGroups) y puede terminar DESPUÉS de que este snapshot ya haya
-    // disparado una vez. Si el filtro solo corriera dentro del onSnapshot,
-    // un miembro común podía quedar con matches.value = [] para siempre —
-    // Firestore no vuelve a emitir el snapshot solo porque cambió el store.
-    // El watch de acá abajo lo reaplica cada vez que memberGroupIds/superAdminMode
-    // cambian, aunque el snapshot no se haya movido.
-    const rawMatches = ref([])
+    function emit() {
+      const byId = new Map()
+      perSourceMatches.forEach((list) => list.forEach((m) => byId.set(m.id, m)))
+      const all = [...byId.values()]
 
-    function applyGroupFilter() {
-      // Invitado del link: solo su partido. No pertenece a ningún grupo, así
-      // que el filtro de abajo le dejaría ver todos los partidos globales —
-      // que no le corresponden y no puede usar para nada.
+      // Invitado del link: solo su partido. No es miembro de ningún grupo, así
+      // que sin esto vería todos los partidos globales, que no le sirven.
+      matches.value = authStore.isGuest
+        ? all.filter((m) => m.id === authStore.guestMatchId)
+        : all.sort((a, b) => (a.date?.toMillis?.() ?? 0) - (b.date?.toMillis?.() ?? 0))
+    }
+
+    function listen(key, constraints) {
+      const q = query(
+        collection(db, 'matches'),
+        where('status', 'in', [MATCH_STATUS.SCHEDULED, MATCH_STATUS.OPEN]),
+        ...constraints,
+        orderBy('date', 'asc'),
+        limit(MATCH_QUERY_LIMIT),
+      )
+      const stop = onSnapshot(
+        q,
+        (snap) => {
+          perSourceMatches.set(
+            key,
+            snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+          )
+          emit()
+        },
+        (err) => {
+          error.value = err.message
+        },
+      )
+      subscriptions.push(stop)
+    }
+
+    function resubscribe() {
+      subscriptions.forEach((stop) => stop())
+      subscriptions.length = 0
+      perSourceMatches.clear()
+
+      // Un invitado del link no lista la colección: lee su partido puntual por
+      // id (subscribeToMatch). Las reglas directamente le niegan el `list`.
       if (authStore.isGuest) {
-        matches.value = rawMatches.value.filter((m) => m.id === authStore.guestMatchId)
+        matches.value = []
         return
       }
 
-      matches.value = authStore.superAdminMode
-        ? rawMatches.value
-        : rawMatches.value.filter((m) => !m.groupId || authStore.isMemberOfGroup(m.groupId))
+      // Partidos sin grupo: son globales, los ve cualquiera con cuenta.
+      listen('groupless', [where('groupId', '==', null)])
+
+      // Partidos de los grupos del usuario. Firestore limita `in` a 30 valores,
+      // así que se parte en tandas — cada tanda es su propia suscripción.
+      const groupIds = authStore.superAdminMode ? [] : authStore.memberGroupIds.slice()
+      for (let i = 0; i < groupIds.length; i += 30) {
+        const chunk = groupIds.slice(i, i + 30)
+        listen(`groups:${i}`, [where('groupId', 'in', chunk)])
+      }
+
+      // Modo superadmin (toggle manual del panel admin): ve TODO, para
+      // debuggear o revisar datos de otros grupos. Las reglas se lo permiten
+      // solo por ser admin global.
+      if (authStore.superAdminMode) {
+        listen('all', [])
+      }
+
+      emit()
     }
 
+    // memberGroupIds se puebla de forma asíncrona en el login (loadOgGroups) y
+    // puede llegar DESPUÉS de la primera suscripción. Sin este watch, un
+    // miembro común se quedaba sin sus partidos hasta recargar la página.
     const stopWatch = watch(
       () => [authStore.memberGroupIds.slice(), authStore.superAdminMode, authStore.guestMatchId],
-      applyGroupFilter,
-    )
-
-    const stopSnapshot = onSnapshot(
-      q,
-      (snap) => {
-        rawMatches.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-        applyGroupFilter()
-      },
-      (err) => {
-        error.value = err.message
-      },
+      resubscribe,
+      { immediate: true },
     )
 
     unsubscribe = () => {
-      stopSnapshot()
+      subscriptions.forEach((stop) => stop())
+      subscriptions.length = 0
       stopWatch()
     }
     return unsubscribe
@@ -289,6 +344,7 @@ export function useMatch() {
       collection(db, 'matches'),
       where('groupId', '==', groupId),
       orderBy('date', 'asc'),
+      limit(MATCH_QUERY_LIMIT),
     )
     unsubscribe = onSnapshot(
       q,

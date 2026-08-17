@@ -57,8 +57,13 @@
             </q-card-section>
           </q-card>
 
-          <!-- ── Calificar la descripción (en privado) ────────────────────── -->
-          <q-card flat bordered class="q-mb-md">
+          <!-- ── Calificar la descripción (en privado) ──────────────────────
+               Solo para compañeros de grupo: un desconocido no tiene cómo
+               saber si la descripción es real, y su voto solo serviría para
+               hundirle el promedio a quien se postuló a su partido. Las
+               reglas de Firestore lo exigen igual (descriptionRatings), esto
+               es para no mostrar un control que va a fallar. -->
+          <q-card v-if="sharedGroupId" flat bordered class="q-mb-md">
             <q-card-section>
               <div class="text-subtitle2 text-weight-bold q-mb-xs">
                 <q-icon name="visibility_off" class="q-mr-xs text-grey-7" />
@@ -121,8 +126,13 @@
             </q-card-section>
           </q-card>
 
-          <!-- ── Estadísticas por grupo ──────────────────────────────────── -->
-          <template v-if="groupStatRows.length > 0">
+          <!-- ── Estadísticas por grupo ────────────────────────────────────
+               Solo si compartimos grupo: el desglose lista los grupos donde
+               juega esta persona, o sea su mapa social. Un desconocido que
+               mira su perfil (porque se postuló a un partido) ve las stats
+               globales, que alcanzan para saber cómo juega, pero no con
+               quiénes. -->
+          <template v-if="sharedGroupId && groupStatRows.length > 0">
             <div class="text-overline text-green-9 text-weight-bold q-mb-sm">
               POR GRUPO
             </div>
@@ -146,6 +156,27 @@
               </q-list>
             </q-card>
           </template>
+          <!-- ── Reportar ──────────────────────────────────────────────────
+               Mínimo de moderación: con partidos públicos, cualquiera puede
+               terminar jugando con un desconocido. El reporte lo revisa un
+               admin a mano; el reportado nunca sabe quién lo reportó. -->
+          <div class="text-center q-mt-lg q-mb-md">
+            <q-btn
+              flat
+              dense
+              no-caps
+              color="grey-7"
+              icon="flag"
+              label="Reportar a este jugador"
+              @click="reportDialog = true"
+            />
+          </div>
+
+          <ReportUserDialog
+            v-model="reportDialog"
+            :user-id="route.params.uid"
+            :user-name="profile.nickname || profile.displayName || 'este jugador'"
+          />
         </template>
 
         <div v-else class="text-center q-pa-xl">
@@ -166,13 +197,14 @@ import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
 import { positionLabel, normalizePositions } from 'src/utils/positions'
 import { findTeam } from 'src/utils/teams'
+import ReportUserDialog from 'src/components/ReportUserDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const $q = useQuasar()
 const authStore = useAuthStore()
 
-const { fetchProfile, fetchMyRatingFor, rateDescription } = useProfile()
+const { fetchProfile, fetchMyRatingFor, findSharedGroupId, rateDescription } = useProfile()
 const { getGroup } = useGroups()
 
 const FOOT_OPTIONS = [
@@ -189,6 +221,10 @@ const profile = ref(null)
 const loadError = ref(null)
 const myRating = ref(0)
 const groupNames = ref({})
+// Grupo en común con el dueño del perfil (null = no compartimos ninguno, o sea
+// lo estoy viendo "de afuera"). Decide qué partes del perfil se muestran.
+const sharedGroupId = ref(null)
+const reportDialog = ref(false)
 
 const favoritePositions = computed(() => normalizePositions(profile.value?.preferredPositions))
 const favoriteTeam = computed(() => findTeam(profile.value?.favoriteTeam))
@@ -227,6 +263,7 @@ async function loadProfile(uid) {
   profile.value = null
   loadError.value = null
   myRating.value = 0
+  sharedGroupId.value = null
 
   // El perfil propio se edita en /perfil, no tiene sentido "verse" acá
   if (uid === authStore.user?.uid) {
@@ -236,6 +273,16 @@ async function loadProfile(uid) {
 
   try {
     profile.value = await fetchProfile(uid)
+
+    // Define si veo el perfil como compañero o "de afuera" (me postulé a su
+    // partido, o él al mío). De afuera se ve lo deportivo y nada más.
+    sharedGroupId.value = await findSharedGroupId(uid)
+    if (!sharedGroupId.value) {
+      myRating.value = 0
+      groupNames.value = {}
+      return
+    }
+
     myRating.value = (await fetchMyRatingFor(uid)) ?? 0
 
     const groupIds = Object.keys(profile.value.statsByGroup ?? {})
@@ -258,7 +305,7 @@ async function loadProfile(uid) {
 async function handleRate(stars) {
   const prev = myRating.value
   try {
-    await rateDescription(route.params.uid, stars)
+    await rateDescription(route.params.uid, stars, sharedGroupId.value)
     $q.notify({ type: 'positive', icon: 'star', message: 'Calificación guardada.', timeout: 1500 })
   } catch (err) {
     myRating.value = prev

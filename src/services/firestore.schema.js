@@ -18,6 +18,18 @@ const UserSchema = {
   fcmTokens:   'string[]',        // Todos los tokens conocidos (dedupe en functions)
   role:        "'admin' | 'og' | 'player'", // Rol del usuario (default: 'player')
 
+  // Qué categorías de push quiere recibir. Ausente = todas en su default
+  // (ver NOTIFICATION_DEFAULTS en src/utils/notifications.js y su gemelo en
+  // functions/index.js — las dos listas TIENEN que coincidir).
+  // El filtro se aplica en collectTokensFromUserDocs, único punto por el que
+  // pasan todos los envíos, así ninguna ruta se lo saltea.
+  notificationPrefs: {
+    myGroups:      'boolean',  // default true  — listas, recordatorios, cupos
+    applications:  'boolean',  // default true  — postulaciones a partidos
+    chat:          'boolean',  // default true  — mensajes del partido
+    publicNearby:  'boolean',  // default FALSE — partidos públicos (opt-in)
+  }, // | undefined
+
   // Perfil editable por el propio usuario (ProfilePage)
   nickname:      'string | null', // Apodo
   description:   'string',        // Descripción libre
@@ -99,8 +111,15 @@ const UserSchema = {
  * ══════════════════════════════════════════════════════════
  */
 const DescriptionRatingSchema = {
-  stars:     'number',    // 1-5
-  updatedAt: 'Timestamp',
+  stars:         'number',  // 1-5
+  sharedGroupId: 'string',  // Grupo por el que calificador y calificado se
+                            // conocen. OBLIGATORIO: las reglas verifican que
+                            // AMBOS sean miembros de ese grupo. Solo se puede
+                            // calificar a un compañero — un desconocido no
+                            // tiene cómo saber si la descripción es real, y su
+                            // voto sería un arma contra quien se postula desde
+                            // afuera a un partido público.
+  updatedAt:     'Timestamp',
 }
 
 /**
@@ -394,5 +413,31 @@ const VenueSchema = {
   createdBy: 'string',            // uid del creador
   createdAt: 'Timestamp',
   updatedAt: 'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  COLECCIÓN: reports
+ *  Path: /reports/{reportId}   (docId autogenerado)
+ * ══════════════════════════════════════════════════════════
+ *
+ *  Denuncias de usuarios. Mínimo viable de moderación, necesario antes de
+ *  abrir la app a gente que no se conoce (partidos públicos). No hay panel:
+ *  se revisan a mano desde la consola de Firebase.
+ *
+ *  NADIE los lee salvo un admin global — ni siquiera quien los escribió. Si el
+ *  denunciante pudiera listarlos sabría quién denunció a quién; si el
+ *  denunciado pudiera leerlos, el reporte invita a la represalia.
+ *  Nunca se borran (ni un admin puede): se resuelven cambiando `status`.
+ */
+const ReportSchema = {
+  reporterId:     'string',        // uid de quien denuncia (== request.auth.uid)
+  reporterName:   'string | null', // apodo/nombre, denormalizado para leerlo sin otro get
+  reportedUserId: 'string',        // uid del denunciado (nunca == reporterId)
+  reason:         'string',        // value de REPORT_REASONS (src/composables/useReports.js)
+  details:        'string',        // texto libre del denunciante (máx 1000)
+  matchId:        'string | null', // partido donde pasó, si aplica
+  status:         "'pending' | 'reviewed' | 'dismissed'", // se crea siempre en 'pending'
+  createdAt:      'Timestamp',
 }
 

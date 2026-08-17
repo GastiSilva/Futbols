@@ -20,7 +20,7 @@ import {
   assertSucceeds,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, addDoc, query, limit,
 } from 'firebase/firestore'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -159,6 +159,126 @@ describe('Partidos: visibilidad entre grupos', () => {
 
   test('un miembro del grupo SÍ puede ver la lista de anotados', async () => {
     await assertSucceeds(getDocs(collection(ctx(BOB), 'matches', MATCH_A, 'registrations')))
+  })
+})
+
+describe('Partidos: listar la colección exige un limit acotado', () => {
+  // Las reglas NO pueden inspeccionar las cláusulas `where` de una query
+  // (request.query solo expone limit/offset/orderBy), así que el aislamiento
+  // por grupo al LISTAR no es expresable. Lo que sí se puede exigir es un tope
+  // de resultados: sin él, una sola consulta barría la colección entera.
+  test('listar sin limit falla', async () => {
+    await assertFails(getDocs(collection(ctx(BOB), 'matches')))
+  })
+
+  test('listar con un limit por encima del tope falla', async () => {
+    await assertFails(getDocs(query(collection(ctx(BOB), 'matches'), limit(500))))
+  })
+
+  test('listar con un limit dentro del tope funciona', async () => {
+    await assertSucceeds(getDocs(query(collection(ctx(BOB), 'matches'), limit(200))))
+  })
+
+  test('un invitado anónimo NO puede listar partidos ni con limit', async () => {
+    await assertFails(getDocs(query(collection(guestCtx(GUEST), 'matches'), limit(50))))
+  })
+
+  test('un admin global puede listar sin limit', async () => {
+    await assertSucceeds(getDocs(collection(ctx(ADMIN, { admin: true }), 'matches')))
+  })
+})
+
+describe('Reportes de usuarios', () => {
+  const validReport = (reporter, reported) => ({
+    reporterId: reporter, reportedUserId: reported,
+    reason: 'behavior', details: 'Se peleó con todos.', status: 'pending',
+  })
+
+  test('cualquiera con cuenta puede reportar a otro', async () => {
+    await assertSucceeds(
+      addDoc(collection(ctx(BOB), 'reports'), validReport(BOB, MALLORY)),
+    )
+  })
+
+  test('no se puede reportar en nombre de otro', async () => {
+    await assertFails(
+      addDoc(collection(ctx(BOB), 'reports'), validReport(ALICE, MALLORY)),
+    )
+  })
+
+  test('no se puede reportar a uno mismo', async () => {
+    await assertFails(
+      addDoc(collection(ctx(BOB), 'reports'), validReport(BOB, BOB)),
+    )
+  })
+
+  test('no se puede crear un reporte ya resuelto', async () => {
+    await assertFails(
+      addDoc(collection(ctx(BOB), 'reports'), {
+        ...validReport(BOB, MALLORY), status: 'reviewed',
+      }),
+    )
+  })
+
+  test('el denunciante NO puede leer los reportes', async () => {
+    await assertFails(getDocs(collection(ctx(BOB), 'reports')))
+  })
+
+  test('un admin global SÍ puede leerlos', async () => {
+    await assertSucceeds(getDocs(collection(ctx(ADMIN, { admin: true }), 'reports')))
+  })
+
+  test('un invitado anónimo no puede reportar', async () => {
+    await assertFails(
+      addDoc(collection(guestCtx(GUEST), 'reports'), validReport(GUEST, BOB)),
+    )
+  })
+})
+
+describe('Calificar la descripción: solo entre compañeros de grupo', () => {
+  test('un compañero del mismo grupo puede calificar', async () => {
+    await assertSucceeds(
+      setDoc(doc(ctx(ALICE), 'users', BOB, 'descriptionRatings', ALICE), {
+        stars: 4, sharedGroupId: GROUP_A,
+      }),
+    )
+  })
+
+  test('alguien de otro grupo NO puede calificar', async () => {
+    await assertFails(
+      setDoc(doc(ctx(MALLORY), 'users', BOB, 'descriptionRatings', MALLORY), {
+        stars: 1, sharedGroupId: GROUP_B,
+      }),
+    )
+  })
+
+  test('mentir sobre el grupo compartido no sirve', async () => {
+    // Mallory no es miembro del grupo A, así que declararlo no la habilita.
+    await assertFails(
+      setDoc(doc(ctx(MALLORY), 'users', BOB, 'descriptionRatings', MALLORY), {
+        stars: 1, sharedGroupId: GROUP_A,
+      }),
+    )
+  })
+
+  test('sin sharedGroupId falla aunque compartan grupo', async () => {
+    await assertFails(
+      setDoc(doc(ctx(ALICE), 'users', BOB, 'descriptionRatings', ALICE), { stars: 4 }),
+    )
+  })
+})
+
+describe('Perfil: preferencias de notificación', () => {
+  test('el dueño puede escribir sus notificationPrefs', async () => {
+    await assertSucceeds(
+      updateDoc(doc(ctx(BOB), 'users', BOB), { 'notificationPrefs.publicNearby': true }),
+    )
+  })
+
+  test('nadie puede escribir las notificationPrefs de otro', async () => {
+    await assertFails(
+      updateDoc(doc(ctx(MALLORY), 'users', BOB), { 'notificationPrefs.publicNearby': true }),
+    )
   })
 })
 

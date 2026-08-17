@@ -1205,11 +1205,59 @@ async function assertCanManageMatchNotifications(auth, matchId) {
   )
 }
 
+// ── 9a0. Categorías de notificación y preferencias del usuario ───────────────
+//
+// Cada push que manda la app pertenece a UNA categoría. El usuario puede apagar
+// categorías sueltas desde su perfil (`users/{uid}.notificationPrefs`), sin
+// tener que bloquear las notificaciones del navegador — que era la única opción
+// que existía antes y que apagaba TODO para siempre, incluidos los avisos de su
+// propio grupo.
+//
+// Regla de oro: el default de una categoría ausente es `true` (quien nunca tocó
+// sus preferencias sigue recibiendo lo de siempre), EXCEPTO las que son opt-in
+// explícito (`publicNearby`), que nacen apagadas porque son las únicas que
+// notifican sobre partidos de gente que el usuario no conoce.
+const NOTIFICATION_CATEGORIES = {
+  MY_GROUPS: 'myGroups',       // Se abrió la lista, recordatorios, cupo libre, suplente que entra
+  PUBLIC_NEARBY: 'publicNearby', // Se publicó un partido abierto (opt-in — nace APAGADA)
+  APPLICATIONS: 'applications', // Alguien se postuló a mi partido / me aceptaron o rechazaron
+  CHAT: 'chat',                // Mensajes nuevos en el chat del partido
+}
+
+// Defaults por categoría. Ver el comentario de arriba sobre por qué
+// PUBLIC_NEARBY arranca en false.
+const NOTIFICATION_DEFAULTS = {
+  [NOTIFICATION_CATEGORIES.MY_GROUPS]: true,
+  [NOTIFICATION_CATEGORIES.PUBLIC_NEARBY]: false,
+  [NOTIFICATION_CATEGORIES.APPLICATIONS]: true,
+  [NOTIFICATION_CATEGORIES.CHAT]: true,
+}
+
+/**
+ * ¿Este usuario quiere recibir pushes de esta categoría?
+ * @param {object} userData  datos del doc users/{uid}
+ * @param {string|null} category  una de NOTIFICATION_CATEGORIES; null = no filtrar
+ */
+function wantsNotification(userData, category) {
+  if (!category) return true
+  const prefs = userData?.notificationPrefs
+  const value = prefs?.[category]
+  // `undefined` (nunca configuró esta categoría) cae al default de la categoría.
+  return typeof value === 'boolean' ? value : (NOTIFICATION_DEFAULTS[category] ?? true)
+}
+
 // ── 9a. Helper: recolectar tokens FCM de un conjunto de documentos de usuario
-function collectTokensFromUserDocs(userDocs) {
+//
+// `category` filtra por las preferencias del usuario. Se aplica ACÁ a propósito:
+// es el único punto por el que pasan todos los envíos (sendFCMToAllUsers,
+// ToGroupMembers, ToGroupOGs, ToUser), así que ninguna ruta puede saltearse el
+// filtro por olvido. Omitirlo (undefined) manda a todos, para los avisos que no
+// son opcionales.
+function collectTokensFromUserDocs(userDocs, category = null) {
   const tokenSet = new Set()
   userDocs.forEach((d) => {
     const u = d.data()
+    if (!wantsNotification(u, category)) return
     if (u.fcmToken) tokenSet.add(u.fcmToken)
     ;(u.fcmTokens ?? []).forEach((t) => t && tokenSet.add(t))
   })
@@ -1258,7 +1306,7 @@ async function dispatchFCM(tokens, title, body, data) {
 
 // ── 9c. Helper: enviar FCM a los miembros con ACCESO ANTICIPADO de un grupo ──
 // Acceso anticipado = OG (og == true) u owner/admin del grupo.
-async function sendFCMToGroupOGs(groupId, title, body, data) {
+async function sendFCMToGroupOGs(groupId, title, body, data, category = NOTIFICATION_CATEGORIES.MY_GROUPS) {
   if (!groupId) return
   const db = admin.firestore()
   const membersCol = db.collection('groups').doc(groupId).collection('members')
@@ -1283,17 +1331,24 @@ async function sendFCMToGroupOGs(groupId, title, body, data) {
     const usersSnap = await db
       .collection('users')
       .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
-      .select('fcmToken', 'fcmTokens')
+      .select('fcmToken', 'fcmTokens', 'notificationPrefs')
       .get()
     userDocs.push(...usersSnap.docs)
   }
 
-  const tokens = collectTokensFromUserDocs(userDocs)
+  const tokens = collectTokensFromUserDocs(userDocs, category)
   await dispatchFCM(tokens, title, body, data)
 }
 
 // ── 9c2. Helper: enviar FCM a TODOS los miembros de un grupo ─────────────────
-async function sendFCMToGroupMembers(groupId, title, body, data, excludeUserIds = []) {
+async function sendFCMToGroupMembers(
+  groupId,
+  title,
+  body,
+  data,
+  excludeUserIds = [],
+  category = NOTIFICATION_CATEGORIES.MY_GROUPS,
+) {
   if (!groupId) return
   const db = admin.firestore()
   const membersSnap = await db.collection('groups').doc(groupId).collection('members').get()
@@ -1317,23 +1372,23 @@ async function sendFCMToGroupMembers(groupId, title, body, data, excludeUserIds 
     const usersSnap = await db
       .collection('users')
       .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
-      .select('fcmToken', 'fcmTokens')
+      .select('fcmToken', 'fcmTokens', 'notificationPrefs')
       .get()
     userDocs.push(...usersSnap.docs)
   }
 
-  const tokens = collectTokensFromUserDocs(userDocs)
+  const tokens = collectTokensFromUserDocs(userDocs, category)
   await dispatchFCM(tokens, title, body, data)
 }
 
 // ── 9d. Helper: enviar FCM a UN usuario puntual ──────────────────────────────
-async function sendFCMToUser(userId, title, body, data) {
+async function sendFCMToUser(userId, title, body, data, category = NOTIFICATION_CATEGORIES.MY_GROUPS) {
   if (!userId) return
   const db = admin.firestore()
   const userSnap = await db.collection('users').doc(userId).get()
   if (!userSnap.exists) return
 
-  const tokens = collectTokensFromUserDocs([userSnap])
+  const tokens = collectTokensFromUserDocs([userSnap], category)
   logger.info(`[FCM] sendFCMToUser(${userId}) → tokens: ${tokens.length}`)
   if (tokens.length === 0) return
 
@@ -1361,12 +1416,24 @@ async function getRegisteredUserIds(matchId) {
 
 // ── 9. Helper: enviar FCM a todos los usuarios
 // `excludeUserIds`: uids que NO deben recibir la notificación (p. ej. ya anotados)
-async function sendFCMToAllUsers(title, body, data, excludeUserIds = []) {
+// `category`: categoría de NOTIFICATION_CATEGORIES — quien la tenga apagada en
+// su perfil no recibe nada. Es el envío más ruidoso de la app (toda la base),
+// así que es el que más depende de que el filtro esté puesto.
+async function sendFCMToAllUsers(
+  title,
+  body,
+  data,
+  excludeUserIds = [],
+  category = NOTIFICATION_CATEGORIES.MY_GROUPS,
+) {
   const db = admin.firestore()
   const excludeSet = new Set(excludeUserIds)
-  const usersSnap = await db.collection('users').select('fcmToken', 'fcmTokens').get()
+  const usersSnap = await db
+    .collection('users')
+    .select('fcmToken', 'fcmTokens', 'notificationPrefs')
+    .get()
   const includedDocs = usersSnap.docs.filter((d) => !excludeSet.has(d.id))
-  const tokens = collectTokensFromUserDocs(includedDocs)
+  const tokens = collectTokensFromUserDocs(includedDocs, category)
   logger.info(
     `[FCM] sendFCMToAllUsers → tokens: ${tokens.length} (excluidos ${excludeSet.size} usuarios)`,
   )

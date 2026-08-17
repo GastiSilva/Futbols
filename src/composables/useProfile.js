@@ -57,16 +57,51 @@ export function useProfile() {
     }
   }
 
+  // ── ¿Comparto algún grupo con esta persona? ─────────────────────────────────
+  // Devuelve el id del PRIMER grupo en común, o null si no comparten ninguno.
+  // Se usa para dos cosas: decidir si mostrar el bloque de calificación en el
+  // perfil, y para mandar ese id en el voto (las reglas lo exigen y verifican
+  // que ambos sean miembros de ese grupo — ver descriptionRatings).
+  //
+  // Recorre MIS grupos preguntando si el otro es miembro, en vez de pedir los
+  // grupos del otro: `members` es legible globalmente, pero enumerar los grupos
+  // de otra persona expondría su mapa social a cualquiera que abra su perfil.
+  async function findSharedGroupId(targetUid) {
+    const uid = authStore.user?.uid
+    if (!uid || !targetUid || uid === targetUid) return null
+
+    const myGroupIds = authStore.memberGroupIds ?? []
+    for (const groupId of myGroupIds) {
+      try {
+        const snap = await getDoc(doc(db, 'groups', groupId, 'members', targetUid))
+        if (snap.exists()) return groupId
+      } catch {
+        // sin permiso o sin conexión → se sigue con el próximo grupo
+      }
+    }
+    return null
+  }
+
   // Califica (o actualiza mi calificación de) la descripción de otro usuario.
-  async function rateDescription(targetUid, stars) {
+  // Solo se puede calificar a alguien con quien se comparte un grupo: un
+  // desconocido no tiene forma de saber si la descripción es real, y con los
+  // partidos públicos ese voto sería un arma contra quien se postula de afuera.
+  async function rateDescription(targetUid, stars, sharedGroupId = null) {
     const uid = authStore.user?.uid
     if (!uid) throw new Error('Usuario no autenticado')
     if (uid === targetUid) throw new Error('No podés calificar tu propia descripción.')
     if (!Number.isInteger(stars) || stars < 1 || stars > 5) {
       throw new Error('La calificación debe ser de 1 a 5 estrellas.')
     }
+
+    const groupId = sharedGroupId ?? (await findSharedGroupId(targetUid))
+    if (!groupId) {
+      throw new Error('Solo podés calificar a jugadores con los que compartís un grupo.')
+    }
+
     await setDoc(doc(db, 'users', targetUid, 'descriptionRatings', uid), {
       stars,
+      sharedGroupId: groupId,
       updatedAt: serverTimestamp(),
     })
   }
@@ -77,6 +112,7 @@ export function useProfile() {
     fetchProfile,
     fetchMyDescriptionStars,
     fetchMyRatingFor,
+    findSharedGroupId,
     rateDescription,
   }
 }
