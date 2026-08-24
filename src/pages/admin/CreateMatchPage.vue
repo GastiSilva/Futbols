@@ -398,6 +398,10 @@ async function handleSubmit() {
       venueMapsUrl: selectedVenue?.mapsUrl ?? null,
       venueLat: selectedVenue?.lat ?? null,
       venueLng: selectedVenue?.lng ?? null,
+      // Denormalizados igual que los anteriores: habilitan el filtro por
+      // provincia en "Partidos abiertos" sin tener que leer la sede.
+      provincia: selectedVenue?.provincia ?? null,
+      ciudad: selectedVenue?.ciudad ?? null,
     })
 
     // Solo programa notificaciones si se definió openAt

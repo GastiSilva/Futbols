@@ -18,6 +18,7 @@ export const NOTIFICATION_CATEGORIES = {
   PUBLIC_NEARBY: 'publicNearby',
   APPLICATIONS: 'applications',
   CHAT: 'chat',
+  BADGES: 'badges',
 }
 
 // Default de cada categoría cuando el usuario nunca la configuró.
@@ -28,20 +29,35 @@ export const NOTIFICATION_DEFAULTS = {
   [NOTIFICATION_CATEGORIES.PUBLIC_NEARBY]: false,
   [NOTIFICATION_CATEGORIES.APPLICATIONS]: true,
   [NOTIFICATION_CATEGORIES.CHAT]: true,
+  [NOTIFICATION_CATEGORIES.BADGES]: true,
 }
 
 // Cómo se muestran en el perfil. El orden es el de la lista en pantalla.
 //
 // ⚠️ Solo aparecen acá las categorías que YA tienen una feature funcionando
-// detrás. APPLICATIONS, CHAT y PUBLIC_NEARBY existen como categoría (el
-// backend ya las filtra) porque son de los partidos públicos — pero esa
-// feature todavía no está construida, así que mostrarlas sería un toggle que
-// no hace nada visible todavía. Sumarlas a esta lista cuando esa fase arranque.
+// detrás. PUBLIC_NEARBY existe como categoría (el backend ya la filtra) pero
+// todavía no hay nada que avise sobre partidos publicados cerca — sumarla
+// cuando exista ese aviso.
 export const NOTIFICATION_OPTIONS = [
   {
     key: NOTIFICATION_CATEGORIES.MY_GROUPS,
     label: 'Mis grupos',
     description: 'Se abre una lista, recordatorios, se liberó un cupo, entrás de suplente.',
+  },
+  {
+    key: NOTIFICATION_CATEGORIES.APPLICATIONS,
+    label: 'Postulaciones',
+    description: 'Alguien se quiere sumar a tu partido, o te respondieron una postulación.',
+  },
+  {
+    key: NOTIFICATION_CATEGORIES.CHAT,
+    label: 'Mensajes',
+    description: 'Cuando te escriben por el chat de una postulación.',
+  },
+  {
+    key: NOTIFICATION_CATEGORIES.BADGES,
+    label: 'Premios del mes',
+    description: 'Ganaste una insignia, y el palmarés de tus grupos el primero de cada mes.',
   },
 ]
 

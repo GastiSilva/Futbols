@@ -1,7 +1,12 @@
 ﻿// functions/index.js
 const { onCall, HttpsError } = require('firebase-functions/v2/https')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
-const { onDocumentUpdated, onDocumentWritten, onDocumentDeleted } = require('firebase-functions/v2/firestore')
+const {
+  onDocumentCreated,
+  onDocumentUpdated,
+  onDocumentWritten,
+  onDocumentDeleted,
+} = require('firebase-functions/v2/firestore')
 const logger = require('firebase-functions/logger')
 const admin = require('firebase-admin')
 const { computeMundialTransition, resolvePendingCoinFlip } = require('./mundial-rules')
@@ -362,6 +367,307 @@ async function runAutoCloseMatches() {
 }
 
 // ── Despachador único de tareas periódicas ───────────────────────────────────
+// ── 5b. Premios mensuales (insignias) ────────────────────────────────────────
+//
+// El primero de cada mes se calculan los ganadores del mes que acaba de
+// cerrar, por grupo, y se les otorga una insignia PERMANENTE.
+//
+// Por qué no es un job propio de Cloud Scheduler con cron '0 3 1 * *':
+// el proyecto tiene 3 jobs gratis y ya usa uno solo a propósito (ver el
+// comentario de SCHEDULED_TASKS). Gastar otro job en algo que corre 12 veces
+// al año no se paga. En cambio, el despachador —que ya corre igual— mira el
+// almanaque antes de trabajar.
+//
+// La garantía de "una sola entrega" NO la da el reloj sino el CENTINELA
+// `_badgeAwards/{period}`: si ese documento existe, el mes ya se premió y la
+// tarea sale sin hacer nada. Eso cubre lo que el reloj solo no puede:
+//   · si la corrida de las 3am falla, la de las 4am completa el trabajo
+//     (con un job mensual de una sola ejecución, ese mes se quedaba sin
+//     premios hasta correrlo a mano);
+//   · Cloud Scheduler entrega at-least-once, así que un disparo repetido
+//     no premia ni notifica dos veces.
+
+const BADGE_AWARDS_COLLECTION = '_badgeAwards'
+
+// Piso de partidos jugados en el mes para poder ganar. Sin esto, la insignia
+// se la lleva el que apareció UNA vez, metió 2 goles y no volvió — que es lo
+// contrario de lo que el premio quiere reconocer.
+const BADGE_MIN_MATCHES = 2
+
+// Qué se premia. `field` es el campo de playerStats que se suma; `mvp` es
+// booleano y se cuenta como 1/0.
+//
+// ⚠️ Las claves tienen que coincidir con BADGE_TYPES en src/utils/badges.js,
+// que es quien las dibuja. Acá se decide QUIÉN gana; allá, cómo se ve.
+const BADGE_DEFS = [
+  { type: 'topScorer',  field: 'goals',   label: 'Botín de Oro',   unit: ['gol', 'goles'] },
+  { type: 'topAssists', field: 'assists', label: 'Pies de Seda',  unit: ['asistencia', 'asistencias'] },
+  { type: 'topMvp',     field: 'mvp',     label: 'Figura del Mes', unit: ['MVP', 'MVPs'] },
+]
+
+// "Presente" no compite: no es "el que más X" sino una CONDICIÓN — jugó todos
+// los partidos que tuvo el grupo en el mes. Por eso la ganan varios a la vez,
+// a diferencia de las de arriba, donde el empate deja la insignia vacante.
+//
+// Existe para que la vitrina no sea siempre del mismo delantero: el que nunca
+// falta sostiene al grupo tanto como el que hace goles, y hasta ahora no tenía
+// nada que mostrar.
+const PRESENT_BADGE = { type: 'alwaysThere', label: 'Presente', unit: ['partido', 'partidos'] }
+
+// Piso de partidos que el GRUPO tiene que haber jugado para que "Presente"
+// signifique algo: con un solo partido en el mes, el que fue una vez no tiene
+// mérito de constancia.
+const PRESENT_MIN_GROUP_MATCHES = 3
+
+/** Date → '2026-08' (la CLAVE del período, no un instante). */
+function periodKeyOf(date) {
+  const y = date.getUTCFullYear()
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0')
+  return `${y}-${m}`
+}
+
+/**
+ * Ventana [inicio, fin) del mes ANTERIOR al que contiene `now`, en UTC.
+ * Se devuelve como rango semiabierto para que un partido guardado justo a
+ * medianoche del día 1 caiga en un solo mes y no en los dos.
+ */
+function previousMonthWindow(now) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+  return { start, end, period: periodKeyOf(start) }
+}
+
+/**
+ * Tarea mensual: otorga las insignias del mes cerrado y avisa.
+ * La despacha processScheduledTasks cuando es día 1 (ver SCHEDULED_TASKS).
+ */
+async function runMonthlyBadges() {
+  const db = admin.firestore()
+  const now = new Date()
+  const { start, end, period } = previousMonthWindow(now)
+
+  // Centinela: ¿este período ya se premió?
+  const sentinelRef = db.collection(BADGE_AWARDS_COLLECTION).doc(period)
+  const sentinelSnap = await sentinelRef.get()
+  if (sentinelSnap.exists) return
+
+  logger.info(`runMonthlyBadges: calculando premios de ${period}`)
+
+  // Un solo barrido de playerStats del mes. `savedAt` ya existía en el schema,
+  // así que esto funciona retroactivamente con todo el historial: no hizo
+  // falta agregar ningún campo nuevo para poder cortar por mes.
+  const statsSnap = await db
+    .collectionGroup('playerStats')
+    .where('savedAt', '>=', admin.firestore.Timestamp.fromDate(start))
+    .where('savedAt', '<', admin.firestore.Timestamp.fromDate(end))
+    .get()
+
+  if (statsSnap.empty) {
+    logger.info(`runMonthlyBadges: ${period} sin partidos, no hay premios`)
+    await sentinelRef.set({
+      period,
+      awardedAt: admin.firestore.FieldValue.serverTimestamp(),
+      badgesAwarded: 0,
+      groupsProcessed: 0,
+    })
+    return
+  }
+
+  // Acumulado por grupo → usuario. Los partidos sin grupo (groupId null) no
+  // participan: una insignia sin grupo no tiene contra quién competir.
+  const byGroup = new Map()
+  for (const docSnap of statsSnap.docs) {
+    const st = docSnap.data()
+    const groupId = st.groupId ?? null
+    const userId = st.userId ?? null
+    if (!groupId || !userId) continue
+
+    // El id del partido es el ABUELO del doc: playerStats/{uid} cuelga de
+    // matches/{matchId}. Se necesita para contar cuántos partidos distintos
+    // tuvo el grupo en el mes (denominador de "Presente").
+    const matchId = docSnap.ref.parent.parent?.id ?? null
+
+    if (!byGroup.has(groupId)) byGroup.set(groupId, { users: new Map(), matchIds: new Set() })
+    const bucket = byGroup.get(groupId)
+    if (matchId) bucket.matchIds.add(matchId)
+    const users = bucket.users
+    const acc = users.get(userId) ?? {
+      userId,
+      displayName: st.displayName ?? 'Jugador',
+      goals: 0,
+      assists: 0,
+      mvp: 0,
+      matches: 0,
+    }
+    acc.goals += Number(st.goals) || 0
+    acc.assists += Number(st.assists) || 0
+    acc.mvp += st.mvp === true ? 1 : 0
+    acc.matches += 1
+    // El nombre más reciente gana: si se cambió el apodo, que el premio lo use.
+    if (st.displayName) acc.displayName = st.displayName
+    users.set(userId, acc)
+  }
+
+  let badgesAwarded = 0
+  const winnersByUser = new Map()   // userId → [{ def, value, groupName }]
+  const podiumByGroup = new Map()   // groupId → { groupName, podium }
+
+  for (const [groupId, { users, matchIds }] of byGroup.entries()) {
+    const groupSnap = await db.collection('groups').doc(groupId).get()
+    if (!groupSnap.exists) continue
+    const groupName = groupSnap.data()?.name ?? 'tu grupo'
+
+    // Solo compiten los que llegaron al piso de partidos.
+    const eligible = [...users.values()].filter((u) => u.matches >= BADGE_MIN_MATCHES)
+    if (eligible.length === 0) continue
+
+    const podium = []
+
+    for (const def of BADGE_DEFS) {
+      let best = null
+      let tied = false
+      for (const u of eligible) {
+        const value = u[def.field] || 0
+        if (value <= 0) continue
+        if (!best || value > best[def.field]) {
+          best = u
+          tied = false
+        } else if (value === best[def.field]) {
+          tied = true
+        }
+      }
+
+      // Empate = nadie gana. Repartir la misma insignia entre tres personas
+      // la devalúa, y elegir "el primero que apareció" sería arbitrario.
+      if (!best || tied) continue
+
+      const value = best[def.field]
+      const badgeId = `${period}_${def.type}_${groupId}`
+      const badge = {
+        type: def.type,
+        groupId,
+        groupName,
+        period,
+        value,
+        wonAt: admin.firestore.FieldValue.serverTimestamp(),
+      }
+
+      // El id compuesto hace la escritura idempotente POR CONSTRUCCIÓN: si la
+      // tarea se repitiera, el set pisa el mismo doc en vez de duplicar.
+      await db
+        .collection('users')
+        .doc(best.userId)
+        .collection('badges')
+        .doc(badgeId)
+        .set(badge)
+
+      badgesAwarded += 1
+
+      const list = winnersByUser.get(best.userId) ?? []
+      list.push({ def, value, groupName })
+      winnersByUser.set(best.userId, list)
+
+      podium.push({
+        label: def.label,
+        name: best.displayName,
+        value,
+        unit: value === 1 ? def.unit[0] : def.unit[1],
+      })
+    }
+
+    // ── Presente ──────────────────────────────────────────────────────────
+    // Se la llevan TODOS los que jugaron los partidos que tuvo el grupo. No
+    // es competitiva, así que no aplica la regla del empate ni el piso
+    // individual de BADGE_MIN_MATCHES: acá el piso es del grupo.
+    //
+    // A propósito NO entra en `podium`: el palmarés que se manda al grupo
+    // lista un ganador por categoría, y Presente pueden ganarla ocho personas
+    // — la volvería un párrafo. El ganador igual recibe su push personal.
+    const groupMatches = matchIds.size
+    if (groupMatches >= PRESENT_MIN_GROUP_MATCHES) {
+      for (const u of users.values()) {
+        if (u.matches < groupMatches) continue
+
+        const badgeId = `${period}_${PRESENT_BADGE.type}_${groupId}`
+        await db
+          .collection('users')
+          .doc(u.userId)
+          .collection('badges')
+          .doc(badgeId)
+          .set({
+            type: PRESENT_BADGE.type,
+            groupId,
+            groupName,
+            period,
+            value: groupMatches,
+            wonAt: admin.firestore.FieldValue.serverTimestamp(),
+          })
+
+        badgesAwarded += 1
+
+        const list = winnersByUser.get(u.userId) ?? []
+        list.push({ def: PRESENT_BADGE, value: groupMatches, groupName })
+        winnersByUser.set(u.userId, list)
+      }
+    }
+
+    if (podium.length > 0) podiumByGroup.set(groupId, { groupName, podium })
+  }
+
+  // El centinela se escribe ANTES de notificar, a propósito: si el envío de
+  // pushes falla a la mitad, el reintento de la hora siguiente no vuelve a
+  // otorgar ni a avisarle de nuevo al que ya se enteró. Un premio perdido en
+  // el aire es mejor que un premio duplicado.
+  await sentinelRef.set({
+    period,
+    awardedAt: admin.firestore.FieldValue.serverTimestamp(),
+    badgesAwarded,
+    groupsProcessed: byGroup.size,
+  })
+
+  logger.info(`runMonthlyBadges: ${period} → ${badgesAwarded} insignias en ${byGroup.size} grupos`)
+
+  // ── Avisos ────────────────────────────────────────────────────────────────
+  // 1) Al ganador, uno personal por cada insignia que se llevó.
+  for (const [userId, wins] of winnersByUser.entries()) {
+    for (const win of wins) {
+      const unit = win.value === 1 ? win.def.unit[0] : win.def.unit[1]
+      try {
+        await sendFCMToUser(
+          userId,
+          win.def.type === PRESENT_BADGE.type
+            ? '🎖️ ¡Te ganaste la medalla de Presente!'
+            : `🏆 ¡Ganaste el ${win.def.label}!`,
+          win.def.type === PRESENT_BADGE.type
+            ? `No faltaste a ninguno de los ${win.value} partidos de ${win.groupName}.`
+            : `${win.value} ${unit} en ${win.groupName}. Ya está en tu perfil.`,
+          { type: 'badge_awarded', badgeType: win.def.type, period },
+          NOTIFICATION_CATEGORIES.BADGES,
+        )
+      } catch (error) {
+        logger.error(`runMonthlyBadges: falló el aviso a ${userId}`, error)
+      }
+    }
+  }
+
+  // 2) Al grupo, el palmarés — que es lo que genera la charla en el vestuario.
+  for (const [groupId, { groupName, podium }] of podiumByGroup.entries()) {
+    const body = podium.map((p) => `${p.label}: ${p.name} (${p.value} ${p.unit})`).join(' · ')
+    try {
+      await sendFCMToGroupMembers(
+        groupId,
+        `Los premios de ${groupName}`,
+        body,
+        { type: 'badges_podium', groupId, period },
+        [],
+        NOTIFICATION_CATEGORIES.BADGES,
+      )
+    } catch (error) {
+      logger.error(`runMonthlyBadges: falló el palmarés de ${groupId}`, error)
+    }
+  }
+}
+
 // Un solo job de Cloud Scheduler (de los 3 gratuitos) en vez de 5.
 //
 // Cada tarea declara cada cuántos minutos corre. El despachador arranca cada
@@ -372,21 +678,50 @@ async function runAutoCloseMatches() {
 // Las tareas se ejecutan de forma AISLADA: si una falla, se registra el error
 // y las demás siguen. Antes, cada job fallaba por su cuenta sin afectar al
 // resto; sin este try/catch por tarea, un error habría tumbado a todas.
+//
+// Una tarea declara CÓMO se agenda, de dos formas excluyentes:
+//   · `everyMinutes`: ritmo fijo (el caso de siempre).
+//   · `monthly: { day, hour }`: condición de ALMANAQUE. Existe porque "el
+//     primero de cada mes" no se puede expresar como un intervalo — un mes no
+//     dura una cantidad fija de minutos. Se evalúa una vez por hora dentro del
+//     día indicado; la garantía de que el trabajo ocurra UNA sola vez es del
+//     centinela de la propia tarea, no del reloj (ver runMonthlyBadges).
 const SCHEDULED_TASKS = [
   { name: 'matchOpenQueue',     everyMinutes: 1,  run: runMatchOpenQueue },
   { name: 'matchOgNotifyQueue', everyMinutes: 1,  run: runMatchOgNotifyQueue },
   { name: 'matchReminderQueue', everyMinutes: 1,  run: runMatchReminderQueue },
   { name: 'lowSignupAlert',     everyMinutes: 10, run: runMatchLowSignupAlert },
   { name: 'autoCloseMatches',   everyMinutes: 60, run: runAutoCloseMatches },
+  { name: 'monthlyBadges',      monthly: { day: 1, hour: 3 }, run: runMonthlyBadges },
 ]
+
+/**
+ * ¿Le toca correr a esta tarea en este instante?
+ *
+ * Las mensuales se chequean al minuto 0 de cada hora a partir de `hour`: si la
+ * corrida de las 3am falla, la de las 4am reintenta y el centinela evita que
+ * el trabajo se repita si la de las 3 sí había terminado.
+ */
+function taskIsDue(task, now, minuteOfEpoch) {
+  if (task.monthly) {
+    const { day = 1, hour = 3 } = task.monthly
+    return (
+      now.getUTCDate() === day &&
+      now.getUTCHours() >= hour &&
+      now.getUTCMinutes() === 0
+    )
+  }
+  return minuteOfEpoch % task.everyMinutes === 0
+}
 
 exports.processScheduledTasks = onSchedule(
   { region: LOCATION, schedule: 'every 1 minutes' },
   async () => {
-    const minuteOfEpoch = Math.floor(Date.now() / 60000)
+    const now = new Date()
+    const minuteOfEpoch = Math.floor(now.getTime() / 60000)
 
     for (const task of SCHEDULED_TASKS) {
-      if (minuteOfEpoch % task.everyMinutes !== 0) continue
+      if (!taskIsDue(task, now, minuteOfEpoch)) continue
       try {
         await task.run()
       } catch (error) {
@@ -1162,6 +1497,260 @@ exports.onUserDescriptionChanged = onDocumentUpdated(
   },
 )
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  POSTULACIONES A PARTIDOS PÚBLICOS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Alguien se postuló: avisar a los que ya están anotados ───────────────────
+// El sondeo (pulgar arriba/abajo) es consultivo: decide el organizador. Esto
+// existe para que el resto del equipo se entere de que va a jugar un
+// desconocido y pueda opinar antes, no después.
+exports.onApplicationCreated = onDocumentCreated(
+  { region: LOCATION, document: 'matches/{matchId}/applications/{applicantId}' },
+  async (event) => {
+    try {
+      const { matchId } = event.params
+      const application = event.data?.data() ?? {}
+      const db = admin.firestore()
+
+      const matchSnap = await db.collection('matches').doc(matchId).get()
+      if (!matchSnap.exists) return
+      const match = matchSnap.data()
+
+      const applicantName = application.applicantName || 'Alguien'
+      const title = '⚽ Alguien quiere sumarse'
+      const body = `${applicantName} se postuló para jugar "${match.title ?? 'el partido'}". Mirá su perfil.`
+
+      // A los que YA están anotados (son los que van a jugar con esta persona).
+      // Al organizador le llega igual: también está en la lista.
+      const registeredUserIds = await getRegisteredUserIds(matchId)
+      const notified = new Set(registeredUserIds)
+      // El creador puede no estar anotado todavía y es quien decide.
+      if (match.createdBy) notified.add(match.createdBy)
+
+      for (const uid of notified) {
+        await sendFCMToUser(
+          uid,
+          title,
+          body,
+          { matchId, type: 'match_application', applicantId: application.applicantId ?? '' },
+          NOTIFICATION_CATEGORIES.APPLICATIONS,
+        )
+      }
+
+      logger.info(
+        `onApplicationCreated: ${applicantName} → match ${matchId} (avisados ${notified.size})`,
+      )
+    } catch (error) {
+      logger.error('onApplicationCreated: error', error)
+    }
+  },
+)
+
+// ── Postulación resuelta: si la aceptaron, inscribir de verdad ───────────────
+// La inscripción NO la escribe el cliente: acá se corre la MISMA transacción de
+// cupos que useRegistration.registerEntry (leer currentPlayers → calcular
+// posición → escribir registration + contador), para que un alta por
+// postulación no pueda pasarse de maxPlayers ni pisar posiciones bajo
+// concurrencia.
+exports.onApplicationResolved = onDocumentUpdated(
+  { region: LOCATION, document: 'matches/{matchId}/applications/{applicantId}' },
+  async (event) => {
+    try {
+      const before = event.data.before.data() ?? {}
+      const after = event.data.after.data() ?? {}
+      if (before.status === after.status) return
+
+      const { matchId, applicantId } = event.params
+      const db = admin.firestore()
+
+      const matchSnap = await db.collection('matches').doc(matchId).get()
+      if (!matchSnap.exists) return
+      const matchTitle = matchSnap.data().title ?? 'el partido'
+
+      // ── Rechazada o retirada: solo se avisa (si la retiró él mismo, no) ────
+      if (after.status === 'rejected') {
+        await sendFCMToUser(
+          applicantId,
+          'Postulación rechazada',
+          `Esta vez no entraste a "${matchTitle}". ¡Buscá otro partido!`,
+          { matchId, type: 'application_rejected' },
+          NOTIFICATION_CATEGORIES.APPLICATIONS,
+        )
+        return
+      }
+
+      if (after.status !== 'accepted') return
+
+      // ── Aceptada: crear la inscripción real ───────────────────────────────
+      const matchRef = db.collection('matches').doc(matchId)
+      const regRef = matchRef.collection('registrations').doc(applicantId)
+
+      const result = await db.runTransaction(async (tx) => {
+        const [freshMatch, existingReg] = await Promise.all([
+          tx.get(matchRef),
+          tx.get(regRef),
+        ])
+        if (!freshMatch.exists) return null
+        // Ya estaba anotado (doble aceptación, reintento del trigger): no
+        // duplicar ni volver a mover el contador.
+        if (existingReg.exists) return null
+
+        const match = freshMatch.data()
+        if (match.status === 'closed' || match.status === 'finished') return null
+
+        const currentCount = match.currentPlayers ?? 0
+        const newPosition = currentCount + 1
+        const isOnWaitlist = match.maxPlayers != null && newPosition > match.maxPlayers
+
+        // Si esta aceptación llena el último cupo, se despublica en la misma
+        // escritura — sin esto, un partido lleno seguía recibiendo
+        // postulaciones hasta que alguien entrara a despublicarlo a mano.
+        const justFilled = !isOnWaitlist && match.maxPlayers != null && newPosition >= match.maxPlayers
+        tx.update(matchRef, {
+          currentPlayers: newPosition,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          ...(justFilled && match.isPublic ? { isPublic: false } : {}),
+        })
+
+        tx.set(regRef, {
+          userId: applicantId,
+          displayName: after.applicantName || 'Jugador',
+          photoURL: after.applicantPhotoURL ?? null,
+          isGuest: false,
+          guestName: null,
+          addedBy: after.resolvedBy ?? match.createdBy ?? applicantId,
+          addedByName: null,
+          registeredAt: admin.firestore.FieldValue.serverTimestamp(),
+          position: newPosition,
+          isOnWaitlist,
+          team: null,
+          // Marca de origen: entró por postulación, no lo anotó un compañero.
+          viaApplication: true,
+        })
+
+        return { position: newPosition, isOnWaitlist, date: match.date ?? null }
+      })
+
+      if (!result) {
+        logger.info(`onApplicationResolved: ${applicantId} ya estaba en ${matchId}, se omite`)
+        return
+      }
+
+      await sendFCMToUser(
+        applicantId,
+        '🎉 ¡Te aceptaron!',
+        result.isOnWaitlist
+          ? `Entraste a "${matchTitle}" como suplente.`
+          : `Ya estás anotado en "${matchTitle}".`,
+        { matchId, type: 'application_accepted' },
+        NOTIFICATION_CATEGORIES.APPLICATIONS,
+      )
+
+      await withdrawOverlappingApplications(db, applicantId, matchId, result.date)
+
+      logger.info(`onApplicationResolved: ${applicantId} aceptado en ${matchId}`)
+    } catch (error) {
+      logger.error('onApplicationResolved: error', error)
+    }
+  },
+)
+
+// ── Mensaje nuevo en el chat de una postulación ──────────────────────────────
+// Chat 1-a-1: el destinatario es siempre "el otro". Como son dos participantes
+// y la conversación es de coordinación pura, cada mensaje SÍ le importa a quien
+// lo recibe — a diferencia de un chat grupal del partido, que mandaría 13
+// notificaciones irrelevantes por mensaje.
+exports.onApplicationMessage = onDocumentCreated(
+  {
+    region: LOCATION,
+    document: 'matches/{matchId}/applications/{applicantId}/messages/{messageId}',
+  },
+  async (event) => {
+    try {
+      const { matchId, applicantId } = event.params
+      const msg = event.data?.data() ?? {}
+      if (!msg.senderId) return
+
+      const db = admin.firestore()
+      const matchSnap = await db.collection('matches').doc(matchId).get()
+      if (!matchSnap.exists) return
+      const match = matchSnap.data()
+
+      // El otro lado del chat: si escribió el postulante, avisar al organizador;
+      // si escribió el organizador, avisar al postulante.
+      const recipientId = msg.senderId === applicantId ? match.createdBy : applicantId
+      if (!recipientId || recipientId === msg.senderId) return
+
+      const preview = (msg.text ?? '').slice(0, 80)
+
+      await sendFCMToUser(
+        recipientId,
+        `💬 ${msg.senderName || 'Mensaje nuevo'}`,
+        preview,
+        { matchId, type: 'application_message', applicantId },
+        NOTIFICATION_CATEGORIES.CHAT,
+      )
+
+      logger.info(`onApplicationMessage: ${msg.senderId} → ${recipientId} (match ${matchId})`)
+    } catch (error) {
+      logger.error('onApplicationMessage: error', error)
+    }
+  },
+)
+
+// Al entrar a un partido, retira las postulaciones pendientes de esa persona a
+// otros partidos que se SOLAPEN en horario. Solo las solapadas: postularse al
+// sábado y al domingo es perfectamente válido y matarle la del domingo sería
+// un bug.
+const OVERLAP_WINDOW_MS = 2 * 60 * 60 * 1000 // ±2hs alrededor del partido aceptado
+
+async function withdrawOverlappingApplications(db, applicantId, acceptedMatchId, acceptedDate) {
+  if (!acceptedDate) return
+
+  const acceptedMs = acceptedDate.toMillis?.() ?? 0
+  if (!acceptedMs) return
+
+  const pendingSnap = await db
+    .collectionGroup('applications')
+    .where('applicantId', '==', applicantId)
+    .where('status', '==', 'pending')
+    .get()
+
+  const toWithdraw = []
+  for (const docSnap of pendingSnap.docs) {
+    const otherMatchId = docSnap.ref.parent.parent?.id
+    if (!otherMatchId || otherMatchId === acceptedMatchId) continue
+
+    const otherMatch = await db.collection('matches').doc(otherMatchId).get()
+    if (!otherMatch.exists) continue
+
+    const otherMs = otherMatch.data().date?.toMillis?.() ?? 0
+    if (!otherMs) continue
+
+    if (Math.abs(otherMs - acceptedMs) <= OVERLAP_WINDOW_MS) {
+      toWithdraw.push(docSnap.ref)
+    }
+  }
+
+  if (toWithdraw.length === 0) return
+
+  const batch = db.batch()
+  toWithdraw.forEach((ref) => {
+    batch.update(ref, {
+      status: 'withdrawn',
+      resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+      resolvedBy: 'system',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  })
+  await batch.commit()
+
+  logger.info(
+    `withdrawOverlappingApplications: ${applicantId} → ${toWithdraw.length} postulación(es) retirada(s) por solaparse`,
+  )
+}
+
 // ── Helper: ¿el caller es owner/admin del grupo del partido? ─────────────────
 // ¿Puede este uid programar las notificaciones de ESTE partido?
 //
@@ -1222,6 +1811,7 @@ const NOTIFICATION_CATEGORIES = {
   PUBLIC_NEARBY: 'publicNearby', // Se publicó un partido abierto (opt-in — nace APAGADA)
   APPLICATIONS: 'applications', // Alguien se postuló a mi partido / me aceptaron o rechazaron
   CHAT: 'chat',                // Mensajes nuevos en el chat del partido
+  BADGES: 'badges',            // Premios del mes: ganaste una insignia / palmarés del grupo
 }
 
 // Defaults por categoría. Ver el comentario de arriba sobre por qué
@@ -1231,6 +1821,7 @@ const NOTIFICATION_DEFAULTS = {
   [NOTIFICATION_CATEGORIES.PUBLIC_NEARBY]: false,
   [NOTIFICATION_CATEGORIES.APPLICATIONS]: true,
   [NOTIFICATION_CATEGORIES.CHAT]: true,
+  [NOTIFICATION_CATEGORIES.BADGES]: true,
 }
 
 /**

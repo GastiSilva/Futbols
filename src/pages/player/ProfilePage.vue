@@ -142,6 +142,9 @@
           </q-card-section>
         </q-card>
 
+        <!-- ── Vitrina de premios ──────────────────────────────────────── -->
+        <BadgeShelf :badges="badges" show-group />
+
         <!-- ── Estadísticas por grupo ──────────────────────────────────── -->
         <template v-if="groupStatRows.length > 0">
           <div class="text-overline text-green-9 text-weight-bold q-mb-sm">
@@ -439,6 +442,8 @@ import { useProfile } from 'src/composables/useProfile'
 import { useMundial, PHASE_ORDER, PHASE_LABELS } from 'src/composables/useMundial'
 import { useAuthStore, ROLE_LABELS, ROLE_COLORS } from 'src/stores/auth.store'
 import PitchPositionPicker from 'src/components/PitchPositionPicker.vue'
+import BadgeShelf from 'src/components/BadgeShelf.vue'
+import { useBadges } from 'src/composables/useBadges'
 import MundialCoinFlipDialog from 'src/components/MundialCoinFlipDialog.vue'
 import { positionLabel, normalizePositions, MAX_FAVORITE_POSITIONS } from 'src/utils/positions'
 import { TEAM_OPTIONS as ALL_TEAM_OPTIONS, LEAGUE_BADGES, findTeam } from 'src/utils/teams'
@@ -469,6 +474,8 @@ const { getMyGroups } = useGroups()
 const { fetchMyDescriptionStars } = useProfile()
 const { getMyMundial, activateMundial } = useMundial()
 const authStore = useAuthStore()
+const { getUserBadges } = useBadges()
+const badges = ref([])
 
 const descriptionStars = ref({ avg: 0, count: 0 })
 
@@ -591,6 +598,7 @@ onMounted(async () => {
   try {
     const uid = user.value?.uid
     if (uid) {
+      badges.value = await getUserBadges(uid)
       const snap = await getDoc(doc(db, 'users', uid))
       if (snap.exists()) {
         const data = snap.data()

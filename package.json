@@ -11,7 +11,10 @@
     "dev": "quasar dev",
     "build": "quasar build",
     "build:pwa": "quasar build -m pwa",
-    "test:rules": "firebase emulators:exec --only firestore \"vitest run tests/firestore.rules.test.js\""
+    "test:rules": "firebase emulators:exec --only firestore \"vitest run tests/firestore.rules.test.js\"",
+    "emu": "firebase emulators:start --import=./.emulator-data --export-on-exit=./.emulator-data",
+    "emu:clean": "firebase emulators:start",
+    "seed": "node scripts/seed-emulator.mjs"
   },
   "dependencies": {
     "@quasar/extras": "^1.16.9",

@@ -113,6 +113,17 @@ function registrationAccessFor(match, authStore) {
     return { allowed: true, threshold: 0 }
   }
 
+  // Postulación pública aceptada: tiene una registration propia en ESTE
+  // partido sin ser miembro del grupo. authStore.appliedMatchIds lo puebla
+  // useMatch.watchAppliedMatches en tiempo real (collectionGroup de
+  // applications propias con status accepted) — vive en el store, no en el
+  // objeto match, porque MatchDetailPage carga el match por id
+  // (subscribeToMatch) y nunca pasaría por esa suscripción. Sin esto, quien
+  // llega por esta vía se quedaba viendo "0/0 anotados" para siempre:
+  // msUntilOpen daba Infinity por no pertenecer al grupo, aunque ya estuviera
+  // adentro de la lista.
+  if (authStore.hasAppliedAccess(match.id)) return { allowed: true, threshold: openAt }
+
   // Partido de grupo: solo miembros. Un admin global NO tiene bypass para
   // participar en partidos de grupos ajenos (sí para verlos en superAdminMode).
   if (match.groupId && !authStore.isMemberOfGroup(match.groupId)) return denied
@@ -330,9 +341,16 @@ export function useRegistration() {
         const isOnWaitlist = match.maxPlayers != null && newPosition > match.maxPlayers
 
         // ── 4. ESCRITURAS ATÓMICAS ────────────────────────────────────────
+        // Si el cupo se llenó justo con esta alta y el partido estaba
+        // publicado, se despublica en la misma escritura: nadie de afuera
+        // puede seguir postulándose a un partido que ya no tiene lugar. Se
+        // hace acá (sin ningún job/scheduler nuevo) porque el evento "se
+        // llenó" solo ocurre en el instante de esta transacción.
+        const justFilled = !isOnWaitlist && match.maxPlayers != null && newPosition >= match.maxPlayers
         transaction.update(matchRef, {
           currentPlayers: newPosition,
           updatedAt: serverTimestamp(),
+          ...(justFilled && match.isPublic ? { isPublic: false } : {}),
         })
 
         transaction.set(regRef, {

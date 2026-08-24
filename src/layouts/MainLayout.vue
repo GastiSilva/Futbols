@@ -91,6 +91,19 @@
                 clickable
                 v-ripple
                 class="drawer-item"
+                :to="{ name: 'public-matches' }"
+                active-class="drawer-item--active"
+              >
+                <q-item-section avatar>
+                  <q-icon name="travel_explore" size="22px" />
+                </q-item-section>
+                <q-item-section>Partidos abiertos</q-item-section>
+              </q-item>
+
+              <q-item
+                clickable
+                v-ripple
+                class="drawer-item"
                 :to="{ name: 'leaderboard' }"
                 active-class="drawer-item--active"
               >

@@ -18,20 +18,28 @@ import {
 } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
+import { normalizeProvincia } from 'src/utils/provincias'
 
 // Estado reactivo compartido entre instancias del composable
 const venues = ref([])
 
-// Geocodifica una dirección a { lat, lng } usando Nominatim (OpenStreetMap,
-// gratis, sin API key). Se llama UNA sola vez por sede (al crear/editar), no
-// por partido — costo esporádico y bajo. Si falla o no hay match, devuelve
-// null y la sede queda sin coordenadas (el clima del partido simplemente no
-// se muestra, no rompe nada más).
+// Geocodifica una dirección a { lat, lng, provincia, ciudad } usando Nominatim
+// (OpenStreetMap, gratis, sin API key). Se llama UNA sola vez por sede (al
+// crear/editar), no por partido — costo esporádico y bajo. Si falla o no hay
+// match, devuelve null y la sede queda sin datos de ubicación (el clima del
+// partido simplemente no se muestra y no entra en el filtro por provincia,
+// pero sigue apareciendo en el listado general).
+//
+// `addressdetails=1` pide el desglose administrativo (provincia/ciudad) en la
+// MISMA respuesta que ya se usaba para lat/lng: no cuesta una llamada extra,
+// solo se estaba descartando.
 async function geocodeAddress(address) {
   const trimmed = address?.trim()
   if (!trimmed) return null
   try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(trimmed)}`
+    const url =
+      'https://nominatim.openstreetmap.org/search' +
+      `?format=json&limit=1&addressdetails=1&countrycodes=ar&q=${encodeURIComponent(trimmed)}`
     const res = await fetch(url, { headers: { Accept: 'application/json' } })
     if (!res.ok) {
       // Nominatim limita por uso (429) y rechaza clientes sin identificar.
@@ -47,10 +55,48 @@ async function geocodeAddress(address) {
       console.warn(`Sin resultados de geocodificación para "${trimmed}"`)
       return null
     }
-    return { lat: parseFloat(first.lat), lng: parseFloat(first.lon) }
+
+    const lat = parseFloat(first.lat)
+    const lng = parseFloat(first.lon)
+    const addr = first.address ?? {}
+
+    // Nominatim no es consistente en qué campo trae la localidad: según la
+    // zona puede venir como city, town, village o municipality. Se toma el
+    // primero que exista.
+    const ciudad =
+      addr.city || addr.town || addr.village || addr.municipality || addr.suburb || null
+
+    let provincia = normalizeProvincia(addr.state)
+
+    // Respaldo con Georef (datos oficiales del Estado argentino) cuando
+    // Nominatim no devuelve la provincia — pasa seguido con direcciones mal
+    // escritas o zonas rurales. Solo se llama en ese caso, no siempre.
+    if (!provincia && Number.isFinite(lat) && Number.isFinite(lng)) {
+      provincia = await fetchProvinciaFromGeoref(lat, lng)
+    }
+
+    return { lat, lng, provincia, ciudad }
   } catch (err) {
     console.warn(`Geocodificación no disponible para "${trimmed}":`, err.message)
     return null // sin conexión o servicio caído: la sede queda sin coordenadas
+  }
+}
+
+// Georef (API pública del Estado argentino) resuelve coordenadas → provincia
+// oficial. Es el respaldo de Nominatim, no la fuente principal: se consulta
+// solo cuando Nominatim no trajo la provincia, para no sumar una llamada de
+// red a cada alta de sede.
+async function fetchProvinciaFromGeoref(lat, lng) {
+  try {
+    const url = `https://apis.datos.gob.ar/georef/api/ubicacion?lat=${lat}&lon=${lng}&campos=provincia`
+    const res = await fetch(url, { headers: { Accept: 'application/json' } })
+    if (!res.ok) return null
+    const data = await res.json()
+    return normalizeProvincia(data?.ubicacion?.provincia?.nombre)
+  } catch {
+    // Georef caído o sin conexión: la sede queda sin provincia y simplemente
+    // no entra en el filtro (sigue visible en el listado general).
+    return null
   }
 }
 
@@ -104,6 +150,10 @@ export function useVenues() {
         groupId: groupId ?? null,
         lat: coords?.lat ?? null,
         lng: coords?.lng ?? null,
+        // Derivados del mismo geocoding (no cuestan una llamada extra) —
+        // habilitan el filtro por provincia en "Partidos abiertos".
+        provincia: coords?.provincia ?? null,
+        ciudad: coords?.ciudad ?? null,
         createdBy: uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -151,10 +201,15 @@ export function useVenues() {
       const prevVenue = venues.value.find((v) => v.id === venueId)
       const addressChanged = prevVenue?.address !== trimmedAddress
       const missingCoords = prevVenue?.lat == null || prevVenue?.lng == null
-      if (addressChanged || missingCoords) {
+      // Las sedes creadas antes de que existiera el filtro por provincia no
+      // tienen ese campo: se re-geocodifican al editarlas para completarlo.
+      const missingProvincia = prevVenue?.provincia == null
+      if (addressChanged || missingCoords || missingProvincia) {
         const coords = await geocodeAddress(trimmedAddress)
         fields.lat = coords?.lat ?? null
         fields.lng = coords?.lng ?? null
+        fields.provincia = coords?.provincia ?? null
+        fields.ciudad = coords?.ciudad ?? null
       }
 
       await updateDoc(doc(db, 'venues', venueId), fields)

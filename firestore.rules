@@ -139,6 +139,24 @@ service cloud.firestore {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // APPLICATIONS GLOBAL LIST (collectionGroup)
+    // ─────────────────────────────────────────────────────────────────────────
+    // ⚠️ Comprobado empíricamente (no es una lectura de la doc): una regla
+    // `allow list` anidada dentro de `match /matches/{matchId} { match
+    // /applications/{id} {...} }` NO habilita queries `collectionGroup()`,
+    // sin importar la condición — Firestore responde "No matching allow
+    // statements" aunque la condición sea `if true`. Para que "mis
+    // postulaciones" (subscribeToMyApplications, un collectionGroup filtrado
+    // por applicantId) funcione, hace falta esta regla en el nivel superior
+    // del árbol, con el mismo patrón recursivo que ya usa members arriba.
+    // El `allow list` de la subcolección anidada (más abajo) sigue cubriendo
+    // las queries normales de un partido puntual (organizador viendo "se
+    // quieren sumar"); esta es la que faltaba para el caso collectionGroup.
+    match /{path=**}/applications/{applicantId} {
+      allow list: if isAuthenticated() && request.query.limit <= 50;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // USERS
     // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId} {
@@ -216,6 +234,23 @@ service cloud.firestore {
 
         allow write: if isOwner(userId)
                      || isGroupAdmin(groupId);
+      }
+
+      // ── users/{userId}/badges ──────────────────────────────────────────────
+      // Insignias mensuales ganadas (Botín de Oro, Manos de Seda, Figura del
+      // Mes). Son un premio PÚBLICO: se leen sin restricción, que es
+      // justamente la gracia — el que se postula desde afuera muestra lo que
+      // ganó. Lo que ProfileViewPage sí oculta a un desconocido es el NOMBRE
+      // del grupo (ver describeBadge en src/utils/badges.js), por el mismo
+      // motivo por el que se oculta statsByGroup: expone el mapa social.
+      //
+      // NADIE las escribe desde el cliente, ni siquiera el dueño del perfil ni
+      // un admin global: las otorga solo la tarea runMonthlyBadges por admin
+      // SDK, que se saltea estas reglas. Si el cliente pudiera escribir acá,
+      // cualquiera se autoproclamaría goleador del mes.
+      match /badges/{badgeId} {
+        allow read: if true;
+        allow write: if false;
       }
 
       // ── users/{userId}/descriptionRatings ───────────────────────────────────
@@ -299,10 +334,22 @@ service cloud.firestore {
       // (matchId == su guestMatchId, que el cliente fija al entrar). Como las
       // reglas no ven el sessionStorage del cliente, se valida distinto: el
       // invitado solo puede leer un partido puntual por id — nunca listarlos.
+      // Rama extra: un partido PUBLICADO (isPublic == true) lo puede leer
+      // cualquier usuario con cuenta, aunque no sea del grupo — es lo que
+      // habilita a alguien de afuera a verlo antes de postularse
+      // (matches/applications). No abre `registrations`: eso sigue exigiendo
+      // membresía de grupo, así que el que se postula ve el partido pero no
+      // la lista de anotados hasta que lo acepten.
+      // Rama extra: quien ya tiene una registration propia ahí (le aceptaron
+      // una postulación) sigue viendo el partido aunque el organizador lo
+      // despublique después — sin esto, "despublicar" le tapaba el partido a
+      // alguien que ya estaba anotado, no solo a los que faltaban postularse.
       allow get: if
         isAdmin()
         || isAnonGuest()
-        || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)));
+        || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)))
+        || (isAuthenticated() && matchData(matchId).get('isPublic', false) == true)
+        || (isAuthenticated() && guestHasEntryInMatch(matchId));
 
       // Listar/consultar partidos (query). Un invitado anónimo nunca lista: lee
       // su partido puntual por id (allow get de arriba).
@@ -384,6 +431,30 @@ service cloud.firestore {
 
         ||
 
+        // Mismo alta de arriba, pero cuando ese +1 llena el último cupo de un
+        // partido publicado: se despublica en la misma escritura (cierra la
+        // postulación pública apenas se llena, sin depender de ningún job).
+        // Solo puede APAGAR isPublic (nunca prenderlo) y solo junto con el
+        // +1 correcto — no abre una vía nueva para despublicar por las suyas.
+        (
+          (
+            isAdmin()
+            || isGroupless(matchId)
+            || isMemberOfMatchGroup(matchId)
+            || (isAnonGuest() && guestHasEntryInMatch(matchId))
+          )
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['currentPlayers', 'updatedAt', 'isPublic'])
+          && request.resource.data.currentPlayers is int
+          && request.resource.data.currentPlayers == resource.data.currentPlayers + 1
+          && resource.data.get('isPublic', false) == true
+          && request.resource.data.isPublic == false
+          && request.resource.data.get('maxPlayers', null) != null
+          && request.resource.data.currentPlayers >= request.resource.data.maxPlayers
+        )
+
+        ||
+
         // Editar datos generales del partido (título, sede, fecha, horarios,
         // formato): quien tiene acceso anticipado en el grupo (OG/owner/
         // admin) o quien creó el partido — antes esto solo lo podía hacer un
@@ -395,7 +466,15 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly([
                  'title', 'location', 'venueId', 'venueMapsUrl', 'venueLat', 'venueLng',
-                 'date', 'openAt', 'notifyAt', 'format', 'maxPlayers', 'status', 'updatedAt'
+                 // Denormalizados de la sede (derivados del geocoding) — habilitan
+                 // el filtro por provincia en "Partidos abiertos". Van en esta
+                 // lista porque updateMatch los reescribe al editar el partido:
+                 // sin ellos, editar cualquier partido daría permission-denied.
+                 'provincia', 'ciudad',
+                 'date', 'openAt', 'notifyAt', 'format', 'maxPlayers', 'status', 'updatedAt',
+                 // Publicación del partido al resto de la app ("busco jugadores").
+                 // Mismo permiso que editar los datos: quien gestiona el partido.
+                 'isPublic', 'publishedAt', 'spotsWanted'
                ])
           && request.resource.data.groupId == resource.data.groupId
         )
@@ -478,15 +557,22 @@ service cloud.firestore {
         // lista de un partido cuyo id no conoce no es un riesgo real: para
         // llegar acá necesita el matchId exacto, que es justamente el link que
         // le compartieron.
+        // Rama extra: quien llegó por una postulación pública aceptada tiene
+        // una registration propia en ESTE partido sin ser miembro del grupo —
+        // sin esto, ver el detalle del partido (MatchDetailPage) le tiraba
+        // permission-denied al cargar la lista de anotados, aunque él mismo
+        // ya estuviera en ella.
         allow get: if
           isAdmin()
           || isAnonGuest()
-          || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)));
+          || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)))
+          || (isAuthenticated() && guestHasEntryInMatch(matchId));
 
         allow list: if
           isAdmin()
           || isAnonGuest()
-          || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)));
+          || (isAuthenticated() && (isGroupless(matchId) || isMemberOfMatchGroup(matchId)))
+          || (isAuthenticated() && guestHasEntryInMatch(matchId));
 
         // ── ALTA ──────────────────────────────────────────────────────────
         // Tres ventanas posibles:
@@ -617,6 +703,137 @@ service cloud.firestore {
           isOwner(userId)
           || isAdmin()
           || resource.data.get('addedBy', '') == request.auth.uid;
+      }
+
+      // ──────────────────────────────────────────────────────────────────────
+      // APPLICATIONS (postulaciones a un partido público)
+      // ──────────────────────────────────────────────────────────────────────
+      // Alguien de AFUERA del grupo se ofrece a jugar un partido publicado.
+      // Es deliberadamente una colección SEPARADA de `registrations`: una
+      // postulación no ocupa cupo ni mueve `currentPlayers` — es una solicitud
+      // pendiente. Recién cuando el organizador la acepta, la Cloud Function
+      // onApplicationAccepted crea la registration de verdad.
+      //
+      // Esa separación es lo que permite no tocar en absoluto las reglas de
+      // `registrations`: el postulante nunca escribe ahí, ni siquiera al ser
+      // aceptado (lo hace la CF con Admin SDK).
+      match /applications/{applicantId} {
+
+        // Ver una postulación: el propio postulante (para seguir su estado) o
+        // cualquier miembro del grupo del partido (la evalúan entre todos, y
+        // el organizador la resuelve).
+        allow get: if
+          isAdmin()
+          || isOwner(applicantId)
+          || isMemberOfMatchGroup(matchId);
+
+        // Listar (queries directas de subcolección, ej. "se quieren sumar" en
+        // el detalle del partido): los miembros del grupo ven todas las de su
+        // partido. El caso "mis postulaciones" (collectionGroup filtrando por
+        // applicantId) NO lo cubre esta regla — ver el bloque
+        // `{path=**}/applications` más arriba en el archivo.
+        allow list: if isAdmin() || isMemberOfMatchGroup(matchId);
+
+        // Postularse: cualquiera con cuenta, SOLO a nombre propio, SOLO si el
+        // partido está publicado, y siempre naciendo en 'pending'.
+        //
+        // `!isMemberOfMatchGroup` es a propósito: si ya sos del grupo te
+        // anotás derecho en la lista, no te postulás. Sin esta condición
+        // habría dos caminos para lo mismo y el organizador vería
+        // postulaciones de gente que ya podía entrar sola.
+        allow create: if
+          isAuthenticated()
+          && isOwner(applicantId)
+          && request.resource.data.applicantId == request.auth.uid
+          && !isMemberOfMatchGroup(matchId)
+          && matchData(matchId).get('isPublic', false) == true
+          && request.resource.data.status == 'pending'
+          && request.resource.data.get('message', '') is string
+          && request.resource.data.get('message', '').size() <= 300;
+
+        // Resolver: solo quien gestiona el partido (mismo criterio que editarlo)
+        // puede aceptar o rechazar. El propio postulante solo puede RETIRARSE
+        // ('withdrawn'), y solo mientras siga pendiente — una vez resuelta, ni
+        // él ni nadie la reabre.
+        allow update: if
+          isAdmin()
+          || (
+            (hasEarlyAccessInMatchGroup(matchId) || isMatchCreator(matchId))
+            && resource.data.status == 'pending'
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'resolvedAt', 'resolvedBy', 'updatedAt'])
+            && request.resource.data.status in ['accepted', 'rejected']
+          )
+          || (
+            isOwner(applicantId)
+            && resource.data.status == 'pending'
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'updatedAt'])
+            && request.resource.data.status == 'withdrawn'
+          );
+
+        // Nunca se borran: quedan como registro, igual que joinRequests.
+        allow delete: if false;
+
+        // ── Chat 1-a-1 de la postulación ────────────────────────────────────
+        // Conversación privada entre el postulante y quien gestiona el partido,
+        // para coordinar lo básico ("¿dónde es?", "llevá algo blanco", "llego
+        // 10 min tarde").
+        //
+        // Es a propósito 1-a-1 y NO un chat grupal del partido: un chat de 14
+        // personas genera 13 notificaciones irrelevantes por mensaje, y la
+        // conversación que de verdad hace falta es entre el que toca el timbre
+        // y el que abre la puerta. Además hereda el permiso naturalmente: quien
+        // puede ver la postulación puede ver su chat.
+        match /messages/{messageId} {
+
+          allow get, list: if
+            isAdmin()
+            || isOwner(applicantId)
+            || hasEarlyAccessInMatchGroup(matchId)
+            || isMatchCreator(matchId);
+
+          // Escriben los dos lados, siempre a nombre propio. `senderId` se
+          // valida contra el uid real para que nadie escriba haciéndose pasar
+          // por el otro.
+          allow create: if
+            isAuthenticated()
+            && request.resource.data.senderId == request.auth.uid
+            && request.resource.data.text is string
+            && request.resource.data.text.size() > 0
+            && request.resource.data.text.size() <= 1000
+            && (
+              isOwner(applicantId)
+              || hasEarlyAccessInMatchGroup(matchId)
+              || isMatchCreator(matchId)
+            );
+
+          // Un mensaje no se edita (sería reescribir lo que el otro ya leyó);
+          // se borra el propio, o cualquiera si sos admin.
+          allow update: if false;
+
+          allow delete: if
+            isAdmin()
+            || (isAuthenticated() && resource.data.senderId == request.auth.uid);
+        }
+
+        // ── Sondeo consultivo ───────────────────────────────────────────────
+        // Los que YA están anotados opinan (pulgar arriba/abajo) sobre quien
+        // se postula. NO es vinculante: decide el organizador, esto solo le da
+        // contexto. Va como subcolección de la postulación para que cada una
+        // tenga su propio sondeo aislado.
+        match /votes/{voterId} {
+
+          allow get, list: if isAdmin() || isMemberOfMatchGroup(matchId);
+
+          // Solo miembros del grupo del partido, y solo su propio voto.
+          allow create, update: if
+            isOwner(voterId)
+            && isMemberOfMatchGroup(matchId)
+            && request.resource.data.vote in ['up', 'down'];
+
+          allow delete: if isOwner(voterId) || isAdmin();
+        }
       }
 
       // ──────────────────────────────────────────────────────────────────────

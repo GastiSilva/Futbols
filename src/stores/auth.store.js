@@ -42,6 +42,15 @@ export const useAuthStore = defineStore('auth', () => {
   // o los partidos sin grupo, que son globales/de admin).
   const memberGroupIds = ref([])
 
+  // IDs de partidos donde el usuario tiene una registration propia por una
+  // postulación pública aceptada, SIN ser miembro del grupo del partido.
+  // Poblado en tiempo real por useMatch.watchAppliedMatches (collectionGroup
+  // de applications propias, status accepted). Sin esto, registrationAccessFor
+  // (useRegistration) le negaba a esa persona ver su propia lista de
+  // anotados — msUntilOpen daba Infinity por no pertenecer al grupo, aunque
+  // ya estuviera adentro.
+  const appliedMatchIds = ref(new Set())
+
   // Modo superadmin: un admin global, por defecto, ve/participa SOLO de sus
   // propios grupos como cualquier jugador — no quiere partidos/notificaciones
   // de grupos ajenos mezclados con los suyos. Este flag (activable a mano
@@ -89,6 +98,12 @@ export const useAuthStore = defineStore('auth', () => {
     return !!groupId && memberGroupIds.value.includes(groupId)
   }
 
+  // ¿Llegó a este partido puntual por una postulación aceptada (no por ser
+  // miembro del grupo)?
+  function hasAppliedAccess(matchId) {
+    return !!matchId && appliedMatchIds.value.has(matchId)
+  }
+
   // ── Actions ────────────────────────────────────────────────────────────────
   function setUser(userData) {
     user.value = userData
@@ -103,6 +118,10 @@ export const useAuthStore = defineStore('auth', () => {
     memberGroupIds.value = Array.isArray(ids) ? ids : []
   }
 
+  function setAppliedMatchIds(ids) {
+    appliedMatchIds.value = new Set(Array.isArray(ids) ? ids : [])
+  }
+
   function setGuestMatchId(matchId) {
     guestMatchId.value = matchId ?? null
     if (matchId) sessionStorage.setItem(GUEST_MATCH_KEY, matchId)
@@ -113,6 +132,7 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
     ogGroupIds.value = []
     memberGroupIds.value = []
+    appliedMatchIds.value = new Set()
     guestMatchId.value = null
     sessionStorage.removeItem(GUEST_MATCH_KEY)
     superAdminMode.value = false
@@ -150,9 +170,12 @@ export const useAuthStore = defineStore('auth', () => {
     needsEmailVerification,
     isOgInGroup,
     isMemberOfGroup,
+    hasAppliedAccess,
+    appliedMatchIds,
     setUser,
     setOgGroups,
     setMemberGroups,
+    setAppliedMatchIds,
     setGuestMatchId,
     setSuperAdminMode,
     clearUser,

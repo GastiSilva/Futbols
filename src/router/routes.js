@@ -52,6 +52,21 @@ const routes = [
         meta: { requiresAuth: true, allowGuest: true },
       },
       {
+        path: 'partidos-terminados',
+        name: 'finished-matches',
+        component: () => import('src/pages/player/FinishedMatchesPage.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
+        // Partidos de OTROS grupos que buscan jugadores. Sin allowGuest: un
+        // invitado anónimo está atado al partido de su link, postularse a
+        // otros no le corresponde (necesita cuenta y perfil).
+        path: 'partidos-abiertos',
+        name: 'public-matches',
+        component: () => import('src/pages/player/PublicMatchesPage.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
         path: 'ranking',
         name: 'leaderboard',
         component: () => import('src/pages/player/LeaderboardPage.vue'),

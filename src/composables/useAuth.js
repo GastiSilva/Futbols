@@ -24,6 +24,8 @@ import {
   collectionGroup,
   query,
   where,
+  limit,
+  onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore'
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
@@ -39,6 +41,40 @@ const GUEST_NAME_KEY = 'guestDisplayName'
 
 export function guestDisplayName() {
   return sessionStorage.getItem(GUEST_NAME_KEY) || null
+}
+
+// Listener module-level (no por instancia de useAuth): "partidos donde me
+// aceptaron una postulación" tiene que estar vivo desde el login, sin
+// importar qué página se visite primero — si viviera dentro de una página
+// puntual (como estaba antes, atado a subscribeToUpcoming), alguien que
+// entrara directo a la URL de un partido nunca lo tendría poblado a tiempo.
+let stopAppliedMatchesListener = null
+
+function watchAppliedMatches(uid) {
+  stopAppliedMatchesListener?.()
+  stopAppliedMatchesListener = null
+  if (!uid) return
+
+  const authStore = useAuthStore()
+  const q = query(
+    collectionGroup(db, 'applications'),
+    where('applicantId', '==', uid),
+    where('status', '==', 'accepted'),
+    // Tope 50: las reglas de `applications` exigen `limit <= 50` para quien
+    // lista por fuera de su grupo (misma limitación de Firestore que en
+    // matches: el `where` no es inspeccionable desde las reglas).
+    limit(50),
+  )
+  stopAppliedMatchesListener = onSnapshot(
+    q,
+    (snap) => {
+      const ids = snap.docs.map((d) => d.ref.parent.parent?.id).filter(Boolean)
+      authStore.setAppliedMatchIds(ids)
+    },
+    () => {
+      authStore.setAppliedMatchIds([])
+    },
+  )
 }
 
 export function useAuth() {
@@ -197,6 +233,7 @@ export function useAuth() {
       await signOut(auth)
       sessionStorage.removeItem(GUEST_NAME_KEY)
       authStore.clearUser()
+      watchAppliedMatches(null)
     } finally {
       loading.value = false
     }
@@ -231,6 +268,7 @@ export function useAuth() {
       })
       authStore.setMemberGroups([])
       authStore.setOgGroups([])
+      watchAppliedMatches(null)
       return
     }
 
@@ -282,6 +320,7 @@ export function useAuth() {
 
     // Carga los grupos con acceso anticipado (OG u owner/admin del grupo)
     await loadOgGroups(firebaseUser.uid)
+    watchAppliedMatches(firebaseUser.uid)
   }
 
   // ── Escucha cambios de sesión (llamar una vez en App.vue o boot) ───────────

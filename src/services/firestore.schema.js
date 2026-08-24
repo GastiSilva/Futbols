@@ -227,8 +227,65 @@ const MatchSchema = {
 
   createdBy:      'string',        // uid del creador — puede anotarse A SÍ MISMO
                                    // desde el momento cero (sin esperar openAt)
+
+  // ── Publicación al resto de la app ("me faltan jugadores") ────────────────
+  isPublic:       'boolean',       // Acción MANUAL del organizador, no un campo
+                                   // de creación: la mayoría de los partidos se
+                                   // llenan dentro del grupo y nunca se publican.
+                                   // Con true el partido aparece en "Partidos
+                                   // abiertos" y admite `applications`.
+  publishedAt:    'Timestamp | null',
+  spotsWanted:    'number | null', // Cuántos faltan (informativo, se muestra
+                                   // como "Faltan 2" — no bloquea nada)
+
   createdAt:      'Timestamp',
   updatedAt:      'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: matches/{matchId}/applications/{applicantId}
+ *  Postulación de alguien de AFUERA del grupo a un partido publicado.
+ * ══════════════════════════════════════════════════════════
+ *
+ *  Deliberadamente SEPARADA de `registrations`:
+ *    registration → ocupa cupo, mueve currentPlayers, ya estás adentro
+ *    application  → solicitud pendiente, no ocupa nada
+ *
+ *  Esa separación es lo que permite no tocar las reglas de `registrations`: el
+ *  postulante nunca escribe ahí, ni siquiera al ser aceptado. La inscripción
+ *  real la crea la Cloud Function onApplicationResolved (Admin SDK) con la
+ *  misma transacción de cupos que useRegistration.registerEntry.
+ *
+ *  docId = uid del postulante (una postulación activa por persona por partido).
+ *  Solo puede postularse quien NO es miembro del grupo del partido: si ya sos
+ *  del grupo te anotás derecho en la lista.
+ */
+const ApplicationSchema = {
+  applicantId:       'string',        // = docId
+  applicantName:     'string',        // apodo/nombre al momento de postularse
+  applicantPhotoURL: 'string | null',
+  status:            "'pending' | 'accepted' | 'rejected' | 'withdrawn'",
+  message:           'string',        // presentación libre (máx 300)
+  createdAt:         'Timestamp',
+  resolvedAt:        'Timestamp | null',
+  resolvedBy:        'string | null', // uid de quien resolvió, o 'system' si se
+                                      // retiró automáticamente por solaparse con
+                                      // otro partido que sí lo aceptó
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: matches/{matchId}/applications/{applicantId}/votes/{voterId}
+ *  Sondeo CONSULTIVO: los ya anotados opinan sobre quien se postula.
+ *  NO es vinculante — decide el organizador. Existe para que el resto del
+ *  equipo pueda opinar antes de que se sume un desconocido, no después.
+ *  Solo vota quien es miembro del grupo del partido.
+ * ══════════════════════════════════════════════════════════
+ */
+const ApplicationVoteSchema = {
+  vote:      "'up' | 'down'",
+  updatedAt: 'Timestamp',
 }
 
 /**
@@ -276,6 +333,34 @@ const RegistrationSchema = {
 const MvpVoteSchema = {
   votedForUserId: 'string',
   updatedAt:      'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: badges  (insignias mensuales)
+ *  Path: /users/{uid}/badges/{badgeId}
+ *  docId = `{period}_{type}_{groupId}`  ej: '2026-08_topScorer_abc123'
+ * ══════════════════════════════════════════════════════════
+ *
+ *  Premio del mes, POR GRUPO, congelado para siempre. Lo otorga la tarea
+ *  runMonthlyBadges (functions/index.js) el día 1 de cada mes, sumando los
+ *  playerStats del mes cerrado — por eso funciona con todo el historial.
+ *
+ *  El docId compuesto hace la escritura idempotente por construcción: si la
+ *  tarea corriera dos veces, el set pisa el mismo doc en vez de duplicar.
+ *
+ *  NADIE lo escribe desde el cliente (ni el dueño, ni un admin global): las
+ *  reglas niegan toda escritura y solo pasa el admin SDK, que se las saltea.
+ */
+const BadgeSchema = {
+  type:      "'topScorer' | 'topAssists' | 'topMvp'",  // ver src/utils/badges.js
+  groupId:   'string',
+  groupName: 'string',      // denormalizado: el premio sobrevive al borrado del grupo
+  period:    'string',      // 'AAAA-MM' — clave del período, NO un Timestamp:
+                            // como el formato es AAAA-MM, ordenar alfabéticamente
+                            // ES ordenar cronológicamente
+  value:     'number',      // cuántos goles/asistencias/MVPs fueron
+  wonAt:     'Timestamp',
 }
 
 /**

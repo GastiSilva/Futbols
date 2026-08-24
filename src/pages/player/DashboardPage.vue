@@ -19,11 +19,40 @@
       />
     </div>
 
-    <!-- ── Sin partidos próximos ──────────────────────────────────────────── -->
-    <div v-if="upcomingMatches.length === 0" class="column items-center q-mt-xl text-grey-5 q-gutter-sm">
+    <!-- Mis postulaciones a partidos públicos de otros grupos: viven acá
+         también (no solo en "Partidos abiertos") porque es la pantalla de
+         "Partidos" en general — es donde alguien de afuera del grupo espera
+         encontrar el estado de lo que se postuló. -->
+    <MyApplicationsCard v-if="!authStore.isGuest" />
+
+    <!-- ── Recién llegado: sin grupos y sin partidos ──────────────────────── -->
+    <!--
+      Antes acá había un cartel que decía "no hay partidos, avisale al admin":
+      le hablaba de un admin que no existe y no le daba UNA acción, porque el
+      botón "Crear partido" de arriba está oculto justo para quien no tiene
+      grupos. Ahora ve las tres puertas de entrada reales.
+      El guest anónimo queda afuera: viene por el link de un partido puntual,
+      no le corresponde crear grupos.
+    -->
+    <WelcomeHome v-if="showWelcome" />
+
+    <!-- ── Sin partidos próximos (pero ya tiene grupos) ───────────────────── -->
+    <div
+      v-else-if="upcomingMatches.length === 0"
+      class="column items-center q-mt-xl text-grey-5 q-gutter-sm"
+    >
       <q-icon name="sports_soccer" size="80px" />
       <div class="text-h6">No hay partidos programados</div>
-      <div class="text-body2">Volvé pronto o avisale al admin</div>
+      <div class="text-body2">Cuando alguien de tus grupos arme uno, aparece acá</div>
+      <q-btn
+        v-if="authStore.memberGroupIds.length > 0"
+        unelevated
+        color="green-9"
+        icon="add"
+        label="Armar un partido"
+        class="pill-btn q-mt-md"
+        :to="{ name: 'create-match-player' }"
+      />
     </div>
 
     <!-- ── Lista de próximos partidos ────────────────────────────────────── -->
@@ -472,6 +501,23 @@
               @click="openAddDialog"
             />
 
+            <!-- Detalle completo del partido: mismo lugar al que se llega
+                 entrando por un grupo. Solo se ofrece cuando hace falta: si
+                 ya sos miembro del grupo, entrás igual por "Mis Grupos" y el
+                 botón era ruido repetido en cada card. -->
+            <q-btn
+              v-if="!authStore.isGuest && match.groupId && !authStore.isMemberOfGroup(match.groupId)"
+              flat
+              dense
+              no-caps
+              color="grey-8"
+              icon="open_in_full"
+              label="Ver detalle completo"
+              icon-right="arrow_forward"
+              class="full-width q-mt-md"
+              :to="{ name: 'match-detail', params: { id: match.id } }"
+            />
+
             <!-- El ranking necesita cuenta: no se le ofrece al invitado del link
                  (el guard lo rebotaría igual, mejor no mostrarle la puerta). -->
             <q-btn
@@ -570,6 +616,20 @@
       </q-dialog>
 
     </template>
+
+    <!-- ── Partidos terminados: solo el atajo, la lista vive en su propia
+         página (con filtro de fecha) para no ensuciar el Dashboard. -->
+    <q-btn
+      v-if="!authStore.isGuest && finishedMatches.length > 0"
+      outline
+      no-caps
+      color="grey-8"
+      icon="history"
+      :label="`Partidos terminados (${finishedMatches.length})`"
+      icon-right="arrow_forward"
+      class="full-width q-mt-lg"
+      :to="{ name: 'finished-matches' }"
+    />
   </q-page>
 </template>
 
@@ -584,6 +644,8 @@ import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
 import { buildListText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
+import WelcomeHome from 'src/components/WelcomeHome.vue'
+import MyApplicationsCard from 'src/components/MyApplicationsCard.vue'
 
 const $q = useQuasar()
 const router = useRouter()
@@ -611,13 +673,22 @@ const {
   stopListening,
   loading,
 } = useRegistration()
-const { matches, subscribeToUpcoming: subscribeToMatchesUpcoming, deleteMatch } = useMatch()
+const {
+  matches,
+  finishedMatches,
+  subscribeToUpcoming: subscribeToMatchesUpcoming,
+  subscribeToFinished,
+  stopListeningFinished,
+  deleteMatch,
+} = useMatch()
 const { getGroupMembers } = useGroups()
 const authStore = useAuthStore()
 
 // ── Matches próximos ─────────────────────────────────────────────────────────
 const upcomingMatches = computed(() =>
-  matches.value?.map((m) => ({
+  matches.value
+    ?.filter((m) => getEffectiveStatus(m) !== 'finished')
+    .map((m) => ({
     id: m.id,
     title: m.title,
     location: m.location,
@@ -631,6 +702,27 @@ const upcomingMatches = computed(() =>
     groupId: m.groupId ?? null,
     createdBy: m.createdBy ?? null,
   })) ?? [],
+)
+
+// ── Bienvenida del recién llegado ────────────────────────────────────────────
+// `matches` arranca en [] y se llena por onSnapshot, así que "vacío" y
+// "todavía no llegó la respuesta" son indistinguibles: sin esta bandera el
+// bloque de bienvenida parpadearía un instante en cada carga, incluso para
+// quien sí tiene partidos. Se levanta cuando llega el primer dato o cuando
+// pasa la ventana de gracia (lo que ocurra primero).
+const matchesSettled = ref(false)
+let settleTimer = null
+
+// Solo el recién llegado de verdad: sin grupos Y sin partidos a la vista. El
+// invitado anónimo queda excluido — llegó por el link de un partido puntual y
+// el router lo confina ahí; ofrecerle "crear un grupo" sería mandarlo a una
+// pantalla de la que rebota.
+const showWelcome = computed(
+  () =>
+    matchesSettled.value &&
+    !authStore.isGuest &&
+    authStore.memberGroupIds.length === 0 &&
+    upcomingMatches.value.length === 0,
 )
 
 // ── Match seleccionado (expandido) ───────────────────────────────────────────
@@ -1085,9 +1177,29 @@ function handleDeleteMatch(match) {
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 onMounted(() => {
   subscribeToMatchesUpcoming()
+  if (!authStore.isGuest) subscribeToFinished()
+  // Ventana de gracia: si en 1.2s no llegó ningún partido, damos la lista por
+  // vacía de verdad y mostramos la bienvenida.
+  settleTimer = setTimeout(() => {
+    matchesSettled.value = true
+  }, 1200)
 })
 
+// El primer dato que llega cierra la espera antes que el timer.
+watch(
+  () => upcomingMatches.value.length,
+  (len) => {
+    if (len > 0) matchesSettled.value = true
+  },
+  { immediate: true },
+)
+
 // Watcher: cuando hay matches, inicializa contadores y suscripciones
+// `immediate: true`: si `upcomingMatches` ya trae datos en el primer tick (el
+// snapshot puede llegar de una sola vez) y la lista de ids no vuelve a
+// cambiar, un watcher no-inmediato nunca dispara — la card quedaba pegada en
+// "0/0 anotados" hasta que alguien la expandía a mano (eso sí suscribía, vía
+// el watcher de `selectedMatchId` de más abajo).
 watch(
   () => upcomingMatches.value.map((m) => m.id),
   (matchIds) => {
@@ -1108,7 +1220,7 @@ watch(
       }
     })
   },
-  { immediate: false },
+  { immediate: true },
 )
 
 // Watcher: cuando se selecciona un match, cambia las registraciones
@@ -1124,9 +1236,11 @@ watch(
 )
 
 onUnmounted(() => {
+  if (settleTimer) clearTimeout(settleTimer)
   countdownTimers.forEach((timer) => clearInterval(timer))
   countdownTimers.clear()
   stopListening()
+  stopListeningFinished()
 })
 </script>
 

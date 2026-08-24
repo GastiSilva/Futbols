@@ -40,6 +40,11 @@ npm run format      # Prettier
 # Tests de las reglas de seguridad (requiere Java para el emulador)
 npm run test:rules  # levanta el emulador de Firestore, corre los tests y lo baja
 
+# Desarrollo LOCAL contra emuladores (no toca producción)
+npm run emu         # levanta Firestore+Auth+Functions+Storage, con datos persistentes
+npm run emu:clean   # igual pero arrancando de cero (sin importar datos previos)
+npm run seed        # carga usuarios/grupos/partidos de prueba (con el emulador ya corriendo)
+
 # Deploy (Firebase)
 firebase deploy                    # full deploy
 firebase deploy --only hosting     # frontend only
@@ -92,6 +97,29 @@ firebase emulators:start
 
 **MVP per match**: chosen in `PostMatchPage` when loading the result. Stored as `matches/{id}.mvpUserId/mvpName` (via `saveMatchResult`) AND as the boolean `mvp` on each `playerStats` row — `onPlayerStatsWritten` delta-accumulates it into `stats.mvps`/`statsByGroup.{gid}.mvps` (idempotent, changing the MVP moves the count). Shown in `MatchDetailPage` and as a "MVPs" tab in `LeaderboardPage`.
 
+**Partidos públicos + postulaciones (Fase 1)**: el organizador publica manualmente un partido al que le faltan jugadores (`matches.isPublic/publishedAt/spotsWanted`, toggle en `MatchDetailPage` — **no** es un campo de creación) y alguien de afuera del grupo se postula. Piezas:
+- **`matches/{id}/applications/{applicantId}`** es una colección **deliberadamente separada** de `registrations`: una postulación NO ocupa cupo ni mueve `currentPlayers`. Eso es lo que permite no tocar en absoluto las reglas de `registrations` — el postulante nunca escribe ahí, ni al ser aceptado.
+- **Solo puede postularse quien NO es miembro del grupo** (`!isMemberOfMatchGroup` en las reglas): si ya sos del grupo te anotás derecho en la lista. Sin esa condición habría dos caminos para lo mismo.
+- **Al aceptar**, la CF `onApplicationResolved` crea la registration real con la MISMA transacción de cupos que `registerEntry` (leer `currentPlayers` → posición → escribir), y después `withdrawOverlappingApplications` retira las postulaciones pendientes de esa persona a partidos que se **solapen en horario** (±2hs, `OVERLAP_WINDOW_MS`) — solo las solapadas: matarle la del domingo por aceptar la del sábado sería un bug.
+- **Sondeo consultivo** (`applications/{id}/votes/{voterId}`): los ya anotados dan pulgar arriba/abajo. **No es vinculante** — decide el organizador, esto solo le da contexto antes de meter a un desconocido.
+- `allow get` de `matches` tiene una rama extra para `isPublic == true` (un no-miembro ve el partido), pero **`registrations` NO se abre**: el que se postula ve el partido, no la lista de quiénes van, hasta que lo acepten.
+- **Chat 1-a-1** (`applications/{id}/messages`): conversación privada entre el postulante y quien gestiona el partido (`ApplicationChat.vue`, CF `onApplicationMessage`). Es 1-a-1 **a propósito, no un chat grupal del partido**: un chat de 14 personas manda 13 notificaciones irrelevantes por mensaje, y la conversación que hace falta es entre el que toca el timbre y el que abre la puerta. Además hereda el permiso naturalmente (quien ve la postulación ve su chat) y no necesita reglas nuevas complicadas.
+- **Publicar vive en `PublicMatchesPage`, NO en `MatchDetailPage`**: la pantalla que trata de partidos abiertos es donde uno espera poder abrir el suyo, y el detalle del partido ya tiene demasiada info (clima, cupos, inscripción, lista, equipos, resultado) como para sumarle una card de gestión que quedaba sepultada. En el detalle solo queda un banner discreto con "Despublicar".
+- Cliente: `useApplications.js` (postularse/retirarse/resolver/votar/chatear), `subscribeToPublicMatches` + `setMatchPublic` en `useMatch.js`, `PublicMatchesPage.vue` (ruta `partidos-abiertos`), `PublicMatchCard.vue` y `ApplicationChat.vue`. El filtro "excluir partidos de MIS grupos" es client-side (las reglas no pueden expresarlo).
+
+**Insignias mensuales (vitrina)**: el primero de cada mes se premia al mejor del mes ANTERIOR, **por grupo**, y el premio queda **congelado para siempre** en `users/{uid}/badges`. Es un hecho histórico ("Fulano fue el goleador de agosto"), no un marcador que se recalcula: si se recalculara, mañana desaparecería y dejaría de ser un premio.
+- **Sale de `playerStats`, no de `stats`**: `playerStats` ya tenía `savedAt` + `groupId`, así que cada gol sabe de qué mes y de qué grupo es — el sistema funciona **retroactivamente con todo el historial y sin agregar un solo campo**. Los acumuladores `stats`/`statsByGroup` son planos y **sin dimensión temporal**: de ahí es imposible sacar "el mes pasado". Requiere el índice collection-group de `playerStats` por `savedAt`.
+- **Idempotencia por construcción**: `badgeId = {period}_{type}_{groupId}`, así un `set` repetido pisa el mismo doc en vez de duplicar el premio. Sumado al centinela `_badgeAwards/{period}`, nadie recibe la insignia ni el push dos veces aunque el scheduler dispare de más (la entrega es *at-least-once*).
+- El centinela se escribe **antes** de notificar a propósito: si el envío de pushes falla a la mitad, el reintento de la hora siguiente no vuelve a otorgar ni a avisarle de nuevo a quien ya se enteró. Un premio perdido en el aire es mejor que uno duplicado.
+- **`Presente` (`alwaysThere`) es la excepción a todas las reglas de arriba**: no compite (es una CONDICIÓN — jugó todos los partidos del grupo en el mes), la ganan **varios a la vez**, no aplica el empate ni `BADGE_MIN_MATCHES`, y su piso es del **grupo** (`PRESENT_MIN_GROUP_MATCHES` = 3: con uno o dos partidos, "no faltó" no significa constancia). No entra en el palmarés que se manda al grupo — ocho ganadores lo volverían un párrafo — pero sí manda push personal, con texto propio ("medalla de Presente", no "¡Ganaste el Presente!"). El denominador sale de contar `matchId` únicos en el mismo barrido, sin queries extra. Existe para que la vitrina no sea siempre del mismo delantero.
+- **Piso de `BADGE_MIN_MATCHES` (2) partidos** en el mes para competir: sin eso, la insignia se la lleva el que apareció una vez, metió 2 goles y no volvió. **Empate = nadie gana**: repartir la misma insignia entre tres la devalúa, y desempatar por orden de aparición sería arbitrario.
+- **Privacidad**: `badges` se **lee público** (esa es la gracia — el que se postula desde afuera muestra lo que ganó), pero `describeBadge({ showGroup })` **oculta el nombre del grupo** a quien no comparte grupo con el dueño del perfil. Mismo motivo por el que `ProfileViewPage` ya ocultaba `statsByGroup`: el listado de grupos es el mapa social de esa persona. Sin ese cuidado, la insignia filtraba por la ventana lo que la página cerraba por la puerta.
+- **Nadie escribe insignias desde el cliente** — ni el dueño del perfil, ni un admin global: solo la CF por admin SDK. Si el cliente pudiera, cualquiera se autoproclama goleador del mes.
+- **`Bombero` (el suplente que entra y salva el partido) NO es implementable hoy**: `registrations.isOnWaitlist` guarda el estado ACTUAL, y `onRegistrationDeleted` lo recalcula al promover — el suplente que entró queda indistinguible de un titular, o sea el dato se pisa en el momento en que ocurre. Haría falta que ese trigger grabe un flag `wasPromoted: true`, y aun así **no sería retroactivo**: empezaría a contar desde el deploy. El arte ya está hecho (`medalla-bombero.png`, flecha hacia arriba — un casco de bombero no se lee a 38px, la silueta es igual a la de una campana).
+- Se decidió **no hacer insignias negativas** ("el que más se baja"). La baja no deja rastro (`onRegistrationDeleted` borra el doc), pero el problema de fondo es de diseño: avisar el lunes que no jugás el sábado y borrarte 40 minutos antes son el mismo evento en la base y cosas opuestas en la cancha. Contarlos igual empuja a la gente a **no anotarse temprano** para no manchar el perfil — justo lo contrario de lo que la app busca.
+- **Arte de los premios**: `public/badges/*.png` (128px, transparencia). El goleador y el asistidor comparten el mismo botín — el asistidor virado a **rojo plateado**, porque hace lo mismo que el goleador pero para otro. **Rendimiento = trofeo; compromiso = medalla**: `Presente` es una medalla con cinta verde, no otra copa, para que se distinga de un vistazo (si todo fuera trofeo, la vitrina sería una repisa donde ninguno resalta). `medalla-bombero.png` ya está dibujada pero **sin usar** — ver abajo. Los originales que trajo el usuario venían a 512px y 1280px (461 KB entre los dos); recortados al contenido y escalados a 128px pesan 42 KB, y a los 38px que ocupan en la fila se ven idénticos. Un ícono monocromo de Material se lee como ítem de menú; un trofeo dibujado se lee como premio.
+- Piezas: `runMonthlyBadges` + `BADGE_DEFS` (functions/index.js), `src/utils/badges.js` (catálogo visual: `art` = ruta del PNG, `color` = acento del disco — ⚠️ sus claves **tienen que coincidir** con las del backend), `useBadges.js` (solo lectura), `BadgeShelf.vue`, montado en `ProfilePage` y `ProfileViewPage`.
+
 **Venues (sedes)**: top-level `venues` collection (`useVenues.js`, module-level shared `venues` ref; `VenuesPage` at `/sedes`). Fields: `name`, `address`, `mapsUrl` (Google Maps share link), `notes`. Any authenticated user creates; creator or global admin edits/deletes. Matches reference them via `venueId` and denormalize `location` (name — address) and `venueMapsUrl`, so match display never needs an extra read and survives venue deletion. In Create/EditMatchPage a `manualLocation` toggle disables the venue select and lets the user type `location` freely (`venueId` is cleared); otherwise `location` is readonly and auto-filled from the selected venue.
 
 **Finished match display** (`MatchDetailPage`): below the final score it shows the MVP chip and the goal scorers grouped by team A/B (from `playerStats`, `goals > 0`, fetched when `status === 'finished'`).
@@ -138,6 +166,12 @@ groups/{groupId}
 venues/{venueId}
   name, nameLower, address, mapsUrl: string|null, notes, createdBy
 
+users/{uid}/badges/{badgeId}   ← docId = `{period}_{type}_{groupId}` (idempotente por construcción)
+  type: 'topScorer'|'topAssists'|'topMvp', groupId, groupName, period: '2026-08', value, wonAt
+  ← SOLO lo escribe runMonthlyBadges (admin SDK). Las reglas niegan toda escritura del cliente.
+
+_badgeAwards/{period}          ← centinela: si existe, ese mes ya se premió (nunca se lee client-side)
+
 _matchOpenQueue / _matchReminderQueue / _matchOgNotifyQueue   ← internal scheduler queues (never read client-side)
 ```
 
@@ -168,10 +202,11 @@ All functions deployed to `southamerica-east1`. Written with Firebase Functions 
 | `runMatchReminderQueue` | 1 min | Recordatorios de que la lista abre pronto |
 | `runMatchLowSignupAlert` | 10 min | Avisa si faltan jugadores 6-8hs antes |
 | `runAutoCloseMatches` | 60 min | Bloquea resultado/votación a las 36hs de terminado |
+| `runMonthlyBadges` | día 1 (03:00+ UTC) | Otorga las insignias del mes cerrado y notifica |
 
-El intervalo se respeta con `minuteOfEpoch % everyMinutes`. **Cada tarea corre dentro de su propio `try/catch`**: si una falla, se loguea y las demás siguen — antes cada job fallaba aislado por definición, y sin ese catch un error habría tumbado a todas. Para agregar una tarea periódica nueva, sumá una entrada a `SCHEDULED_TASKS`, **no** un `onSchedule` nuevo.
+Una tarea se agenda de dos formas excluyentes (`taskIsDue`): `everyMinutes` (ritmo fijo, se respeta con `minuteOfEpoch % everyMinutes`) o `monthly: { day, hour }` (condición de **almanaque**, para lo que un intervalo no puede expresar — un mes no dura una cantidad fija de minutos). Las mensuales se evalúan al minuto 0 de cada hora a partir de `hour` del día indicado; la garantía de UNA sola ejecución no la da el reloj sino el **centinela** de la propia tarea. **Cada tarea corre dentro de su propio `try/catch`**: si una falla, se loguea y las demás siguen — antes cada job fallaba aislado por definición, y sin ese catch un error habría tumbado a todas. Para agregar una tarea periódica nueva, sumá una entrada a `SCHEDULED_TASKS`, **no** un `onSchedule` nuevo.
 
-**Preferencias de notificación (`users/{uid}.notificationPrefs`)**: cada push pertenece a UNA categoría — `myGroups`, `applications`, `chat`, `publicNearby`. El usuario las prende/apaga desde `ProfilePage` (toggles que se guardan solos, vía `useAuth.updateNotificationPref`). El filtro se aplica en **`collectTokensFromUserDocs(userDocs, category)`**, que es el único punto por el que pasan los cuatro helpers de envío — así ninguna ruta se lo saltea por olvido. Defaults: todo `true` salvo `publicNearby`, que nace **apagada** (es la única que avisa sobre partidos de gente que el usuario no conoce, así que es opt-in explícito). ⚠️ Las listas `NOTIFICATION_CATEGORIES`/`NOTIFICATION_DEFAULTS` están duplicadas en `functions/index.js` y `src/utils/notifications.js` y **tienen que coincidir**: si divergen, el usuario apaga un interruptor que el backend no consulta. ⚠️ Los `.select()` de los helpers incluyen `notificationPrefs` — sin ese campo el filtro compila pero no filtra nada.
+**Preferencias de notificación (`users/{uid}.notificationPrefs`)**: cada push pertenece a UNA categoría — `myGroups`, `applications`, `chat`, `publicNearby`, `badges`. El usuario las prende/apaga desde `ProfilePage` (toggles que se guardan solos, vía `useAuth.updateNotificationPref`). El filtro se aplica en **`collectTokensFromUserDocs(userDocs, category)`**, que es el único punto por el que pasan los cuatro helpers de envío — así ninguna ruta se lo saltea por olvido. Defaults: todo `true` salvo `publicNearby`, que nace **apagada** (es la única que avisa sobre partidos de gente que el usuario no conoce, así que es opt-in explícito). ⚠️ Las listas `NOTIFICATION_CATEGORIES`/`NOTIFICATION_DEFAULTS` están duplicadas en `functions/index.js` y `src/utils/notifications.js` y **tienen que coincidir**: si divergen, el usuario apaga un interruptor que el backend no consulta. ⚠️ Los `.select()` de los helpers incluyen `notificationPrefs` — sin ese campo el filtro compila pero no filtra nada.
 
 `sendFCMToAllUsers(title, body, data, excludeUserIds = [], category)` reads all users' `fcmToken`/`fcmTokens`, sends in batches of 500 via `sendEachForMulticast`, and cleans up invalid tokens automatically. **`excludeUserIds` skips users already registered to the match** — the `match_reminder`, `match_open` (via `onMatchOpened`), and open-queue notifications all pass `getRegisteredUserIds(matchId)` so people already signed up don't get pinged (guests have `userId: null` and are naturally excluded). `sendFCMToUser(userId, ...)` targets a single user.
 
@@ -215,11 +250,30 @@ VITE_FIREBASE_MESSAGING_SENDER_ID
 VITE_FIREBASE_APP_ID
 VITE_FIREBASE_MEASUREMENT_ID
 VITE_FIREBASE_VAPID_KEY      ← required for FCM getToken()
+VITE_USE_EMULATORS=true      ← OPCIONAL: conecta la app a los emuladores locales
 ```
+
+## Desarrollo local contra emuladores
+
+Sin esto, `quasar dev` escribe en la base de **producción real** — con partidos públicos eso significa que un partido de prueba aparece en "Partidos abiertos" de todos los usuarios y las notificaciones push salen de verdad.
+
+Para trabajar aislado, en **tres terminales**:
+
+```bash
+npm run emu    # 1. emuladores (Firestore, Auth, Functions, Storage) + panel en :4000
+npm run seed   # 2. datos de prueba (4 usuarios, 2 grupos, 1 partido publicado)
+npm run dev    # 3. la app — requiere VITE_USE_EMULATORS=true en .env.local
+```
+
+Usuarios que crea el seed (contraseña `test1234` para todos): `gaston@test.com` (organizador), `enzo@test.com` (el de afuera que se postula), `marcos@test.com` y `lucia@test.com` (anotados, votan el sondeo). **Probar con varias cuentas a la vez**: una ventana normal + una de incógnito + perfiles de Chrome distintos (dos ventanas de incógnito comparten sesión entre sí).
+
+⚠️ **Si el seed falla con `ECONNREFUSED 127.0.0.1:9099` aunque el emulador esté corriendo**: falta `GCLOUD_PROJECT`. El SDK de Admin la necesita para hablar con el emulador de **Auth** (Firestore anda sin ella), y sin esa variable el error que tira parece de red — como si el emulador no estuviera levantado. Ya está seteada dentro de `scripts/seed-emulator.mjs`; no hace falta ningún `serviceAccount.json`.
+
+Detalles: el flag `VITE_USE_EMULATORS` es **opt-in explícito**, nunca se activa solo por estar en modo dev — así `quasar dev` sin el emulador prendido no falla misteriosamente. `initMessaging()` devuelve `null` con emuladores (FCM no está emulado, pedir token da error). `npm run emu` importa/exporta a `.emulator-data/` (gitignoreado), así los datos sobreviven entre corridas; `npm run emu:clean` arranca vacío. El seed **aborta** si las variables de entorno no apuntan a localhost.
 
 ## Tests
 
-`tests/firestore.rules.test.js` — 44 tests de las reglas de seguridad contra el emulador (`npm run test:rules`, necesita Java). Cubren: aislamiento entre grupos (leer partidos y listas), el `limit` obligatorio al listar `matches`, quién puede borrar un partido, la rama de resultado que no debe poder cerrar listas, `memberCount`, el confinamiento del invitado anónimo a su partido, campos de perfil no escribibles (`stats`/`role`), `notificationPrefs`, calificar la descripción solo entre compañeros de grupo, los `reports` y la auto-promoción a admin/OG de un grupo.
+`tests/firestore.rules.test.js` — 80 tests de las reglas de seguridad contra el emulador (`npm run test:rules`, necesita Java). Cubren: aislamiento entre grupos (leer partidos y listas), el `limit` obligatorio al listar `matches`, quién puede borrar un partido, la rama de resultado que no debe poder cerrar listas, `memberCount`, el confinamiento del invitado anónimo a su partido, campos de perfil no escribibles (`stats`/`role`), `notificationPrefs`, calificar la descripción solo entre compañeros de grupo, los `reports`, los partidos públicos y sus postulaciones (quién publica, quién se postula, quién resuelve, el sondeo), las insignias (lectura pública, escritura negada a todos incluido el admin) y la auto-promoción a admin/OG de un grupo.
 
 Detalle de implementación: todos los datos de prueba se escriben en el `beforeEach` **global** con `withSecurityRulesDisabled`, y los contextos de auth se cachean en `ctxCache`. Abrir `withSecurityRulesDisabled` dentro de un `describe` anidado, después de que un contexto ya se usó, rompe con `Firestore has already been started`.
 

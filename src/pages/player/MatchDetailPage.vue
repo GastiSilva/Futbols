@@ -97,6 +97,228 @@
         </q-card-section>
       </q-card>
 
+      <!-- Aviso discreto de que el partido está publicado. El botón para
+           publicar NO vive acá: está en "Partidos abiertos", que es la
+           pantalla que trata de eso. Esta página ya tiene demasiada
+           información como para sumarle una card de gestión más. -->
+      <q-banner
+        v-if="match.isPublic && canManageMatch"
+        dense
+        rounded
+        class="bg-orange-1 text-orange-10 q-mb-md"
+      >
+        <template #avatar>
+          <q-icon name="travel_explore" color="orange-8" />
+        </template>
+        Este partido está publicado en «Partidos abiertos».
+        <template #action>
+          <q-btn
+            flat
+            dense
+            no-caps
+            color="orange-9"
+            label="Despublicar"
+            :loading="togglingPublic"
+            @click="handleTogglePublic(false)"
+          />
+        </template>
+      </q-banner>
+
+      <!-- ── Postulaciones recibidas ────────────────────────────────────────
+           El sondeo (pulgar) de los ya anotados es consultivo: decide el
+           organizador, pero ve lo que opina el resto antes de meter a un
+           desconocido. -->
+      <q-card
+        v-if="canManageMatch && pendingApplications.length > 0"
+        flat
+        bordered
+        class="q-mb-md"
+      >
+        <q-card-section class="q-pb-none">
+          <div class="text-subtitle2 text-weight-bold">
+            <q-icon name="pan_tool_alt" class="q-mr-xs text-orange-8" />
+            Se quieren sumar ({{ pendingApplications.length }})
+          </div>
+        </q-card-section>
+
+        <q-list separator class="q-mt-sm">
+          <q-item v-for="app in pendingApplications" :key="app.id">
+            <q-item-section avatar>
+              <q-avatar size="42px">
+                <img
+                  :src="app.applicantPhotoURL ?? '/icons/icon-128x128.png'"
+                  :alt="app.applicantName"
+                  referrerpolicy="no-referrer"
+                />
+              </q-avatar>
+            </q-item-section>
+
+            <q-item-section>
+              <q-item-label class="text-weight-medium">{{ app.applicantName }}</q-item-label>
+              <q-item-label caption v-if="app.message" class="text-italic">
+                "{{ app.message }}"
+              </q-item-label>
+              <q-item-label caption>
+                <router-link
+                  :to="{ name: 'profile-view', params: { uid: app.applicantId } }"
+                  class="text-green-8"
+                >
+                  Ver perfil
+                </router-link>
+                <span v-if="voteTallies[app.id]" class="q-ml-sm text-grey-7">
+                  👍 {{ voteTallies[app.id].up }} · 👎 {{ voteTallies[app.id].down }}
+                </span>
+              </q-item-label>
+            </q-item-section>
+
+            <q-item-section side>
+              <div class="row q-gutter-sm">
+                <q-btn
+                  round
+                  flat
+                  color="primary"
+                  icon="chat_bubble_outline"
+                  @click="openChat(app)"
+                >
+                  <q-tooltip>Escribirle</q-tooltip>
+                </q-btn>
+                <q-btn
+                  round
+                  unelevated
+                  color="positive"
+                  icon="check"
+                  class="accept-glow"
+                  :loading="resolving === app.id"
+                  @click="handleResolve(app, true)"
+                >
+                  <q-tooltip>Aceptar</q-tooltip>
+                </q-btn>
+                <q-btn
+                  round
+                  outline
+                  color="grey-7"
+                  icon="close"
+                  :loading="resolving === app.id"
+                  @click="openRejectDialog(app)"
+                >
+                  <q-tooltip>Rechazar</q-tooltip>
+                </q-btn>
+              </div>
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </q-card>
+
+      <!-- ── Sondeo para los ya anotados (no organizadores) ─────────────────
+           A los que van a jugar les llega la notificación y opinan acá. -->
+      <q-card
+        v-else-if="!canManageMatch && userRegistration && pendingApplications.length > 0"
+        flat
+        bordered
+        class="q-mb-md"
+      >
+        <q-card-section class="q-pb-none">
+          <div class="text-subtitle2 text-weight-bold">
+            <q-icon name="how_to_vote" class="q-mr-xs text-orange-8" />
+            ¿Los sumamos?
+          </div>
+          <div class="text-caption text-grey-7">
+            Tu voto ayuda a decidir al organizador, que tiene la última palabra.
+          </div>
+        </q-card-section>
+
+        <q-list separator class="q-mt-sm">
+          <q-item v-for="app in pendingApplications" :key="app.id">
+            <q-item-section avatar>
+              <q-avatar size="42px">
+                <img
+                  :src="app.applicantPhotoURL ?? '/icons/icon-128x128.png'"
+                  :alt="app.applicantName"
+                  referrerpolicy="no-referrer"
+                />
+              </q-avatar>
+            </q-item-section>
+
+            <q-item-section>
+              <q-item-label class="text-weight-medium">{{ app.applicantName }}</q-item-label>
+              <q-item-label caption v-if="app.message" class="text-italic">
+                "{{ app.message }}"
+              </q-item-label>
+              <q-item-label caption>
+                <router-link
+                  :to="{ name: 'profile-view', params: { uid: app.applicantId } }"
+                  class="text-green-8"
+                >
+                  Ver perfil
+                </router-link>
+              </q-item-label>
+            </q-item-section>
+
+            <q-item-section side>
+              <div class="row q-gutter-xs">
+                <q-btn
+                  round
+                  dense
+                  :unelevated="voteTallies[app.id]?.myVote === 'up'"
+                  :outline="voteTallies[app.id]?.myVote !== 'up'"
+                  color="positive"
+                  icon="thumb_up"
+                  size="sm"
+                  @click="handleVote(app.id, 'up')"
+                />
+                <q-btn
+                  round
+                  dense
+                  :unelevated="voteTallies[app.id]?.myVote === 'down'"
+                  :outline="voteTallies[app.id]?.myVote !== 'down'"
+                  color="grey-7"
+                  icon="thumb_down"
+                  size="sm"
+                  @click="handleVote(app.id, 'down')"
+                />
+              </div>
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </q-card>
+
+      <!-- ── Diálogo: rechazar postulación con mensaje opcional ──────────── -->
+      <q-dialog v-model="rejectDialog">
+        <q-card style="min-width: 320px; max-width: 420px">
+          <q-card-section class="text-h6">
+            Rechazar a {{ rejectTarget?.applicantName }}
+          </q-card-section>
+          <q-card-section class="q-pt-none">
+            <div class="text-body2 text-grey-7 q-mb-sm">
+              Si querés, dejale unas palabras — no es obligatorio.
+            </div>
+            <q-input
+              v-model="rejectMessage"
+              type="textarea"
+              outlined
+              dense
+              autogrow
+              placeholder="Ej: esta vez ya completamos el equipo, ¡probá otro partido!"
+              :maxlength="MAX_CHAT_MESSAGE_LENGTH"
+              counter
+              :input-style="{ minHeight: '60px' }"
+            />
+          </q-card-section>
+          <q-card-actions align="right" class="q-px-md q-pb-md">
+            <q-btn flat label="Cancelar" color="grey-7" v-close-popup />
+            <q-btn
+              unelevated
+              no-caps
+              color="negative"
+              label="Rechazar"
+              class="pill-btn"
+              :loading="resolving === rejectTarget?.id"
+              @click="confirmReject"
+            />
+          </q-card-actions>
+        </q-card>
+      </q-dialog>
+
       <!-- Clima previsto (si la sede tiene coordenadas y el partido no pasó) -->
       <q-card v-if="weather" flat bordered class="q-mb-md">
         <q-card-section class="row items-center q-gutter-sm">
@@ -510,6 +732,17 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+
+    <!-- Chat 1-a-1 con quien se postuló -->
+    <ApplicationChat
+      v-if="chatWith"
+      v-model="chatOpen"
+      :match-id="route.params.id"
+      :applicant-id="chatWith.applicantId"
+      :other-name="chatWith.applicantName"
+      :other-photo-u-r-l="chatWith.applicantPhotoURL"
+      :match-title="match?.title ?? ''"
+    />
   </q-page>
 </template>
 
@@ -521,6 +754,7 @@ import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { usePlayerStats } from 'src/composables/usePlayerStats'
 import { useRegistration } from 'src/composables/useRegistration'
+import { useApplications, MAX_CHAT_MESSAGE_LENGTH } from 'src/composables/useApplications'
 import { useWeather } from 'src/composables/useWeather'
 import { useVenues } from 'src/composables/useVenues'
 import { useTeamBalancer } from 'src/composables/useTeamBalancer'
@@ -530,6 +764,7 @@ import { useMatchInvite, setPendingInvite } from 'src/composables/useMatchInvite
 import { buildListText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import MatchMvpVoting from 'src/components/MatchMvpVoting.vue'
+import ApplicationChat from 'src/components/ApplicationChat.vue'
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
 
@@ -544,7 +779,17 @@ function goToProfile(reg) {
   if (authStore.isGuest) return
   router.push({ name: 'profile-view', params: { uid: reg.userId } })
 }
-const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved, finishMatch } = useMatch()
+const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved, finishMatch, setMatchPublic } = useMatch()
+
+const {
+  applications,
+  resolveApplication,
+  voteOnApplication,
+  fetchVoteTally,
+  subscribeToApplications,
+  sendMessage,
+  stopListening: stopApplications,
+} = useApplications()
 const { getMyRole } = useGroups()
 const { fetchPlayerStats } = usePlayerStats()
 const { fetchForecast } = useWeather()
@@ -580,6 +825,9 @@ const showRegisterPrompt = ref(false)
 onMounted(async () => {
   subscribeToMatch(route.params.id)
   subscribeToRegistrations(route.params.id)
+  // Postulaciones: solo las lee gente del grupo del partido (lo exigen las
+  // reglas), así que para un invitado anónimo ni se intenta.
+  if (!authStore.isGuest) subscribeToApplications(route.params.id)
 
   if (route.query.registrate === '1') {
     showRegisterPrompt.value = true
@@ -607,6 +855,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopListening()
   stopRegistrations()
+  stopApplications()
 })
 
 // ── Inscripción ─────────────────────────────────────────────────────────────
@@ -646,8 +895,12 @@ const waitlist = computed(() => registrations.value.filter((r) => r.isOnWaitlist
 const canManageTeams = computed(() => {
   if (!match.value) return false
   const st = getEffectiveStatus(match.value)
-  const listaCerrada = st === 'closed' || st === 'full' || st === 'finished'
-  if (!listaCerrada) return false
+  // 'finished' queda afuera a propósito: sugerir equipos es para ANTES de
+  // jugar (la lista ya está cerrada pero el partido no se jugó todavía).
+  // Terminado, ya se sabe quién jugó en cada equipo — sugerir algo ahí no
+  // tiene sentido.
+  const listaCerradaSinJugar = st === 'closed' || st === 'full'
+  if (!listaCerradaSinJugar) return false
   return authStore.isAdmin || authStore.isOgInGroup(match.value.groupId)
 })
 
@@ -921,6 +1174,126 @@ async function handleToggleVenueReserved(reserved) {
   }
 }
 
+// ── Publicar el partido / gestionar postulaciones ───────────────────────────
+// "Gestionar el partido" = crearlo, o tener acceso anticipado en su grupo
+// (OG/owner/admin). Mismo criterio que usa DashboardPage para editar/borrar y
+// que las reglas exigen para escribir isPublic.
+const canManageMatch = computed(() => {
+  if (!match.value || !authStore.user) return false
+  if (authStore.isAdmin) return true
+  if (match.value.createdBy === authStore.user.uid) return true
+  return !!match.value.groupId && authStore.isOgInGroup(match.value.groupId)
+})
+
+// Despublicar desde acá (el banner). Publicar se hace en "Partidos abiertos".
+const togglingPublic = ref(false)
+
+async function handleTogglePublic(isPublic) {
+  togglingPublic.value = true
+  try {
+    await setMatchPublic(route.params.id, isPublic, null)
+    $q.notify({
+      type: 'info',
+      icon: 'visibility_off',
+      message: 'El partido dejó de estar publicado.',
+    })
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    togglingPublic.value = false
+  }
+}
+
+// Solo las pendientes: las resueltas ya no requieren acción.
+const pendingApplications = computed(() =>
+  applications.value.filter((a) => a.status === 'pending'),
+)
+
+// Conteo del sondeo por postulación. Se recarga cuando cambian las pendientes.
+const voteTallies = ref({})
+
+watch(
+  pendingApplications,
+  async (apps) => {
+    const tallies = {}
+    for (const app of apps) {
+      tallies[app.id] = await fetchVoteTally(route.params.id, app.id)
+    }
+    voteTallies.value = tallies
+  },
+  { immediate: true, deep: false },
+)
+
+const resolving = ref(null)
+
+// Chat con quien se postuló (1-a-1, ver ApplicationChat.vue)
+const chatOpen = ref(false)
+const chatWith = ref(null)
+
+function openChat(app) {
+  chatWith.value = app
+  chatOpen.value = true
+}
+
+async function handleResolve(app, accept) {
+  resolving.value = app.id
+  try {
+    await resolveApplication(route.params.id, app.applicantId, accept)
+    $q.notify({
+      type: accept ? 'positive' : 'info',
+      icon: accept ? 'check_circle' : 'cancel',
+      message: `${app.applicantName} se suma al partido.`,
+    })
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    resolving.value = null
+  }
+}
+
+// Rechazar con mensaje opcional: se abre un diálogo en vez de rechazar
+// directo, para poder avisarle a la persona sin que quede como un portazo.
+const rejectDialog = ref(false)
+const rejectTarget = ref(null)
+const rejectMessage = ref('')
+
+function openRejectDialog(app) {
+  rejectTarget.value = app
+  rejectMessage.value = ''
+  rejectDialog.value = true
+}
+
+async function confirmReject() {
+  const app = rejectTarget.value
+  if (!app) return
+  resolving.value = app.id
+  try {
+    const text = rejectMessage.value.trim()
+    if (text) {
+      await sendMessage(route.params.id, app.applicantId, text)
+    }
+    await resolveApplication(route.params.id, app.applicantId, false)
+    $q.notify({ type: 'info', icon: 'cancel', message: `Rechazaste a ${app.applicantName}.` })
+    rejectDialog.value = false
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    resolving.value = null
+  }
+}
+
+async function handleVote(applicantId, vote) {
+  try {
+    await voteOnApplication(route.params.id, applicantId, vote)
+    voteTallies.value = {
+      ...voteTallies.value,
+      [applicantId]: await fetchVoteTally(route.params.id, applicantId),
+    }
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  }
+}
+
 const matchDate = computed(() =>
   match.value?.date ? date.formatDate(match.value.date.toDate(), 'DD/MM/YYYY') : '',
 )
@@ -945,6 +1318,13 @@ const calendarUrl = computed(() =>
 </script>
 
 <style scoped>
+/* Aceptar a alguien que se postuló es LA decisión de esta card — mismo
+   resplandor que ya usa el sistema para los primarios rellenos, así resalta
+   sobre el "Rechazar" (outline, sin brillo) en vez de pesar lo mismo. */
+.accept-glow {
+  box-shadow: 0 4px 14px rgba(74, 222, 128, 0.4);
+}
+
 /* Nombres largos (José María Marcelo Guzmán...) desbordaban el chip en
    pantallas chicas — se truncan con ellipsis en vez de romper el layout. */
 .preview-chip {

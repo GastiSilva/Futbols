@@ -81,11 +81,15 @@ export function getEffectiveStatus(match) {
 export function useMatch() {
   const authStore = useAuthStore()
   const matches = ref([])
+  const publicMatches = ref([])   // partidos publicados de OTROS grupos
+  const finishedMatches = ref([]) // partidos ya jugados, de cualquiera de mis grupos
   const currentMatch = ref(null)
   const loading = ref(false)
   const error = ref(null)
 
   let unsubscribe = null
+  let publicUnsubscribe = null
+  let finishedUnsubscribe = null
 
   // ── Escucha en tiempo real los próximos partidos ──────────────────────────
   // Solo se muestran partidos de los grupos del usuario, o partidos sin grupo
@@ -110,6 +114,7 @@ export function useMatch() {
     // así sea (allow list de /matches).
     const perSourceMatches = new Map()
     const subscriptions = []
+    const appliedMatchStops = new Map() // matchId -> unsubscribe del doc puntual
 
     function emit() {
       const byId = new Map()
@@ -180,6 +185,49 @@ export function useMatch() {
       emit()
     }
 
+    // Partidos donde te aceptaron una postulación PÚBLICA a un grupo del que
+    // no sos miembro: `onApplicationResolved` crea la registration real, pero
+    // ese matchId nunca cae en ninguna query de arriba (son por groupId propio
+    // o groupless) — sin esto, quien te suma ve el partido y vos no. La lista
+    // de ids sale de `authStore.appliedMatchIds` (poblada en tiempo real
+    // desde el login por useAuth.watchAppliedMatches, no acá — tiene que
+    // existir aunque nunca se pase por esta suscripción, porque
+    // registrationAccessFor la necesita en MatchDetailPage también).
+    function syncAppliedMatchListeners() {
+      const acceptedIds = authStore.appliedMatchIds
+
+      // Deja de escuchar partidos que ya no están aceptados (se retiró,
+      // se rechazó, etc.)
+      for (const [matchId, stopDoc] of appliedMatchStops) {
+        if (!acceptedIds.has(matchId)) {
+          stopDoc()
+          appliedMatchStops.delete(matchId)
+          perSourceMatches.delete(`applied:${matchId}`)
+        }
+      }
+
+      // Abre un listener puntual por cada match nuevo aceptado.
+      for (const matchId of acceptedIds) {
+        if (appliedMatchStops.has(matchId)) continue
+        const stopDoc = onSnapshot(
+          doc(db, 'matches', matchId),
+          (docSnap) => {
+            perSourceMatches.set(
+              `applied:${matchId}`,
+              docSnap.exists() ? [{ id: docSnap.id, ...docSnap.data() }] : [],
+            )
+            emit()
+          },
+          (err) => {
+            error.value = err.message
+          },
+        )
+        appliedMatchStops.set(matchId, stopDoc)
+      }
+
+      emit()
+    }
+
     // memberGroupIds se puebla de forma asíncrona en el login (loadOgGroups) y
     // puede llegar DESPUÉS de la primera suscripción. Sin este watch, un
     // miembro común se quedaba sin sus partidos hasta recargar la página.
@@ -189,12 +237,190 @@ export function useMatch() {
       { immediate: true },
     )
 
+    const stopAppliedWatch = watch(
+      () => [...authStore.appliedMatchIds],
+      syncAppliedMatchListeners,
+      { immediate: true },
+    )
+
     unsubscribe = () => {
       subscriptions.forEach((stop) => stop())
       subscriptions.length = 0
+      appliedMatchStops.forEach((stop) => stop())
+      appliedMatchStops.clear()
       stopWatch()
+      stopAppliedWatch()
     }
     return unsubscribe
+  }
+
+  // ── Partidos TERMINADOS de mis grupos (resultados viejos) ─────────────────
+  // Antes esto solo se veía entrando al grupo puntual (subscribeToGroupMatches)
+  // — "Partidos" (Dashboard) solo mostraba scheduled/open, así que un
+  // resultado de hace dos semanas era invisible salvo que te acordaras de qué
+  // grupo era. Mismo patrón multi-fuente que subscribeToUpcoming (groupless +
+  // tandas de 30 por el límite de `in` de Firestore), pero status == finished
+  // y orden descendente (el más reciente primero).
+  const FINISHED_QUERY_LIMIT = 30
+
+  function subscribeToFinished() {
+    const perSourceFinished = new Map()
+    const subs = []
+
+    function emitFinished() {
+      const byId = new Map()
+      perSourceFinished.forEach((list) => list.forEach((m) => byId.set(m.id, m)))
+      finishedMatches.value = [...byId.values()]
+        .sort((a, b) => (b.date?.toMillis?.() ?? 0) - (a.date?.toMillis?.() ?? 0))
+        .slice(0, FINISHED_QUERY_LIMIT)
+    }
+
+    function listenFinished(key, constraints) {
+      const q = query(
+        collection(db, 'matches'),
+        where('status', '==', MATCH_STATUS.FINISHED),
+        ...constraints,
+        orderBy('date', 'desc'),
+        limit(FINISHED_QUERY_LIMIT),
+      )
+      const stop = onSnapshot(
+        q,
+        (snap) => {
+          perSourceFinished.set(key, snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+          emitFinished()
+        },
+        (err) => {
+          error.value = err.message
+        },
+      )
+      subs.push(stop)
+    }
+
+    function resubscribeFinished() {
+      subs.forEach((stop) => stop())
+      subs.length = 0
+      perSourceFinished.clear()
+
+      if (authStore.isGuest) {
+        finishedMatches.value = []
+        return
+      }
+
+      listenFinished('groupless', [where('groupId', '==', null)])
+
+      const groupIds = authStore.superAdminMode ? [] : authStore.memberGroupIds.slice()
+      for (let i = 0; i < groupIds.length; i += 30) {
+        const chunk = groupIds.slice(i, i + 30)
+        listenFinished(`groups:${i}`, [where('groupId', 'in', chunk)])
+      }
+
+      if (authStore.superAdminMode) {
+        listenFinished('all', [])
+      }
+
+      emitFinished()
+    }
+
+    const stopWatch = watch(
+      () => [authStore.memberGroupIds.slice(), authStore.superAdminMode],
+      resubscribeFinished,
+      { immediate: true },
+    )
+
+    finishedUnsubscribe = () => {
+      subs.forEach((stop) => stop())
+      subs.length = 0
+      stopWatch()
+    }
+    return finishedUnsubscribe
+  }
+
+  function stopListeningFinished() {
+    finishedUnsubscribe?.()
+    finishedUnsubscribe = null
+  }
+
+  // ── Partidos PÚBLICOS (los que buscan jugadores de afuera) ────────────────
+  // Lista los partidos con `isPublic == true` que todavía admiten gente. Se
+  // excluyen en el cliente los de MIS grupos: si ya sos del grupo te anotás
+  // derecho en la lista, no te postulás (las reglas rechazan esa postulación,
+  // así que mostrarlos sería ofrecer un botón que falla).
+  //
+  // Una sola query alcanza (a diferencia de subscribeToUpcoming, que abre una
+  // por grupo): acá el filtro es un campo del propio documento, no la
+  // membresía. Igual lleva `limit` obligatorio — lo exigen las reglas.
+  function subscribeToPublicMatches() {
+    const q = query(
+      collection(db, 'matches'),
+      where('isPublic', '==', true),
+      where('status', 'in', [MATCH_STATUS.SCHEDULED, MATCH_STATUS.OPEN]),
+      orderBy('date', 'asc'),
+      limit(MATCH_QUERY_LIMIT),
+    )
+
+    const rawPublic = ref([])
+
+    function applyFilter() {
+      const now = Date.now()
+      publicMatches.value = rawPublic.value
+        .filter((m) => {
+          // Ya pasó: no tiene sentido postularse
+          if ((m.date?.toMillis?.() ?? 0) < now) return false
+          // De un grupo mío: me anoto solo, no me postulo
+          if (m.groupId && authStore.isMemberOfGroup(m.groupId)) return false
+          return true
+        })
+        .sort((a, b) => (a.date?.toMillis?.() ?? 0) - (b.date?.toMillis?.() ?? 0))
+    }
+
+    const stopSnapshot = onSnapshot(
+      q,
+      (snap) => {
+        rawPublic.value = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+        applyFilter()
+      },
+      (err) => {
+        error.value = err.message
+      },
+    )
+
+    // memberGroupIds llega async en el login: sin esto, alguien que abre la
+    // pantalla apenas entra vería partidos de sus propios grupos hasta recargar.
+    const stopWatch = watch(() => authStore.memberGroupIds.slice(), applyFilter)
+
+    const stop = () => {
+      stopSnapshot()
+      stopWatch()
+    }
+    publicUnsubscribe = stop
+    return stop
+  }
+
+  function stopListeningPublic() {
+    publicUnsubscribe?.()
+    publicUnsubscribe = null
+  }
+
+  // ── Publicar / despublicar un partido ─────────────────────────────────────
+  // Acción manual del organizador ("me faltan 2, que se sume alguien"). No es
+  // un campo que se define al crear: la mayoría de los partidos se llenan
+  // dentro del grupo y nunca se publican.
+  async function setMatchPublic(matchId, isPublic, spotsWanted = null) {
+    loading.value = true
+    error.value = null
+    try {
+      await updateDoc(doc(db, 'matches', matchId), {
+        isPublic,
+        publishedAt: isPublic ? serverTimestamp() : null,
+        spotsWanted: isPublic ? (spotsWanted ?? null) : null,
+        updatedAt: serverTimestamp(),
+      })
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
   }
 
   // ── Obtiene un partido por ID (una sola vez) ──────────────────────────────
@@ -240,6 +466,8 @@ export function useMatch() {
         venueMapsUrl: formData.venueMapsUrl ?? null,
         venueLat: formData.venueLat ?? null,
         venueLng: formData.venueLng ?? null,
+        provincia: formData.provincia ?? null,
+        ciudad: formData.ciudad ?? null,
         date,
         openAt,
         notifyAt,
@@ -285,6 +513,8 @@ export function useMatch() {
         venueMapsUrl: formData.venueMapsUrl ?? null,
         venueLat: formData.venueLat ?? null,
         venueLng: formData.venueLng ?? null,
+        provincia: formData.provincia ?? null,
+        ciudad: formData.ciudad ?? null,
         date,
         openAt,
         notifyAt,
@@ -413,12 +643,16 @@ export function useMatch() {
 
   return {
     matches,
+    publicMatches,
+    finishedMatches,
     currentMatch,
     nextMatch,
     loading,
     error,
     subscribeToUpcoming,
     subscribeToGroupMatches,
+    subscribeToPublicMatches,
+    subscribeToFinished,
     subscribeToMatch,
     fetchMatch,
     createMatch,
@@ -427,7 +661,10 @@ export function useMatch() {
     saveMatchResult,
     finishMatch,
     toggleVenueReserved,
+    setMatchPublic,
     stopListening,
+    stopListeningPublic,
+    stopListeningFinished,
     FORMAT_OPTIONS,
     MATCH_STATUS,
   }

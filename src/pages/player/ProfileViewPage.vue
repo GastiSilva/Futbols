@@ -57,6 +57,11 @@
             </q-card-section>
           </q-card>
 
+          <!-- Vitrina de premios. showGroup solo si compartimos grupo: a un
+               desconocido se le muestra el premio sin decirle en qué grupo lo
+               ganó (mismo criterio que ocultar statsByGroup). -->
+          <BadgeShelf :badges="badges" :show-group="!!sharedGroupId" />
+
           <!-- ── Calificar la descripción (en privado) ──────────────────────
                Solo para compañeros de grupo: un desconocido no tiene cómo
                saber si la descripción es real, y su voto solo serviría para
@@ -198,6 +203,8 @@ import { useAuthStore } from 'src/stores/auth.store'
 import { positionLabel, normalizePositions } from 'src/utils/positions'
 import { findTeam } from 'src/utils/teams'
 import ReportUserDialog from 'src/components/ReportUserDialog.vue'
+import BadgeShelf from 'src/components/BadgeShelf.vue'
+import { useBadges } from 'src/composables/useBadges'
 
 const route = useRoute()
 const router = useRouter()
@@ -218,6 +225,8 @@ function footLabel(value) {
 }
 
 const profile = ref(null)
+const badges = ref([])
+const { getUserBadges } = useBadges()
 const loadError = ref(null)
 const myRating = ref(0)
 const groupNames = ref({})
@@ -264,6 +273,7 @@ async function loadProfile(uid) {
   loadError.value = null
   myRating.value = 0
   sharedGroupId.value = null
+  badges.value = []
 
   // El perfil propio se edita en /perfil, no tiene sentido "verse" acá
   if (uid === authStore.user?.uid) {
@@ -273,6 +283,11 @@ async function loadProfile(uid) {
 
   try {
     profile.value = await fetchProfile(uid)
+
+    // Antes del corte por sharedGroupId a propósito: la vitrina es lo
+    // deportivo y se muestra también a quien mira "de afuera" (sin el nombre
+    // del grupo, eso lo decide showGroup).
+    badges.value = await getUserBadges(uid)
 
     // Define si veo el perfil como compañero o "de afuera" (me postulé a su
     // partido, o él al mío). De afuera se ve lo deportivo y nada más.

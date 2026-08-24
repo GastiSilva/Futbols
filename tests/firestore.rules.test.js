@@ -20,7 +20,8 @@ import {
   assertSucceeds,
 } from '@firebase/rules-unit-testing'
 import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, addDoc, query, limit,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, collectionGroup, getDocs, addDoc,
+  query, where, limit,
 } from 'firebase/firestore'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -37,6 +38,7 @@ const ADMIN = 'admin1'     // admin global (custom claim)
 const GROUP_A = 'grupoA'
 const GROUP_B = 'grupoB'
 const MATCH_A = 'matchA'   // partido del grupo A
+const PUBLIC_MATCH = 'matchPublico'  // partido del grupo A, publicado (isPublic)
 
 // Fechas relativas: la lista ya está abierta
 const PAST = new Date(Date.now() - 60 * 60 * 1000)
@@ -127,6 +129,22 @@ beforeEach(async () => {
       instantOpen: false,
     })
 
+    // Partido del grupo A PUBLICADO: lo ve (y se puede postular) alguien de
+    // afuera del grupo. Mallory, que es del grupo B, hace de postulante.
+    await setDoc(doc(db, 'matches', PUBLIC_MATCH), {
+      title: 'Partido publicado del grupo A',
+      groupId: GROUP_A,
+      createdBy: ALICE,
+      status: 'open',
+      currentPlayers: 8,
+      maxPlayers: 10,
+      openAt: PAST,
+      date: FUTURE,
+      instantOpen: false,
+      isPublic: true,
+      spotsWanted: 2,
+    })
+
     // El invitado ya está anotado en MATCH_A (entró por ese link). Va acá y no
     // en un beforeEach anidado: abrir withSecurityRulesDisabled después de que
     // el contexto anónimo ya se usó rompe con "Firestore has already been
@@ -139,6 +157,13 @@ beforeEach(async () => {
     await setDoc(doc(db, 'users', BOB), {
       uid: BOB, displayName: 'Bob', role: 'player',
       stats: { goals: 0, assists: 0, matchesPlayed: 0 },
+    })
+
+    // Insignia ya otorgada, escrita como la escribiría runMonthlyBadges por
+    // admin SDK (que se saltea las reglas, igual que este bloque).
+    await setDoc(doc(db, 'users', BOB, 'badges', '2026-07_topScorer_' + GROUP_A), {
+      type: 'topScorer', groupId: GROUP_A, groupName: 'Grupo A',
+      period: '2026-07', value: 9,
     })
   })
 })
@@ -159,6 +184,322 @@ describe('Partidos: visibilidad entre grupos', () => {
 
   test('un miembro del grupo SÍ puede ver la lista de anotados', async () => {
     await assertSucceeds(getDocs(collection(ctx(BOB), 'matches', MATCH_A, 'registrations')))
+  })
+})
+
+describe('Partidos públicos: visibilidad', () => {
+  test('alguien de otro grupo SÍ puede leer un partido publicado', async () => {
+    await assertSucceeds(getDoc(doc(ctx(MALLORY), 'matches', PUBLIC_MATCH)))
+  })
+
+  test('pero NO puede ver la lista de anotados del partido publicado', async () => {
+    // Publicar abre el partido, no la lista de quiénes van: eso sigue siendo
+    // del grupo hasta que te acepten.
+    await assertFails(
+      getDocs(collection(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'registrations')),
+    )
+  })
+
+  test('pero SÍ puede verla una vez que tiene su propia registration ahí (postulación aceptada)', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'matches', PUBLIC_MATCH, 'registrations', MALLORY), {
+        userId: MALLORY, displayName: 'Mallory', isGuest: false, position: 3, isOnWaitlist: false,
+      })
+    })
+    await assertSucceeds(
+      getDocs(collection(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'registrations')),
+    )
+    await assertSucceeds(
+      getDoc(doc(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'registrations', MALLORY)),
+    )
+  })
+
+  test('el organizador puede publicar/despublicar su partido', async () => {
+    await assertSucceeds(
+      updateDoc(doc(ctx(ALICE), 'matches', MATCH_A), {
+        isPublic: true, spotsWanted: 2,
+      }),
+    )
+  })
+
+  test('un miembro común, al anotarse y llenar el último cupo, puede despublicar en el mismo update', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'matches', PUBLIC_MATCH), {
+        title: 'Partido publicado del grupo A', groupId: GROUP_A, createdBy: ALICE,
+        status: 'open', currentPlayers: 9, maxPlayers: 10, openAt: PAST, date: FUTURE,
+        instantOpen: false, isPublic: true, spotsWanted: 2,
+      })
+    })
+    await assertSucceeds(
+      updateDoc(doc(ctx(BOB), 'matches', PUBLIC_MATCH), {
+        currentPlayers: 10, isPublic: false,
+      }),
+    )
+  })
+
+  test('pero NO puede despublicar si el cupo no se llenó (currentPlayers < maxPlayers)', async () => {
+    await assertFails(
+      updateDoc(doc(ctx(ALICE), 'matches', PUBLIC_MATCH), {
+        currentPlayers: 9, isPublic: false,
+      }),
+    )
+  })
+
+  test('ni prender isPublic por esta vía', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'matches', PUBLIC_MATCH), {
+        title: 'x', groupId: GROUP_A, createdBy: ALICE,
+        status: 'open', currentPlayers: 9, maxPlayers: 10, openAt: PAST, date: FUTURE,
+        instantOpen: false, isPublic: false, spotsWanted: 2,
+      })
+    })
+    await assertFails(
+      updateDoc(doc(ctx(BOB), 'matches', PUBLIC_MATCH), {
+        currentPlayers: 10, isPublic: true,
+      }),
+    )
+  })
+
+  test('alguien de otro grupo NO puede publicar un partido ajeno', async () => {
+    await assertFails(
+      updateDoc(doc(ctx(MALLORY), 'matches', MATCH_A), { isPublic: true }),
+    )
+  })
+
+  test('un miembro común NO puede publicar el partido', async () => {
+    // Publicar expone el partido a toda la app: es gestión, no participación.
+    await assertFails(
+      updateDoc(doc(ctx(BOB), 'matches', MATCH_A), { isPublic: true }),
+    )
+  })
+})
+
+describe('Postulaciones a partidos públicos', () => {
+  const application = (uid) => ({
+    applicantId: uid,
+    applicantName: 'Postulante',
+    status: 'pending',
+    message: 'Juego de 9, dale',
+  })
+
+  test('alguien de afuera puede postularse a un partido publicado', async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      ),
+    )
+  })
+
+  test('NO se puede postular a un partido que no está publicado', async () => {
+    await assertFails(
+      setDoc(
+        doc(ctx(MALLORY), 'matches', MATCH_A, 'applications', MALLORY),
+        application(MALLORY),
+      ),
+    )
+  })
+
+  test('un miembro del grupo NO se postula (se anota derecho)', async () => {
+    await assertFails(
+      setDoc(
+        doc(ctx(BOB), 'matches', PUBLIC_MATCH, 'applications', BOB),
+        application(BOB),
+      ),
+    )
+  })
+
+  test('no se puede postular en nombre de otro', async () => {
+    await assertFails(
+      setDoc(
+        doc(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'applications', 'otro-uid'),
+        application('otro-uid'),
+      ),
+    )
+  })
+
+  test('la postulación nace siempre en pending, no aceptada', async () => {
+    await assertFails(
+      setDoc(doc(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'applications', MALLORY), {
+        ...application(MALLORY), status: 'accepted',
+      }),
+    )
+  })
+
+  test('el organizador puede aceptar una postulación', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    await assertSucceeds(
+      updateDoc(doc(ctx(ALICE), 'matches', PUBLIC_MATCH, 'applications', MALLORY), {
+        status: 'accepted', resolvedBy: ALICE,
+      }),
+    )
+  })
+
+  test('el postulante NO puede auto-aceptarse', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    await assertFails(
+      updateDoc(doc(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'applications', MALLORY), {
+        status: 'accepted', resolvedBy: MALLORY,
+      }),
+    )
+  })
+
+  test('el postulante SÍ puede retirarse mientras esté pendiente', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    await assertSucceeds(
+      updateDoc(doc(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'applications', MALLORY), {
+        status: 'withdrawn',
+      }),
+    )
+  })
+
+  test('una postulación ya resuelta no se puede reabrir', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        { ...application(MALLORY), status: 'rejected' },
+      )
+    })
+    await assertFails(
+      updateDoc(doc(ctx(ALICE), 'matches', PUBLIC_MATCH, 'applications', MALLORY), {
+        status: 'accepted', resolvedBy: ALICE,
+      }),
+    )
+  })
+
+  test('las postulaciones no se borran', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    await assertFails(
+      deleteDoc(doc(ctx(ALICE), 'matches', PUBLIC_MATCH, 'applications', MALLORY)),
+    )
+  })
+
+  test('un miembro del grupo puede votar en el sondeo', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    await assertSucceeds(
+      setDoc(
+        doc(ctx(BOB), 'matches', PUBLIC_MATCH, 'applications', MALLORY, 'votes', BOB),
+        { vote: 'up' },
+      ),
+    )
+  })
+
+  test('el postulante y el organizador pueden chatear', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    // El postulante escribe
+    await assertSucceeds(
+      addDoc(
+        collection(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'applications', MALLORY, 'messages'),
+        { senderId: MALLORY, senderName: 'Mallory', text: '¿Dónde es exactamente?' },
+      ),
+    )
+    // El organizador responde
+    await assertSucceeds(
+      addDoc(
+        collection(ctx(ALICE), 'matches', PUBLIC_MATCH, 'applications', MALLORY, 'messages'),
+        { senderId: ALICE, senderName: 'Alice', text: 'En la cancha del parque' },
+      ),
+    )
+  })
+
+  test('un tercero NO puede leer ese chat', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    // Bob es del grupo pero no es ni el postulante ni quien gestiona
+    await assertFails(
+      getDocs(
+        collection(ctx(BOB), 'matches', PUBLIC_MATCH, 'applications', MALLORY, 'messages'),
+      ),
+    )
+  })
+
+  test('no se puede escribir haciéndose pasar por otro', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    await assertFails(
+      addDoc(
+        collection(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'applications', MALLORY, 'messages'),
+        { senderId: ALICE, senderName: 'Alice', text: 'Mensaje falso' },
+      ),
+    )
+  })
+
+  test('el propio postulante NO puede votarse a sí mismo', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    // No es miembro del grupo del partido → no vota
+    await assertFails(
+      setDoc(
+        doc(ctx(MALLORY), 'matches', PUBLIC_MATCH, 'applications', MALLORY, 'votes', MALLORY),
+        { vote: 'up' },
+      ),
+    )
+  })
+
+  // Regresión: "mis postulaciones" en el cliente usa un collectionGroup
+  // filtrado por applicantId (subscribeToMyApplications). isMemberOfMatchGroup
+  // hace un get() a matches/$(matchId) que no tiene un matchId concreto en
+  // esta query — si esa rama va ANTES de la que de verdad cubre este caso, el
+  // get() revienta y tumba todo el `allow list` con permission-denied aunque
+  // la otra rama fuera true.
+  test('el postulante puede listar "mis postulaciones" via collectionGroup', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(
+        doc(c.firestore(), 'matches', PUBLIC_MATCH, 'applications', MALLORY),
+        application(MALLORY),
+      )
+    })
+    await assertSucceeds(
+      getDocs(
+        query(
+          collectionGroup(ctx(MALLORY), 'applications'),
+          where('applicantId', '==', MALLORY),
+          limit(50),
+        ),
+      ),
+    )
   })
 })
 
@@ -468,6 +809,44 @@ describe('Perfil: campos que el cliente nunca puede escribir', () => {
 
   test('un usuario NO puede editar el perfil de otro', async () => {
     await assertFails(updateDoc(doc(ctx(MALLORY), 'users', BOB), { nickname: 'Hackeado' }))
+  })
+})
+
+describe('Insignias: premio público que nadie se puede autoasignar', () => {
+  const BADGE_ID = '2026-07_topScorer_' + GROUP_A
+
+  test('un compañero de grupo puede ver las insignias', async () => {
+    await assertSucceeds(getDoc(doc(ctx(ALICE), 'users', BOB, 'badges', BADGE_ID)))
+  })
+
+  test('alguien de AFUERA del grupo también las ve (son un premio público)', async () => {
+    await assertSucceeds(getDoc(doc(ctx(MALLORY), 'users', BOB, 'badges', BADGE_ID)))
+  })
+
+  test('el dueño del perfil NO puede otorgarse una insignia', async () => {
+    await assertFails(setDoc(doc(ctx(BOB), 'users', BOB, 'badges', '2026-08_topScorer_' + GROUP_A), {
+      type: 'topScorer', groupId: GROUP_A, period: '2026-08', value: 99,
+    }))
+  })
+
+  test('un tercero NO puede otorgarle una insignia a otro', async () => {
+    await assertFails(setDoc(doc(ctx(MALLORY), 'users', BOB, 'badges', '2026-08_topMvp_' + GROUP_A), {
+      type: 'topMvp', groupId: GROUP_A, period: '2026-08', value: 5,
+    }))
+  })
+
+  test('ni siquiera un admin global puede escribir insignias', async () => {
+    await assertFails(setDoc(doc(ctx(ADMIN, { admin: true }), 'users', BOB, 'badges', '2026-08_topScorer_' + GROUP_A), {
+      type: 'topScorer', groupId: GROUP_A, period: '2026-08', value: 99,
+    }))
+  })
+
+  test('el dueño NO puede inflar el valor de una insignia que ganó', async () => {
+    await assertFails(updateDoc(doc(ctx(BOB), 'users', BOB, 'badges', BADGE_ID), { value: 999 }))
+  })
+
+  test('el dueño NO puede borrar una insignia', async () => {
+    await assertFails(deleteDoc(doc(ctx(BOB), 'users', BOB, 'badges', BADGE_ID)))
   })
 })
 

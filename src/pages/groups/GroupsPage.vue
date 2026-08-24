@@ -168,13 +168,14 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, watch, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useGroups } from 'src/composables/useGroups'
 import { useQuasar } from 'quasar'
 import { useAuthStore } from 'src/stores/auth.store'
 
 const router = useRouter()
+const route = useRoute()
 const $q = useQuasar()
 const { loading, createGroup, getMyGroups, getGroupMembers } = useGroups()
 const authStore = useAuthStore()
@@ -185,6 +186,17 @@ const loadError = ref(null)
 const showCreateDialog = ref(false)
 const creating = ref(false)
 const newGroup = ref({ name: '', description: '' })
+
+// `?crear=1` abre el diálogo de creación apenas entra. Lo usa la tarjeta
+// "Crear un grupo" de la bienvenida (WelcomeHome): sin esto, el recién llegado
+// aterrizaba en una lista vacía y tenía que volver a buscar el botón. Se limpia
+// el query al abrirlo para que un refresh o un "atrás" no lo reabra solo.
+onMounted(() => {
+  if (route.query.crear === '1') {
+    showCreateDialog.value = true
+    router.replace({ name: 'groups' })
+  }
+})
 
 // El "watch" mágico: Ni bien Pinia detecta tu usuario, va a buscar los grupos.
 watch(

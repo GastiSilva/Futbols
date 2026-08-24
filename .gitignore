@@ -28,6 +28,18 @@ node_modules
 .firebase/
 firebase-debug.log
 firebase-debug.*.log
+firestore-debug.log
+firestore-debug.*.log
+ui-debug.log
+database-debug.log
+pubsub-debug.log
+
+# Datos exportados de los emuladores locales (npm run emu). El nombre con
+# sufijo random aparece cuando el emulador se cierra sin el flujo normal
+# (--export-on-exit no llega a escribir en .emulator-data/ y firebase-tools
+# genera uno propio al toparse con datos sin exportar).
+.emulator-data/
+firebase-export-*/
 
 
 serviceAccount.json

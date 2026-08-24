@@ -416,6 +416,8 @@ async function handleSubmit() {
       venueMapsUrl: selectedVenue?.mapsUrl ?? null,
       venueLat: selectedVenue?.lat ?? null,
       venueLng: selectedVenue?.lng ?? null,
+      provincia: selectedVenue?.provincia ?? null,
+      ciudad: selectedVenue?.ciudad ?? null,
     })
 
     // Si se modificó openAt, reprogramar notificaciones
