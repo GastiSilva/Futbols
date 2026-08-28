@@ -55,18 +55,19 @@ export function buildListText({
       noTeam.forEach((r) => lines.push(`- ${r.displayName}`))
     }
   } else {
-    starters.forEach((r) => lines.push(`${r.position}. ${r.displayName}`))
+    // Se numera por el ORDEN del array, no por `r.position`: ese campo puede
+    // venir con huecos si el renumerado de fondo no corrió, y el mensaje que
+    // se pega en WhatsApp saltaría del 5 al 9.
+    starters.forEach((r, i) => lines.push(`${i + 1}. ${r.displayName}`))
   }
 
   if (waitlist.length > 0) {
     lines.push('')
     lines.push('Suplentes:')
-    waitlist.forEach((r) => {
-      // En formato libre (maxPlayers null) no hay suplentes, pero si igual
-      // llegara algo acá, restar null daría NaN: se cae a la posición cruda.
-      const nth = match.maxPlayers != null ? r.position - match.maxPlayers : r.position
-      lines.push(`${nth}. ${r.displayName}`)
-    })
+    // 1º suplente, 2º suplente… sale del orden del array, así que no depende
+    // de `position` ni de restar `maxPlayers` (que en formato libre es null y
+    // daba NaN).
+    waitlist.forEach((r, i) => lines.push(`${i + 1}. ${r.displayName}`))
   }
 
   // Link de invitación: quien lo abre cae en la landing que le deja elegir

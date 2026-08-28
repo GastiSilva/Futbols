@@ -31,6 +31,7 @@
             <div class="badge-art">
               <span class="badge-art-disc" :class="`bg-${badge.view.color}`"></span>
               <img
+                v-if="badge.view.art"
                 :src="badge.view.art"
                 :alt="badge.view.label"
                 width="34"
@@ -38,6 +39,7 @@
                 loading="lazy"
                 decoding="async"
               />
+              <q-icon v-else-if="badge.view.icon" :name="badge.view.icon" :color="badge.view.color" size="26px" />
             </div>
             <div class="col q-ml-sm overflow-hidden">
               <div class="text-body2 text-weight-bold ellipsis">{{ badge.view.label }}</div>

@@ -325,12 +325,275 @@ async function runMatchLowSignupAlert() {
   }
 }
 
-// ── 5c. Scheduled: auto-cerrar resultado/votación de MVP a las 36hs ──────────
+// ── 5b2. Scheduled: aviso de "hype" personalizado antes de cada partido ──────
+// Corre cada 10 min. Para cada partido cuya `date` cae dentro de la ventana
+// [ahora+4h, ahora+6h], y que todavía no se avisó (`hypeMsgSent`), recorre
+// SOLO a los inscriptos de ESE partido (no la base entera de usuarios: la
+// combinatoria de "vs" contra todo el mundo sería cara e irrelevante — a cada
+// uno le importa únicamente con quién juega HOY) y le arma una frase
+// personalizada: primero busca si tiene historial de rivalry/chemistry contra
+// alguien de la MISMA lista con al menos MIN_HEAD_TO_HEAD_MATCHES partidos en
+// común (más específico y social, "hoy jugás con/contra Fulano"); si no hay
+// cruce que alcance el piso, cae a su racha personal (streaks).
+//
+// Tope deliberado: aunque calificaran TODOS los inscriptos, solo se les manda
+// a lo sumo la MITAD (HYPE_SHARE_OF_PLAYERS) — que le llegue algo a cada uno
+// de los 14 anotados un rato antes de jugar se siente como spam de la app, no
+// como una posta puntual entre amigos. Si hay más candidatos calificados que
+// cupo, se sortea entre ellos (no "los primeros de la lista" ni "los de más
+// historial siempre") para que no le toque siempre a los mismos veteranos del
+// grupo.
+const MIN_HEAD_TO_HEAD_MATCHES = 3
+const HYPE_SHARE_OF_PLAYERS = 0.5
+
+// Fisher-Yates in-place, alcanza para listas de ~10-20 jugadores por partido.
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
+
+async function runMatchHypeNotify() {
+  const db = admin.firestore()
+  const now = new Date()
+  const windowStart = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + 4 * 60 * 60 * 1000))
+  const windowEnd = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + 6 * 60 * 60 * 1000))
+
+  const snap = await db
+    .collection('matches')
+    .where('date', '>=', windowStart)
+    .where('date', '<=', windowEnd)
+    .get()
+
+  if (snap.empty) return
+
+  for (const docSnap of snap.docs) {
+    const match = docSnap.data()
+    const matchId = docSnap.id
+
+    if (match.status === 'closed' || match.status === 'finished') continue
+    if (match.hypeMsgSent) continue
+
+    const regsSnap = await docSnap.ref.collection('registrations').get()
+    const players = regsSnap.docs
+      .map((d) => d.data())
+      .filter((r) => r.userId) // invitados sin cuenta no tienen historial
+
+    if (players.length < 2) continue
+
+    // Se marca ANTES de mandar, mismo criterio que el resto de las colas: un
+    // fallo a mitad de camino no debe reintentar de punta a punta al minuto
+    // siguiente y duplicar avisos a quien ya le llegó.
+    await docSnap.ref.update({ hypeMsgSent: true })
+
+    // 1) Armar el mensaje de CADA candidato sin mandar nada todavía — recién
+    // acá se sabe cuántos calificaron de verdad, que es lo que define el cupo.
+    const candidates = []
+    for (const player of players) {
+      try {
+        const others = players.filter((p) => p.userId !== player.userId)
+        const message = await buildHypeMessage(player.userId, others)
+        if (message) candidates.push({ player, message })
+      } catch (error) {
+        logger.error(`runMatchHypeNotify: falló armar el hype de ${player.userId} en ${matchId}`, error)
+      }
+    }
+
+    // 2) Cupo proporcional a los anotados (no a los calificados): con 14
+    // jugadores el tope es 7 aunque calificaran los 14. Mínimo 1 para que un
+    // partido chico no se quede sin ningún aviso.
+    const quota = Math.max(1, Math.round(players.length * HYPE_SHARE_OF_PLAYERS))
+    const chosen = shuffle(candidates).slice(0, quota)
+
+    let sent = 0
+    for (const { player, message } of chosen) {
+      try {
+        await sendFCMToUser(
+          player.userId,
+          message.title,
+          message.body,
+          { matchId, type: 'match_hype' },
+        )
+        sent += 1
+      } catch (error) {
+        logger.error(`runMatchHypeNotify: falló el envío a ${player.userId} en ${matchId}`, error)
+      }
+    }
+    logger.info(
+      `runMatchHypeNotify: ${matchId} → ${sent}/${quota} enviados (${candidates.length} calificaban de ${players.length} anotados)`,
+    )
+  }
+}
+
+// ── Helper: armar la frase de hype de UN jugador para SU partido de hoy ──────
+// Prioridad 1: cruce "vs" (rivalry o chemistry) contra alguien de la MISMA
+// lista con historial suficiente — es lo más específico del partido de hoy.
+// Si hay varios candidatos que alcanzan el piso, se toma el de más partidos
+// en común (el vínculo más "cargado" de datos, no el primero que aparezca).
+// Prioridad 2 (fallback): racha personal, sin cruce con nadie en particular.
+async function buildHypeMessage(userId, others) {
+  const db = admin.firestore()
+
+  let bestRival = null
+  let bestChem = null
+
+  for (const other of others) {
+    const [rivSnap, chemSnap] = await Promise.all([
+      db.collection('users').doc(userId).collection('rivalry').doc(other.userId).get(),
+      db.collection('users').doc(userId).collection('chemistry').doc(other.userId).get(),
+    ])
+
+    if (rivSnap.exists) {
+      const r = rivSnap.data()
+      if ((r.gamesAgainst ?? 0) >= MIN_HEAD_TO_HEAD_MATCHES) {
+        if (!bestRival || r.gamesAgainst > bestRival.data.gamesAgainst) {
+          bestRival = { name: other.displayName || other.guestName || 'ese rival', data: r }
+        }
+      }
+    }
+    if (chemSnap.exists) {
+      const c = chemSnap.data()
+      if ((c.gamesTogether ?? 0) >= MIN_HEAD_TO_HEAD_MATCHES) {
+        if (!bestChem || c.gamesTogether > bestChem.data.gamesTogether) {
+          bestChem = { name: other.displayName || other.guestName || 'ese compañero', data: c }
+        }
+      }
+    }
+  }
+
+  // Entre rival y compañero, el que tenga más partidos en común gana — es el
+  // vínculo con más "peso estadístico" para hoy.
+  if (bestRival && (!bestChem || bestRival.data.gamesAgainst >= bestChem.data.gamesTogether)) {
+    const { name, data } = bestRival
+    const winRate = data.winsAgainst / data.gamesAgainst
+    if (winRate >= 0.5) {
+      return {
+        title: '🔥 Hoy tenés revancha',
+        body: `Tenés enfrente a ${name}. Le ganaste ${data.winsAgainst} de las últimas ${data.gamesAgainst}. Que no se entere.`,
+      }
+    }
+    return {
+      title: '😬 Hoy se corta la mala',
+      body: `Tenés enfrente a ${name}. Contra él/ella perdés seguido (${data.lossesAgainst} de ${data.gamesAgainst}). Hoy es el día.`,
+    }
+  }
+
+  if (bestChem) {
+    const { name, data } = bestChem
+    const winRate = data.winsTogether / data.gamesTogether
+    if (winRate >= 0.5) {
+      return {
+        title: '🤝 Buena dupla',
+        body: `Hoy jugás con ${name}. Juntos ganan ${data.winsTogether} de ${data.gamesTogether}. No la cortes.`,
+      }
+    }
+    return {
+      title: '🎯 A cambiar la historia',
+      body: `Hoy jugás con ${name}. Juntos les cuesta ganar (${data.winsTogether} de ${data.gamesTogether}). A ver si hoy es distinto.`,
+    }
+  }
+
+  // Fallback: racha personal, sin cruce con nadie de la lista.
+  const userSnap = await db.collection('users').doc(userId).get()
+  const streaks = userSnap.data()?.streaks
+  if (!streaks) return null
+
+  if ((streaks.lossStreak ?? 0) >= 3) {
+    return {
+      title: '😤 Hoy se corta',
+      body: `Venís de ${streaks.lossStreak} derrotas seguidas. Hoy es el día de cortarla.`,
+    }
+  }
+  if ((streaks.goallessStreak ?? 0) >= 3 && (streaks.noWinStreak ?? 0) === 0) {
+    return {
+      title: '⚽ Se te está por cortar',
+      body: `${streaks.goallessStreak} partidos sin convertir. Ponete las pilas hoy.`,
+    }
+  }
+  if ((streaks.goallessStreak ?? 0) === 0 && (streaks.noWinStreak ?? 0) >= 2) {
+    return {
+      title: '🤔 ¿Sos de esos jugadores?',
+      body: `Venís haciendo goles pero el equipo no gana. Hoy cambiá el cassette.`,
+    }
+  }
+  if ((streaks.matchesPlayedStreak ?? 0) >= 4) {
+    return {
+      title: '💪 El que nunca afloja',
+      body: `Llevás ${streaks.matchesPlayedStreak} partidos seguidos sin faltar. Hoy, uno más.`,
+    }
+  }
+
+  return null
+}
+
+// ── 5b3. Scheduled: recordatorio post-partido a las 3hs de terminado ─────────
+// Corre cada 10 min. Para cada partido `finished` cuyo `finishedAt` cae en la
+// ventana [ahora-3h20m, ahora-3h] (el margen de 20 min cubre que esta tarea
+// solo se fija cada 10 min, no debe "saltarse" el partido entre corridas), y
+// que todavía no se avisó (`postMatchReminderSent`), notifica a quienes
+// jugaron de verdad: inscriptos con `userId` (invitados sin cuenta no votan
+// ni cargan stats) y `isOnWaitlist === false` (un suplente que no llegó a
+// entrar no tiene nada que cargar ni a quién votar). Un solo aviso cubre las
+// tres acciones pendientes — cargar stats, votar MVP, votar Muralla — porque
+// las tres dependen del mismo resultado ya cargado y separarlas en tres pushes
+// sería ruido por lo mismo.
+async function runPostMatchReminder() {
+  const db = admin.firestore()
+  const now = new Date()
+  const windowStart = admin.firestore.Timestamp.fromDate(new Date(now.getTime() - 3.33 * 60 * 60 * 1000))
+  const windowEnd = admin.firestore.Timestamp.fromDate(new Date(now.getTime() - 3 * 60 * 60 * 1000))
+
+  const snap = await db
+    .collection('matches')
+    .where('status', '==', 'finished')
+    .where('finishedAt', '>=', windowStart)
+    .where('finishedAt', '<=', windowEnd)
+    .get()
+
+  if (snap.empty) return
+
+  for (const docSnap of snap.docs) {
+    const match = docSnap.data()
+    const matchId = docSnap.id
+
+    if (match.postMatchReminderSent) continue
+
+    const regsSnap = await docSnap.ref.collection('registrations').get()
+    const playerUserIds = regsSnap.docs
+      .map((d) => d.data())
+      .filter((r) => r.userId && r.isOnWaitlist === false)
+      .map((r) => r.userId)
+
+    // Se marca ANTES de mandar, mismo criterio que el resto de las colas.
+    await docSnap.ref.update({ postMatchReminderSent: true })
+
+    if (playerUserIds.length === 0) continue
+
+    const title = '📋 Che, faltan datos del partido'
+    const body = `Cargá tus estadísticas y votá MVP y Muralla de "${match.title ?? 'el partido'}".`
+    let sent = 0
+    for (const userId of playerUserIds) {
+      try {
+        await sendFCMToUser(userId, title, body, { matchId, type: 'post_match_reminder' })
+        sent += 1
+      } catch (error) {
+        logger.error(`runPostMatchReminder: falló el envío a ${userId} en ${matchId}`, error)
+      }
+    }
+    logger.info(`runPostMatchReminder: ${matchId} → ${sent}/${playerUserIds.length} avisos enviados`)
+  }
+}
+
+// ── 5c. Scheduled: auto-cerrar resultado/votaciones a las 36hs ───────────────
 // Corre cada hora. Un partido 'finished' hace más de 36hs (desde finishedAt,
 // que se fija UNA sola vez) deja de ser editable por el cliente común: cierra
-// la votación de MVP (si no se cerró antes a mano) y marca resultLocked:true,
-// lo que bloquea en las reglas la edición de scoreA/scoreB/status/playerStats.
-// Un admin global siempre puede seguir editando después de esto.
+// las votaciones de MVP y Muralla que sigan abiertas, y marca resultLocked:true
+// recién cuando AMBAS quedaron cerradas — así un solo `update` final bloquea
+// el resultado, en vez de que cada votación pise el `lockResult` de la otra
+// con dos writes separados. Un admin global siempre puede seguir editando
+// después de esto.
 async function runAutoCloseMatches() {
   {
     const db = admin.firestore()
@@ -349,15 +612,13 @@ async function runAutoCloseMatches() {
       if (match.resultLocked === true) continue
 
       try {
-        if (match.mvpVotingClosed === true) {
-          // La votación ya se cerró a mano — solo falta bloquear el resultado.
-          await docSnap.ref.update({
-            resultLocked: true,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          })
-        } else {
-          await closeMvpVotingForMatch(docSnap.id, { lockResult: true })
-        }
+        if (match.mvpVotingClosed !== true) await closeVotingForMatch('mvp', docSnap.id)
+        if (match.murallaVotingClosed !== true) await closeVotingForMatch('muralla', docSnap.id)
+
+        await docSnap.ref.update({
+          resultLocked: true,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        })
         logger.info(`processAutoCloseMatches: ${docSnap.id} bloqueado (finishedAt hace más de 36hs)`)
       } catch (error) {
         logger.error(`processAutoCloseMatches: error en ${docSnap.id}`, error)
@@ -403,6 +664,7 @@ const BADGE_DEFS = [
   { type: 'topScorer',  field: 'goals',   label: 'Botín de Oro',   unit: ['gol', 'goles'] },
   { type: 'topAssists', field: 'assists', label: 'Pies de Seda',  unit: ['asistencia', 'asistencias'] },
   { type: 'topMvp',     field: 'mvp',     label: 'Figura del Mes', unit: ['MVP', 'MVPs'] },
+  { type: 'topMuralla', field: 'muralla', label: 'Muralla del Mes', unit: ['partido', 'partidos'] },
 ]
 
 // "Presente" no compite: no es "el que más X" sino una CONDICIÓN — jugó todos
@@ -497,11 +759,13 @@ async function runMonthlyBadges() {
       goals: 0,
       assists: 0,
       mvp: 0,
+      muralla: 0,
       matches: 0,
     }
     acc.goals += Number(st.goals) || 0
     acc.assists += Number(st.assists) || 0
     acc.mvp += st.mvp === true ? 1 : 0
+    acc.muralla += st.muralla === true ? 1 : 0
     acc.matches += 1
     // El nombre más reciente gana: si se cambió el apodo, que el premio lo use.
     if (st.displayName) acc.displayName = st.displayName
@@ -564,7 +828,7 @@ async function runMonthlyBadges() {
       badgesAwarded += 1
 
       const list = winnersByUser.get(best.userId) ?? []
-      list.push({ def, value, groupName })
+      list.push({ def, value, groupId, groupName, winnerName: best.displayName })
       winnersByUser.set(best.userId, list)
 
       podium.push({
@@ -606,7 +870,7 @@ async function runMonthlyBadges() {
         badgesAwarded += 1
 
         const list = winnersByUser.get(u.userId) ?? []
-        list.push({ def: PRESENT_BADGE, value: groupMatches, groupName })
+        list.push({ def: PRESENT_BADGE, value: groupMatches, groupId, groupName, winnerName: u.displayName })
         winnersByUser.set(u.userId, list)
       }
     }
@@ -628,7 +892,9 @@ async function runMonthlyBadges() {
   logger.info(`runMonthlyBadges: ${period} → ${badgesAwarded} insignias en ${byGroup.size} grupos`)
 
   // ── Avisos ────────────────────────────────────────────────────────────────
-  // 1) Al ganador, uno personal por cada insignia que se llevó.
+  // 1) Al ganador, uno personal por cada insignia que se llevó (push + evento
+  // de feed, así queda constancia en el timeline del grupo aunque el push se
+  // haya perdido o esté silenciado).
   for (const [userId, wins] of winnersByUser.entries()) {
     for (const win of wins) {
       const unit = win.value === 1 ? win.def.unit[0] : win.def.unit[1]
@@ -646,6 +912,22 @@ async function runMonthlyBadges() {
         )
       } catch (error) {
         logger.error(`runMonthlyBadges: falló el aviso a ${userId}`, error)
+      }
+
+      try {
+        const winnerName = win.winnerName ?? 'Alguien'
+        await writeEvent({
+          groupId: win.groupId,
+          type: 'badge',
+          actorId: userId,
+          actorName: winnerName,
+          text:
+            win.def.type === PRESENT_BADGE.type
+              ? `${winnerName} se ganó la medalla de Presente en ${win.groupName}`
+              : `${winnerName} ganó el ${win.def.label} de ${win.groupName} (${win.value} ${unit})`,
+        })
+      } catch (error) {
+        logger.error(`runMonthlyBadges: falló el evento de feed para ${userId}`, error)
       }
     }
   }
@@ -691,6 +973,8 @@ const SCHEDULED_TASKS = [
   { name: 'matchOgNotifyQueue', everyMinutes: 1,  run: runMatchOgNotifyQueue },
   { name: 'matchReminderQueue', everyMinutes: 1,  run: runMatchReminderQueue },
   { name: 'lowSignupAlert',     everyMinutes: 10, run: runMatchLowSignupAlert },
+  { name: 'matchHypeNotify',    everyMinutes: 10, run: runMatchHypeNotify },
+  { name: 'postMatchReminder',  everyMinutes: 10, run: runPostMatchReminder },
   { name: 'autoCloseMatches',   everyMinutes: 60, run: runAutoCloseMatches },
   { name: 'monthlyBadges',      monthly: { day: 1, hour: 3 }, run: runMonthlyBadges },
 ]
@@ -781,22 +1065,46 @@ exports.setUserRole = onCall(
   },
 )
 
-// ── 7b. Callable: cerrar votación de MVP y fijar el ganador ──────────────────
-// Cuenta matches/{matchId}/mvpVotes, determina el ganador por mayoría simple
-// (empate en el primer puesto → sin MVP) y escribe con Admin SDK:
-//   matches/{id}.mvpUserId/mvpName/mvpVotingClosed
-//   playerStats/{winnerId}.mvp = true (y false en quien lo tuviera antes)
-// El write a playerStats sigue dispargando onPlayerStatsWritten normalmente,
-// que acumula stats.mvps por diferencia — no hace falta tocar ese trigger.
-// ── Helper: cuenta los votos y fija el MVP de un partido ─────────────────────
-// Reusado por la callable closeMvpVoting (cierre manual) y por el scheduler
-// processAutoCloseMatches (cierre automático a las 36hs). Si `lockResult` es
-// true, además marca resultLocked:true en el mismo batch (auto-cierre).
-async function closeMvpVotingForMatch(matchId, { lockResult = false } = {}) {
+// ── 7b. Callables: cerrar votación de MVP / Muralla y fijar el ganador ───────
+// Cuenta matches/{matchId}/{votesCollection}, determina el ganador por
+// mayoría simple (empate en el primer puesto → sin ganador) y escribe con
+// Admin SDK los campos que le correspondan a cada votación. El write a
+// playerStats sigue disparando onPlayerStatsWritten normalmente, que acumula
+// stats.mvps/murallas por diferencia — no hace falta tocar ese trigger.
+//
+// MVP y Muralla ("mejor defensor") son la MISMA mecánica con distinto campo:
+// en vez de duplicar 50 líneas casi idénticas dos veces, un solo helper
+// parametrizado (`kind`) las resuelve — el comentario de arriba describe el
+// flujo una sola vez para ambas.
+const VOTING_KINDS = {
+  mvp: {
+    votesCollection: 'mvpVotes',
+    userIdField: 'mvpUserId',
+    nameField: 'mvpName',
+    closedField: 'mvpVotingClosed',
+    statsField: 'mvp',
+  },
+  muralla: {
+    votesCollection: 'murallaVotes',
+    userIdField: 'murallaUserId',
+    nameField: 'murallaName',
+    closedField: 'murallaVotingClosed',
+    statsField: 'muralla',
+  },
+}
+
+// ── Helper: cuenta los votos y fija el ganador de un partido ─────────────────
+// Reusado por las callables closeMvpVoting/closeMurallaVoting (cierre manual)
+// y por el scheduler runAutoCloseMatches (cierre automático a las 36hs). Si
+// `lockResult` es true, además marca resultLocked:true en el mismo batch
+// (auto-cierre) — solo tiene sentido pasarlo en la ÚLTIMA votación que cierra
+// ese partido, para no pisar el batch de la otra.
+async function closeVotingForMatch(kind, matchId, { lockResult = false } = {}) {
+  const cfg = VOTING_KINDS[kind]
   const db = admin.firestore()
   const matchRef = db.collection('matches').doc(matchId)
 
-  const votesSnap = await matchRef.collection('mvpVotes').get()
+  const votesSnap = await matchRef.collection(cfg.votesCollection).get()
   const tally = new Map()
   votesSnap.docs.forEach((d) => {
     const target = d.data().votedForUserId
@@ -809,7 +1117,7 @@ async function closeMvpVotingForMatch(matchId, { lockResult = false } = {}) {
     const sorted = [...tally.entries()].sort((a, b) => b[1] - a[1])
     const topCount = sorted[0][1]
     const topCandidates = sorted.filter(([, c]) => c === topCount)
-    // Empate en el primer puesto → sin MVP (sin desempate manual/segunda vuelta)
+    // Empate en el primer puesto → sin ganador (sin desempate manual/segunda vuelta)
     if (topCandidates.length === 1) winnerId = topCandidates[0][0]
   }
 
@@ -821,9 +1129,9 @@ async function closeMvpVotingForMatch(matchId, { lockResult = false } = {}) {
 
   const batch = db.batch()
   batch.update(matchRef, {
-    mvpUserId: winnerId,
-    mvpName: winnerName,
-    mvpVotingClosed: true,
+    [cfg.userIdField]: winnerId,
+    [cfg.nameField]: winnerName,
+    [cfg.closedField]: true,
     ...(lockResult ? { resultLocked: true } : {}),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   })
@@ -831,18 +1139,18 @@ async function closeMvpVotingForMatch(matchId, { lockResult = false } = {}) {
   const statsSnap = await matchRef.collection('playerStats').get()
   statsSnap.docs.forEach((d) => {
     const isWinner = d.id === winnerId
-    const wasMvp = d.data().mvp === true
-    if (isWinner && !wasMvp) batch.update(d.ref, { mvp: true })
-    if (!isWinner && wasMvp) batch.update(d.ref, { mvp: false })
+    const wasWinner = d.data()[cfg.statsField] === true
+    if (isWinner && !wasWinner) batch.update(d.ref, { [cfg.statsField]: true })
+    if (!isWinner && wasWinner) batch.update(d.ref, { [cfg.statsField]: false })
   })
 
   await batch.commit()
   return { winnerId, winnerName, tally }
 }
 
-exports.closeMvpVoting = onCall(
-  { region: LOCATION, invoker: 'public' },
-  async (request) => {
+function makeCloseVotingCallable(kind) {
+  const cfg = VOTING_KINDS[kind]
+  return onCall({ region: LOCATION, invoker: 'public' }, async (request) => {
     const { matchId } = request.data
     if (!matchId) {
       throw new HttpsError('invalid-argument', 'matchId requerido.')
@@ -860,15 +1168,18 @@ exports.closeMvpVoting = onCall(
     if (match.status !== 'finished') {
       throw new HttpsError('failed-precondition', 'El partido debe estar finalizado para cerrar la votación.')
     }
-    if (match.mvpVotingClosed === true) {
+    if (match[cfg.closedField] === true) {
       throw new HttpsError('failed-precondition', 'La votación ya está cerrada.')
     }
 
-    const { winnerId, winnerName, tally } = await closeMvpVotingForMatch(matchId)
-    logger.info(`closeMvpVoting: ${matchId} → ganador=${winnerId ?? 'empate/sin votos'}`)
+    const { winnerId, winnerName, tally } = await closeVotingForMatch(kind, matchId)
+    logger.info(`close${kind}Voting: ${matchId} → ganador=${winnerId ?? 'empate/sin votos'}`)
     return { success: true, winnerId, winnerName, tally: Object.fromEntries(tally) }
-  },
-)
+  })
+}
+
+exports.closeMvpVoting = makeCloseVotingCallable('mvp')
+exports.closeMurallaVoting = makeCloseVotingCallable('muralla')
 
 // ── 8. Trigger: notificar cuando se abre un partido
 exports.onMatchOpened = onDocumentUpdated(
@@ -938,6 +1249,7 @@ exports.onPlayerStatsWritten = onDocumentWritten(
       const dAssists = (after?.assists ?? 0) - (before?.assists ?? 0)
       const dPlayed = (after ? 1 : 0) - (before ? 1 : 0)
       const dMvps = (after?.mvp === true ? 1 : 0) - (before?.mvp === true ? 1 : 0)
+      const dMurallas = (after?.muralla === true ? 1 : 0) - (before?.muralla === true ? 1 : 0)
       // Resultado del jugador (W/E/L) guardado en la fila → contadores por diferencia
       const countRes = (row, code) => (row?.result === code ? 1 : 0)
       const dWins = countRes(after, 'W') - countRes(before, 'W')
@@ -945,7 +1257,7 @@ exports.onPlayerStatsWritten = onDocumentWritten(
       const dLosses = countRes(after, 'L') - countRes(before, 'L')
 
       if (
-        dGoals === 0 && dAssists === 0 && dPlayed === 0 && dMvps === 0 &&
+        dGoals === 0 && dAssists === 0 && dPlayed === 0 && dMvps === 0 && dMurallas === 0 &&
         dWins === 0 && dDraws === 0 && dLosses === 0
       ) {
         return
@@ -959,6 +1271,7 @@ exports.onPlayerStatsWritten = onDocumentWritten(
         'stats.assists': inc(dAssists),
         'stats.matchesPlayed': inc(dPlayed),
         'stats.mvps': inc(dMvps),
+        'stats.murallas': inc(dMurallas),
         'stats.wins': inc(dWins),
         'stats.draws': inc(dDraws),
         'stats.losses': inc(dLosses),
@@ -969,6 +1282,7 @@ exports.onPlayerStatsWritten = onDocumentWritten(
         updates[`statsByGroup.${groupId}.assists`] = inc(dAssists)
         updates[`statsByGroup.${groupId}.matchesPlayed`] = inc(dPlayed)
         updates[`statsByGroup.${groupId}.mvps`] = inc(dMvps)
+        updates[`statsByGroup.${groupId}.murallas`] = inc(dMurallas)
         updates[`statsByGroup.${groupId}.wins`] = inc(dWins)
         updates[`statsByGroup.${groupId}.draws`] = inc(dDraws)
         updates[`statsByGroup.${groupId}.losses`] = inc(dLosses)
@@ -977,7 +1291,7 @@ exports.onPlayerStatsWritten = onDocumentWritten(
       // update() (no set/merge): las claves con punto son PATHS anidados.
       // increment() inicializa el campo si no existía. Los users siempre existen.
       await admin.firestore().collection('users').doc(userId).update(updates)
-      logger.info(`Stats acumuladas para ${userId} (Δg=${dGoals}, Δa=${dAssists}, Δp=${dPlayed}, Δmvp=${dMvps})`)
+      logger.info(`Stats acumuladas para ${userId} (Δg=${dGoals}, Δa=${dAssists}, Δp=${dPlayed}, Δmvp=${dMvps}, Δmuralla=${dMurallas})`)
 
       // ── Mundial personal: avanza de fase con el PRIMER resultado cargado ───
       // Gate por beforeResult == null (no por afterResult !== beforeResult):
@@ -987,15 +1301,25 @@ exports.onPlayerStatsWritten = onDocumentWritten(
         await advancePlayerMundial(userId, after.result, event.params.matchId)
       }
 
-      // ── Química por pares: ¿compartió equipo con otros en este partido? ────
-      // Se dispara solo cuando la fila tiene team+result definidos (resultado
-      // ya cargado). Compara antes/después contra cada compañero de partido
-      // para sumar/restar por diferencia — mismo patrón idempotente de arriba.
+      // ── Química/rivalidad por pares: ¿compartió o enfrentó equipo con otros
+      // en este partido? Se dispara solo cuando la fila tiene team+result
+      // definidos (resultado ya cargado). Compara antes/después contra cada
+      // compañero de partido para sumar/restar por diferencia — mismo patrón
+      // idempotente de arriba.
       const afterHasTeamResult = !!(after?.userId && after?.team && after?.result)
       const beforeHasTeamResult = !!(before?.userId && before?.team && before?.result)
 
       if (afterHasTeamResult || beforeHasTeamResult) {
         await updateChemistryForPlayerStat(event.params.matchId, userId, before, after)
+      }
+
+      // ── Rachas: solo con el PRIMER resultado cargado (mismo gate que el
+      // Mundial) — una edición posterior no debe recalcular streaks a partir
+      // de un estado ya consumido, porque no queda antes/después qué comparar
+      // para un contador que depende de la SECUENCIA de partidos, no de un
+      // delta puntual.
+      if (after?.result && before?.result == null) {
+        await updateStreaksForPlayerStat(userId)
       }
     } catch (error) {
       logger.error('onPlayerStatsWritten: error', error)
@@ -1003,13 +1327,16 @@ exports.onPlayerStatsWritten = onDocumentWritten(
   },
 )
 
-// ── Helper: actualizar química por pares tras un write en playerStats ───────
-// Lee los demás playerStats del mismo partido y, para cada compañero que
-// compartía/comparte equipo con `userId`, incrementa por diferencia (before
-// → after) los contadores simétricos en users/{userId}/chemistry/{other} Y
-// users/{other}/chemistry/{userId}. No hay orden garantizado entre triggers
-// hermanos (cada playerStats dispara su propio evento), pero cada incremento
-// es atómico y todos convergen al mismo estado final — aceptable acá.
+// ── Helper: actualizar química/rivalidad por pares tras un write en playerStats
+// Lee los demás playerStats del mismo partido y, para cada otro jugador cuyo
+// team+result cambió de relación respecto a `userId` (compañero si comparten
+// team, rival si no), incrementa por diferencia (before → after) los
+// contadores simétricos en users/{userId}/chemistry|rivalry/{other} Y
+// users/{other}/chemistry|rivalry/{userId}. La rivalidad se guarda desde la
+// perspectiva de CADA UNO (si A ganó y B perdió, wins de A y losses de B, no
+// al revés). No hay orden garantizado entre triggers hermanos (cada
+// playerStats dispara su propio evento), pero cada incremento es atómico y
+// todos convergen al mismo estado final — aceptable acá.
 async function updateChemistryForPlayerStat(matchId, userId, before, after) {
   const db = admin.firestore()
   const siblingsSnap = await db.collection('matches').doc(matchId).collection('playerStats').get()
@@ -1023,30 +1350,101 @@ async function updateChemistryForPlayerStat(matchId, userId, before, after) {
   const batch = db.batch()
   let hasChanges = false
 
+  const opposite = { W: 'L', L: 'W', E: 'E' }
+
   for (const other of siblings) {
-    const wasTogetherBefore = !!(before?.team && before?.result && before.team === other.team)
-    const isTogetherAfter = !!(after?.team && after?.result && after.team === other.team)
+    const wasSameTeamBefore = !!(before?.team && before?.result && before.team === other.team)
+    const isSameTeamAfter = !!(after?.team && after?.result && after.team === other.team)
+    const wasDiffTeamBefore = !!(before?.team && before?.result && before.team !== other.team)
+    const isDiffTeamAfter = !!(after?.team && after?.result && after.team !== other.team)
 
-    if (wasTogetherBefore === isTogetherAfter) continue
-
-    const sign = isTogetherAfter ? 1 : -1
-    const result = isTogetherAfter ? after.result : before.result
-    const payload = {
-      gamesTogether: inc(sign),
-      winsTogether: inc(result === 'W' ? sign : 0),
-      drawsTogether: inc(result === 'E' ? sign : 0),
-      lossesTogether: inc(result === 'L' ? sign : 0),
-      lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+    // Compañeros (mismo equipo) → chemistry
+    if (wasSameTeamBefore !== isSameTeamAfter) {
+      const sign = isSameTeamAfter ? 1 : -1
+      const result = isSameTeamAfter ? after.result : before.result
+      const payload = {
+        gamesTogether: inc(sign),
+        winsTogether: inc(result === 'W' ? sign : 0),
+        drawsTogether: inc(result === 'E' ? sign : 0),
+        lossesTogether: inc(result === 'L' ? sign : 0),
+        lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }
+      const chemRefA = db.collection('users').doc(userId).collection('chemistry').doc(other.userId)
+      const chemRefB = db.collection('users').doc(other.userId).collection('chemistry').doc(userId)
+      batch.set(chemRefA, payload, { merge: true })
+      batch.set(chemRefB, payload, { merge: true })
+      hasChanges = true
     }
 
-    const chemRefA = db.collection('users').doc(userId).collection('chemistry').doc(other.userId)
-    const chemRefB = db.collection('users').doc(other.userId).collection('chemistry').doc(userId)
-    batch.set(chemRefA, payload, { merge: true })
-    batch.set(chemRefB, payload, { merge: true })
-    hasChanges = true
+    // Rivales (equipo distinto) → rivalry, cada uno desde su propia perspectiva
+    if (wasDiffTeamBefore !== isDiffTeamAfter) {
+      const sign = isDiffTeamAfter ? 1 : -1
+      const resultA = isDiffTeamAfter ? after.result : before.result
+      const resultB = opposite[resultA]
+      const payloadA = {
+        gamesAgainst: inc(sign),
+        winsAgainst: inc(resultA === 'W' ? sign : 0),
+        drawsAgainst: inc(resultA === 'E' ? sign : 0),
+        lossesAgainst: inc(resultA === 'L' ? sign : 0),
+        lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }
+      const payloadB = {
+        gamesAgainst: inc(sign),
+        winsAgainst: inc(resultB === 'W' ? sign : 0),
+        drawsAgainst: inc(resultB === 'E' ? sign : 0),
+        lossesAgainst: inc(resultB === 'L' ? sign : 0),
+        lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }
+      const rivRefA = db.collection('users').doc(userId).collection('rivalry').doc(other.userId)
+      const rivRefB = db.collection('users').doc(other.userId).collection('rivalry').doc(userId)
+      batch.set(rivRefA, payloadA, { merge: true })
+      batch.set(rivRefB, payloadB, { merge: true })
+      hasChanges = true
+    }
   }
 
   if (hasChanges) await batch.commit()
+}
+
+// ── Helper: recalcular rachas de un jugador con su primer resultado cargado ─
+// Mira los últimos playerStats del jugador (collectionGroup, ordenado por
+// savedAt desc) para reconstruir la racha actual desde cero — más simple y
+// más robusto que ir sumando/restando por diferencia (un streak se corta o
+// sigue según TODA la secuencia, no según un único delta). Limitado a 40
+// partidos recientes: ninguna racha real de un picado amateur llega a eso, y
+// evita una lectura sin techo si el historial crece mucho.
+async function updateStreaksForPlayerStat(userId) {
+  const db = admin.firestore()
+  const recentSnap = await db
+    .collectionGroup('playerStats')
+    .where('userId', '==', userId)
+    .orderBy('savedAt', 'desc')
+    .limit(40)
+    .get()
+
+  const rows = recentSnap.docs.map((d) => d.data()).filter((s) => s.result)
+  if (rows.length === 0) return
+
+  const countLeadingWhile = (predicate) => {
+    let n = 0
+    for (const row of rows) {
+      if (!predicate(row)) break
+      n += 1
+    }
+    return n
+  }
+
+  const streaks = {
+    matchesPlayedStreak: rows.length, // ya filtramos por result presente = jugó
+    goallessStreak: countLeadingWhile((r) => (r.goals ?? 0) === 0),
+    noWinStreak: countLeadingWhile((r) => r.result !== 'W'),
+    lossStreak: countLeadingWhile((r) => r.result === 'L'),
+  }
+
+  await db.collection('users').doc(userId).update({
+    streaks,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  })
 }
 
 // ── Helper: avanzar el Mundial personal de un jugador con un resultado real ─
@@ -1174,7 +1572,7 @@ exports.recalcAllStats = onCall(
 
     const db = admin.firestore()
     const zero = () => ({
-      goals: 0, assists: 0, matchesPlayed: 0, mvps: 0, wins: 0, draws: 0, losses: 0,
+      goals: 0, assists: 0, matchesPlayed: 0, mvps: 0, murallas: 0, wins: 0, draws: 0, losses: 0,
     })
 
     // 1. Agregar todos los playerStats de todos los partidos
@@ -1191,6 +1589,7 @@ exports.recalcAllStats = onCall(
         t.assists += Number(s.assists) || 0
         t.matchesPlayed += 1
         t.mvps += s.mvp === true ? 1 : 0
+        t.murallas += s.muralla === true ? 1 : 0
         t.wins += s.result === 'W' ? 1 : 0
         t.draws += s.result === 'E' ? 1 : 0
         t.losses += s.result === 'L' ? 1 : 0
@@ -1295,6 +1694,52 @@ exports.recalcAllStats = onCall(
   },
 )
 
+// ── Helper: escribir un evento en el feed de actividad de un grupo ──────────
+// Sin grupo no hay feed (no hay "dónde" mostrarlo — el feed siempre se lee
+// acotado a un groupId), así que se omite en silencio.
+async function writeEvent({ groupId, type, actorId, actorName, matchId = null, text }) {
+  if (!groupId) return
+  await admin.firestore().collection('events').add({
+    groupId,
+    type,
+    actorId,
+    actorName: actorName ?? 'Alguien',
+    matchId,
+    text,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  })
+}
+
+// ── 10b. Trigger: alguien se anotó a un partido → evento de feed ────────────
+// Liviano a propósito: no dispara ninguna notificación (ya existen los avisos
+// de apertura/recordatorio), solo deja constancia para el timeline del grupo.
+exports.onRegistrationCreated = onDocumentCreated(
+  { region: LOCATION, document: 'matches/{matchId}/registrations/{regId}' },
+  async (event) => {
+    try {
+      const reg = event.data?.data()
+      if (!reg) return
+      const { matchId } = event.params
+      const matchSnap = await admin.firestore().collection('matches').doc(matchId).get()
+      if (!matchSnap.exists) return
+      const match = matchSnap.data()
+      if (!match.groupId) return
+
+      const actorName = reg.displayName || reg.guestName || 'Alguien'
+      await writeEvent({
+        groupId: match.groupId,
+        type: 'registration',
+        actorId: reg.userId ?? null,
+        actorName,
+        matchId,
+        text: `${actorName} se anotó a "${match.title ?? 'un partido'}"`,
+      })
+    } catch (error) {
+      logger.error('onRegistrationCreated: error', error)
+    }
+  },
+)
+
 // ── 11. Trigger: al borrarse una inscripción, re-numerar y promover suplentes ─
 // Cuando alguien se baja (o lo sacan) de un partido:
 //  1. Re-numera las posiciones de todas las inscripciones (1..N, sin huecos).
@@ -1354,6 +1799,22 @@ exports.onRegistrationDeleted = onDocumentDeleted(
             promotedUsers.push(reg.userId)
           }
         })
+
+        // Resincronizar el contador con la lista real. `currentPlayers` lo
+        // decrementa el cliente en la misma transacción que borra la
+        // inscripción, pero si una baja entra por otra vía (la consola de
+        // Firebase, un script) el contador queda inflado — y como es él quien
+        // asigna `position` en el alta, las inscripciones siguientes arrancan
+        // con un número adelantado y la lista queda con huecos. Acá ya tenemos
+        // la verdad (`regsSnap.size`, después del borrado) y escribirla es
+        // idempotente: si ya coincidía, no cambia nada.
+        if ((match.currentPlayers ?? 0) !== regsSnap.size) {
+          logger.warn(
+            `onRegistrationDeleted: currentPlayers desfasado en ${matchId} ` +
+            `(${match.currentPlayers} → ${regsSnap.size}), se corrige`,
+          )
+          tx.update(matchRef, { currentPlayers: regsSnap.size })
+        }
 
         return {
           matchTitle: match.title ?? 'un partido',

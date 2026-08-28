@@ -73,14 +73,16 @@
           </div>
         </q-card>
 
+        <!-- QCard no soporta la prop `to` (a diferencia de QItem/QBtn) — el
+             :to de antes no hacía nada, solo se veía "clickeable" por el CSS
+             de hover. Navegación real con @click. -->
         <q-card
           v-for="match in filteredMatches"
           :key="match.id"
           flat
           bordered
-          clickable
-          class="q-mb-sm finished-card"
-          :to="{ name: 'match-detail', params: { id: match.id } }"
+          class="q-mb-sm finished-card cursor-pointer"
+          @click="router.push({ name: 'match-detail', params: { id: match.id } })"
         >
           <q-card-section class="row items-center no-wrap">
             <div class="col">
@@ -89,7 +91,8 @@
             </div>
             <div
               v-if="match.scoreA != null && match.scoreB != null"
-              class="text-h5 text-weight-bold text-primary score-display"
+              class="text-h5 text-weight-bold score-display"
+              :class="resultColorClass(match.id)"
             >
               {{ match.scoreA }} - {{ match.scoreB }}
             </div>
@@ -124,13 +127,49 @@
 </style>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { date as qdate } from 'quasar'
+import { doc, getDoc } from 'firebase/firestore'
+import { db } from 'src/services/firebase'
 import { useMatch } from 'src/composables/useMatch'
+import { useAuthStore } from 'src/stores/auth.store'
 
 const router = useRouter()
+const authStore = useAuthStore()
 const { finishedMatches, loading, subscribeToFinished, stopListeningFinished } = useMatch()
+
+// Resultado (W/E/L) de CADA jugador queda en playerStats/{uid}.result — se
+// busca puntual por partido (no hay collectionGroup acá porque son pocos:
+// solo los que se muestran en pantalla, con cache para no repetir el fetch).
+const myResults = ref(new Map())
+
+async function loadMyResult(matchId) {
+  if (myResults.value.has(matchId)) return
+  const uid = authStore.user?.uid
+  if (!uid) return
+  myResults.value.set(matchId, null) // evita refetch mientras carga
+  try {
+    const snap = await getDoc(doc(db, 'matches', matchId, 'playerStats', uid))
+    myResults.value.set(matchId, snap.exists() ? (snap.data().result ?? null) : null)
+  } catch {
+    myResults.value.set(matchId, null)
+  }
+}
+
+watch(
+  () => finishedMatches.value.map((m) => m.id),
+  (ids) => ids.forEach(loadMyResult),
+  { immediate: true },
+)
+
+function resultColorClass(matchId) {
+  const r = myResults.value.get(matchId)
+  if (r === 'W') return 'text-positive'
+  if (r === 'L') return 'text-negative'
+  if (r === 'E') return 'text-amber-8'
+  return 'text-primary' // sin resultado propio cargado: color neutro
+}
 
 const fromDate = ref(null)
 const toDate = ref(null)

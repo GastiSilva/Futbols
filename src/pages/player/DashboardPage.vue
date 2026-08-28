@@ -25,6 +25,11 @@
          encontrar el estado de lo que se postuló. -->
     <MyApplicationsCard v-if="!authStore.isGuest" />
 
+    <!-- Qué pasó en tus grupos: quién se anotó, quién ganó una insignia. Da un
+         motivo de entrar aunque no tengas un partido para anotarte esta
+         semana. -->
+    <ActivityFeedCard v-if="!authStore.isGuest" />
+
     <!-- ── Recién llegado: sin grupos y sin partidos ──────────────────────── -->
     <!--
       Antes acá había un cartel que decía "no hay partidos, avisale al admin":
@@ -188,20 +193,20 @@
             <template v-if="getUserRegistrationForMatch(match.id)">
               <div class="column items-center q-gutter-sm">
                 <q-icon
-                  :name="getUserRegistrationForMatch(match.id).isOnWaitlist ? 'hourglass_empty' : 'check_circle'"
-                  :color="getUserRegistrationForMatch(match.id).isOnWaitlist ? 'orange-8' : 'positive'"
+                  :name="getUserRegistrationForMatch(match.id).waitlisted ? 'hourglass_empty' : 'check_circle'"
+                  :color="getUserRegistrationForMatch(match.id).waitlisted ? 'orange-8' : 'positive'"
                   size="52px"
                 />
                 <div class="text-subtitle1 text-weight-bold text-center">
-                  <span v-if="!getUserRegistrationForMatch(match.id).isOnWaitlist" class="text-positive">
-                    ¡Sos Titular! &nbsp;·&nbsp; Posición #{{ getUserRegistrationForMatch(match.id).position }}
+                  <span v-if="!getUserRegistrationForMatch(match.id).waitlisted" class="text-positive">
+                    ¡Sos Titular! &nbsp;·&nbsp; Posición #{{ getUserRegistrationForMatch(match.id).displayPosition }}
                   </span>
                   <span v-else class="text-orange-8">
-                    Lista de espera &nbsp;·&nbsp; Puesto #{{ getUserRegistrationForMatch(match.id).position - match.maxPlayers }}
+                    Lista de espera &nbsp;·&nbsp; Puesto #{{ getUserRegistrationForMatch(match.id).displayPosition - match.maxPlayers }}
                   </span>
                 </div>
                 <div class="text-caption text-grey-6 text-center">
-                  {{ getUserRegistrationForMatch(match.id).isOnWaitlist
+                  {{ getUserRegistrationForMatch(match.id).waitlisted
                     ? 'Entrás si alguien cancela antes del partido'
                     : 'Guardá el día en tu agenda 📅' }}
                 </div>
@@ -280,7 +285,7 @@
               </div>
               <!-- Si el jugador estaba anotado puede cargar resultado -->
               <q-btn
-                v-if="getUserRegistrationForMatch(match.id) && !getUserRegistrationForMatch(match.id).isOnWaitlist"
+                v-if="getUserRegistrationForMatch(match.id) && !getUserRegistrationForMatch(match.id).waitlisted"
                 unelevated
                 color="orange-7"
                 class="full-width pill-btn"
@@ -410,7 +415,7 @@
                         text-color="white"
                         :label="reg.team"
                       />
-                      <q-badge color="primary" text-color="dark" :label="`#${reg.position}`" />
+                      <q-badge color="primary" text-color="dark" :label="`#${reg.displayPosition}`" />
                       <q-btn
                         v-if="canRemoveReg(reg)"
                         flat round dense size="sm"
@@ -463,7 +468,7 @@
                         <q-badge
                           color="orange-8"
                           text-color="white"
-                          :label="`Esp. #${reg.position - match.maxPlayers}`"
+                          :label="`Esp. #${reg.displayPosition - match.maxPlayers}`"
                         />
                         <q-btn
                           v-if="canRemoveReg(reg)"
@@ -646,6 +651,7 @@ import { buildListText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import WelcomeHome from 'src/components/WelcomeHome.vue'
 import MyApplicationsCard from 'src/components/MyApplicationsCard.vue'
+import ActivityFeedCard from 'src/components/ActivityFeedCard.vue'
 
 const $q = useQuasar()
 const router = useRouter()
@@ -783,13 +789,9 @@ const registrationsSeleccionadas = computed(() =>
   registracionesPorMatch.value.get(selectedMatchId.value) ?? [],
 )
 
-const titularesSeleccionado = computed(() =>
-  registrationsSeleccionadas.value.filter((r) => !r.isOnWaitlist),
-)
+const titularesSeleccionado = computed(() => titularesDe(selectedMatchId.value))
 
-const suplentesSelectorado = computed(() =>
-  registrationsSeleccionadas.value.filter((r) => r.isOnWaitlist),
-)
+const suplentesSelectorado = computed(() => suplentesDe(selectedMatchId.value))
 
 // ── Registraciones por partido puntual ──────────────────────────────────────
 // La lista de anotados se dibuja DENTRO de la tarjeta de cada partido (dentro
@@ -799,12 +801,26 @@ function registrationsDe(matchId) {
   return registracionesPorMatch.value.get(matchId) ?? []
 }
 
+// El número visible sale del ORDEN de la lista, no del campo `position`
+// guardado en la inscripción. Ese campo se calcula con el contador
+// `currentPlayers` al anotarse y solo lo renumera la CF onRegistrationDeleted:
+// si no corrió, la lista salta números (del 5 al 9) o los repite. Mismo
+// criterio en MatchDetailPage — los dos lugares tienen que numerar igual.
+function ordenadasDe(matchId) {
+  const max = upcomingMatches.value.find((m) => m.id === matchId)?.maxPlayers ?? null
+  return registrationsDe(matchId).map((r, i) => ({
+    ...r,
+    displayPosition: i + 1,
+    waitlisted: max != null && i + 1 > max,
+  }))
+}
+
 function titularesDe(matchId) {
-  return registrationsDe(matchId).filter((r) => !r.isOnWaitlist)
+  return ordenadasDe(matchId).filter((r) => !r.waitlisted)
 }
 
 function suplentesDe(matchId) {
-  return registrationsDe(matchId).filter((r) => r.isOnWaitlist)
+  return ordenadasDe(matchId).filter((r) => r.waitlisted)
 }
 
 // ── Datos derivados globales ────────────────────────────────────────────────
@@ -935,8 +951,9 @@ function stopCountdownForMatch(matchId) {
 
 // ── Obtener registración del usuario para un match específico ────────────────
 function getUserRegistrationForMatch(matchId) {
-  const regs = registracionesPorMatch.value.get(matchId) ?? []
-  return regs.find((r) => r.userId === user.value?.uid)
+  // Devuelve la fila YA renumerada, para que el cartel "Sos titular · #N"
+  // muestre el lugar real y no el `position` guardado (que puede tener huecos).
+  return ordenadasDe(matchId).find((r) => r.userId === user.value?.uid)
 }
 
 // ── Acciones ────────────────────────────────────────────────────────────────

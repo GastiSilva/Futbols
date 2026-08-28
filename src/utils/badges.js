@@ -16,6 +16,7 @@ export const BADGE_TYPES = {
   TOP_SCORER: 'topScorer',
   TOP_ASSISTS: 'topAssists',
   TOP_MVP: 'topMvp',
+  TOP_MURALLA: 'topMuralla',
   ALWAYS_THERE: 'alwaysThere',
 }
 
@@ -48,6 +49,17 @@ export const BADGE_DEFS = {
     color: 'amber-9',
     unit: ['MVP', 'MVPs'],
     blurb: 'El que más veces fue elegido la figura del partido.',
+  },
+  // Sin ilustración propia todavía (a diferencia del resto, que tiene un PNG
+  // dibujado a medida) — usa un ícono de Material como placeholder hasta que
+  // exista un arte definitivo. `icon` en vez de `art`: BadgeShelf decide cuál
+  // de los dos pintar según cuál esté presente.
+  [BADGE_TYPES.TOP_MURALLA]: {
+    label: 'Muralla del Mes',
+    icon: 'shield',
+    color: 'blue-8',
+    unit: ['partido', 'partidos'],
+    blurb: 'El defensor más elegido como Muralla del partido.',
   },
   // Medalla, no trofeo: premia CONSTANCIA, no rendimiento. Si fuera otra copa
   // más, la vitrina sería una repisa de trofeos donde ninguno se distingue.
@@ -102,7 +114,8 @@ export function describeBadge(badge, { showGroup = false } = {}) {
 
   return {
     label: def.label,
-    art: def.art,
+    art: def.art ?? null,
+    icon: def.icon ?? null,
     color: def.color,
     blurb: def.blurb,
     detail: parts.filter(Boolean).join(' · '),

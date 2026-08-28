@@ -219,7 +219,15 @@ export function useMatch() {
             emit()
           },
           (err) => {
+            // Un match borrado puede dar permission-denied en vez de "no
+            // existe" (las reglas de `get` dependen de leer datos del propio
+            // doc, que ya no está). Sin limpiar acá, el ÚLTIMO dato válido
+            // (el partido completo, de antes de borrarlo) quedaba pegado en
+            // "Partidos" para siempre — parecía que el partido borrado
+            // seguía existiendo.
             error.value = err.message
+            perSourceMatches.delete(`applied:${matchId}`)
+            emit()
           },
         )
         appliedMatchStops.set(matchId, stopDoc)
@@ -632,6 +640,12 @@ export function useMatch() {
         const snap = await getDocs(collection(db, 'matches', matchId, sub))
         await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)))
       }
+      // applications NO se borran acá a propósito: las reglas las bloquean
+      // (`allow delete: if false`, igual que joinRequests) porque quedan como
+      // registro histórico. Un match borrado deja sus applications huérfanas
+      // — el cliente ya filtra esas filas (MyApplicationsCard). Si en algún
+      // momento hace falta limpiarlas de Firestore, tendría que ser con el
+      // Admin SDK (Cloud Function), no desde acá.
       await deleteDoc(doc(db, 'matches', matchId))
     } catch (err) {
       error.value = err.message

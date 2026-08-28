@@ -39,6 +39,10 @@ const GROUP_A = 'grupoA'
 const GROUP_B = 'grupoB'
 const MATCH_A = 'matchA'   // partido del grupo A
 const PUBLIC_MATCH = 'matchPublico'  // partido del grupo A, publicado (isPublic)
+const FINISHED_MATCH = 'matchTerminado'  // partido del grupo A ya jugado (votaciones abiertas)
+const CARLOS = 'carlos'    // suplente del partido terminado (no llegó a jugar)
+const EVENT_A = 'eventoA'  // evento del feed, grupo A
+const EVENT_B = 'eventoB'  // evento del feed, grupo B (ajeno)
 
 // Fechas relativas: la lista ya está abierta
 const PAST = new Date(Date.now() - 60 * 60 * 1000)
@@ -164,6 +168,45 @@ beforeEach(async () => {
     await setDoc(doc(db, 'users', BOB, 'badges', '2026-07_topScorer_' + GROUP_A), {
       type: 'topScorer', groupId: GROUP_A, groupName: 'Grupo A',
       period: '2026-07', value: 9,
+    })
+
+    // Partido del grupo A YA JUGADO, con las dos votaciones (MVP y Muralla)
+    // abiertas. maxPlayers 2 a propósito: así el tercer anotado es SUPLENTE y
+    // sirve para probar que a un suplente no se lo puede votar.
+    await setDoc(doc(db, 'matches', FINISHED_MATCH), {
+      title: 'Partido terminado del grupo A',
+      groupId: GROUP_A, createdBy: ALICE, status: 'finished',
+      currentPlayers: 3, maxPlayers: 2, openAt: PAST, date: PAST,
+      instantOpen: false, scoreA: 3, scoreB: 2,
+      mvpVotingClosed: false, murallaVotingClosed: false,
+    })
+    await setDoc(doc(db, 'matches', FINISHED_MATCH, 'registrations', ALICE), {
+      userId: ALICE, displayName: 'Alice', isGuest: false, position: 1, isOnWaitlist: false,
+    })
+    await setDoc(doc(db, 'matches', FINISHED_MATCH, 'registrations', BOB), {
+      userId: BOB, displayName: 'Bob', isGuest: false, position: 2, isOnWaitlist: false,
+    })
+    await setDoc(doc(db, 'matches', FINISHED_MATCH, 'registrations', CARLOS), {
+      userId: CARLOS, displayName: 'Carlos', isGuest: false, position: 3, isOnWaitlist: true,
+    })
+
+    // Feed de actividad: un evento de cada grupo. Los escribe SOLO el backend
+    // (onRegistrationCreated / runMonthlyBadges) por admin SDK.
+    await setDoc(doc(db, 'events', EVENT_A), {
+      groupId: GROUP_A, type: 'registration', actorId: BOB, actorName: 'Bob',
+      matchId: MATCH_A, text: 'Bob se anotó a un partido', createdAt: PAST,
+    })
+    await setDoc(doc(db, 'events', EVENT_B), {
+      groupId: GROUP_B, type: 'registration', actorId: MALLORY, actorName: 'Mallory',
+      matchId: 'matchB', text: 'Mallory se anotó a un partido', createdAt: PAST,
+    })
+
+    // Historial cara a cara, escrito por updateChemistryForPlayerStat (admin SDK).
+    await setDoc(doc(db, 'users', BOB, 'rivalry', ALICE), {
+      gamesAgainst: 5, winsAgainst: 3, drawsAgainst: 1, lossesAgainst: 1,
+    })
+    await setDoc(doc(db, 'users', BOB, 'chemistry', ALICE), {
+      gamesTogether: 4, winsTogether: 3, drawsTogether: 0, lossesTogether: 1,
     })
   })
 })
@@ -867,5 +910,218 @@ describe('Miembros: no auto-promoverse', () => {
     await assertSucceeds(setDoc(doc(ctx(MALLORY), 'groups', GROUP_A, 'members', MALLORY), {
       userId: MALLORY, role: 'member', og: false,
     }))
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Votación de Muralla (mejor defensor)', () => {
+  // Mismas reglas que mvpVotes en una colección aparte: son votaciones
+  // INDEPENDIENTES (cada una la cierra su propia Cloud Function). Lo que se
+  // fija acá es que el voto sea del que vota, sobre alguien que realmente jugó
+  // ese partido, y solo mientras la votación siga abierta.
+
+  test('un miembro del grupo puede votar a otro titular', async () => {
+    await assertSucceeds(
+      setDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: ALICE,
+      }),
+    )
+  })
+
+  test('nadie se puede votar a sí mismo', async () => {
+    await assertFails(
+      setDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: BOB,
+      }),
+    )
+  })
+
+  test('no se puede escribir el voto de OTRO (docId != uid)', async () => {
+    // El docId ES la identidad del votante: si se pudiera elegir, uno votaría
+    // por los demás y la votación no valdría nada.
+    await assertFails(
+      setDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', ALICE), {
+        votedForUserId: BOB,
+      }),
+    )
+  })
+
+  test('alguien de OTRO grupo no puede votar', async () => {
+    await assertFails(
+      setDoc(doc(ctx(MALLORY), 'matches', FINISHED_MATCH, 'murallaVotes', MALLORY), {
+        votedForUserId: ALICE,
+      }),
+    )
+  })
+
+  test('no se puede votar a un SUPLENTE (no jugó)', async () => {
+    await assertFails(
+      setDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: CARLOS,
+      }),
+    )
+  })
+
+  test('no se puede votar a alguien que ni siquiera está anotado', async () => {
+    await assertFails(
+      setDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: MALLORY,
+      }),
+    )
+  })
+
+  test('no se puede votar en un partido que todavía no terminó', async () => {
+    await assertFails(
+      setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'murallaVotes', BOB), {
+        votedForUserId: GUEST,
+      }),
+    )
+  })
+
+  test('con la votación ya cerrada no se puede votar más', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await updateDoc(doc(c.firestore(), 'matches', FINISHED_MATCH), {
+        murallaVotingClosed: true,
+      })
+    })
+    await assertFails(
+      setDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: ALICE,
+      }),
+    )
+  })
+
+  test('cerrar la votación de MVP no cierra la de Muralla (son independientes)', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await updateDoc(doc(c.firestore(), 'matches', FINISHED_MATCH), {
+        mvpVotingClosed: true,
+      })
+    })
+    await assertSucceeds(
+      setDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: ALICE,
+      }),
+    )
+  })
+
+  test('el voto se puede cambiar mientras la votación siga abierta', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: CARLOS,
+      })
+    })
+    await assertSucceeds(
+      updateDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: ALICE,
+      }),
+    )
+  })
+
+  test('los votos se pueden leer (el recuento se ve en vivo)', async () => {
+    await assertSucceeds(
+      getDocs(collection(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes')),
+    )
+  })
+
+  test('un jugador NO puede borrar su voto; un admin sí', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'matches', FINISHED_MATCH, 'murallaVotes', BOB), {
+        votedForUserId: ALICE,
+      })
+    })
+    await assertFails(
+      deleteDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB)),
+    )
+    await assertSucceeds(
+      deleteDoc(doc(ctx(ADMIN, { admin: true }), 'matches', FINISHED_MATCH, 'murallaVotes', BOB)),
+    )
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Feed de actividad (events)', () => {
+  test('un miembro del grupo puede leer un evento de SU grupo', async () => {
+    await assertSucceeds(getDoc(doc(ctx(BOB), 'events', EVENT_A)))
+  })
+
+  test('alguien de otro grupo NO puede leer ese evento', async () => {
+    await assertFails(getDoc(doc(ctx(MALLORY), 'events', EVENT_A)))
+  })
+
+  test('listar sin limit falla', async () => {
+    // Mismo límite estructural que matches: request.query no expone las
+    // cláusulas where, así que el aislamiento por grupo no es expresable al
+    // listar. Lo que sí se puede exigir es un tope de resultados.
+    await assertFails(getDocs(collection(ctx(BOB), 'events')))
+  })
+
+  test('listar con un limit por encima del tope falla', async () => {
+    await assertFails(getDocs(query(collection(ctx(BOB), 'events'), limit(200))))
+  })
+
+  test('listar con un limit dentro del tope funciona', async () => {
+    await assertSucceeds(
+      getDocs(query(collection(ctx(BOB), 'events'), where('groupId', '==', GROUP_A), limit(30))),
+    )
+  })
+
+  test('ni el admin global puede listar sin limit', async () => {
+    await assertFails(getDocs(collection(ctx(ADMIN, { admin: true }), 'events')))
+  })
+
+  test('nadie escribe eventos desde el cliente, ni un admin', async () => {
+    // El feed lo escriben SOLO triggers del backend. Si el cliente pudiera,
+    // cualquiera inventaría actividad ajena dentro del grupo.
+    await assertFails(setDoc(doc(ctx(BOB), 'events', 'inventado'), {
+      groupId: GROUP_A, type: 'registration', actorId: BOB, actorName: 'Bob',
+      matchId: MATCH_A, text: 'Bob metió 10 goles', createdAt: PAST,
+    }))
+    await assertFails(setDoc(doc(ctx(ADMIN, { admin: true }), 'events', 'inventadoAdmin'), {
+      groupId: GROUP_A, type: 'badge', actorId: BOB, actorName: 'Bob',
+      matchId: null, text: 'inventado', createdAt: PAST,
+    }))
+  })
+
+  test('nadie puede editar ni borrar un evento', async () => {
+    await assertFails(updateDoc(doc(ctx(BOB), 'events', EVENT_A), { text: 'otra cosa' }))
+    await assertFails(deleteDoc(doc(ctx(ADMIN, { admin: true }), 'events', EVENT_A)))
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Historial cara a cara (chemistry / rivalry)', () => {
+  // Agregados objetivos que alimentan el "versus" del perfil y los mensajes de
+  // hype. Se leen abiertos (mismo criterio que las stats) y NADIE los escribe
+  // desde el cliente: si se pudieran editar, uno se inventaría el historial
+  // contra un rival.
+
+  test('cualquier usuario puede leer la rivalidad de otro', async () => {
+    await assertSucceeds(getDoc(doc(ctx(MALLORY), 'users', BOB, 'rivalry', ALICE)))
+  })
+
+  test('cualquier usuario puede leer la química de otro', async () => {
+    await assertSucceeds(getDoc(doc(ctx(MALLORY), 'users', BOB, 'chemistry', ALICE)))
+  })
+
+  test('el dueño NO puede escribir su propia rivalidad', async () => {
+    await assertFails(setDoc(doc(ctx(BOB), 'users', BOB, 'rivalry', ALICE), {
+      gamesAgainst: 99, winsAgainst: 99, drawsAgainst: 0, lossesAgainst: 0,
+    }))
+  })
+
+  test('el dueño NO puede escribir su propia química', async () => {
+    await assertFails(setDoc(doc(ctx(BOB), 'users', BOB, 'chemistry', ALICE), {
+      gamesTogether: 99, winsTogether: 99, drawsTogether: 0, lossesTogether: 0,
+    }))
+  })
+
+  test('ni siquiera un admin global las puede escribir', async () => {
+    await assertFails(setDoc(doc(ctx(ADMIN, { admin: true }), 'users', BOB, 'rivalry', ALICE), {
+      gamesAgainst: 1, winsAgainst: 1, drawsAgainst: 0, lossesAgainst: 0,
+    }))
+  })
+
+  test('nadie puede borrarlas', async () => {
+    await assertFails(deleteDoc(doc(ctx(BOB), 'users', BOB, 'rivalry', ALICE)))
   })
 })

@@ -161,6 +161,22 @@
               </q-list>
             </q-card>
           </template>
+
+          <!-- ── Vos vs él/ella ───────────────────────────────────────────────
+               Mismo gate que POR GRUPO: solo entre compañeros, porque el dato
+               sale de rivalry/chemistry, que se llenan jugando juntos. -->
+          <template v-if="sharedGroupId && versusLine">
+            <div class="text-overline text-green-9 text-weight-bold q-mb-sm">
+              VOS VS {{ (profile.nickname || profile.displayName || '').toUpperCase() }}
+            </div>
+            <q-card flat bordered class="q-mb-md">
+              <q-card-section class="row items-center q-gutter-sm no-wrap">
+                <q-icon :name="versusLine.icon" :color="versusLine.color" size="28px" />
+                <div class="text-body2">{{ versusLine.text }}</div>
+              </q-card-section>
+            </q-card>
+          </template>
+
           <!-- ── Reportar ──────────────────────────────────────────────────
                Mínimo de moderación: con partidos públicos, cualquiera puede
                terminar jugando con un desconocido. El reporte lo revisa un
@@ -199,6 +215,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useProfile } from 'src/composables/useProfile'
 import { useGroups } from 'src/composables/useGroups'
+import { useVersus } from 'src/composables/useVersus'
 import { useAuthStore } from 'src/stores/auth.store'
 import { positionLabel, normalizePositions } from 'src/utils/positions'
 import { findTeam } from 'src/utils/teams'
@@ -213,6 +230,12 @@ const authStore = useAuthStore()
 
 const { fetchProfile, fetchMyRatingFor, findSharedGroupId, rateDescription } = useProfile()
 const { getGroup } = useGroups()
+const { fetchVersus } = useVersus()
+
+// Piso de partidos en común para no mostrar una frase con 1-2 datos, que sería
+// puro ruido estadístico ("le ganás 1 de 1" no dice nada). Mismo criterio que
+// MIN_HEAD_TO_HEAD_MATCHES en functions/index.js (mantener sincronizado).
+const MIN_HEAD_TO_HEAD_MATCHES = 3
 
 const FOOT_OPTIONS = [
   { label: 'Derecho', value: 'derecho' },
@@ -234,6 +257,7 @@ const groupNames = ref({})
 // lo estoy viendo "de afuera"). Decide qué partes del perfil se muestran.
 const sharedGroupId = ref(null)
 const reportDialog = ref(false)
+const versusLine = ref(null)
 
 const favoritePositions = computed(() => normalizePositions(profile.value?.preferredPositions))
 const favoriteTeam = computed(() => findTeam(profile.value?.favoriteTeam))
@@ -268,12 +292,57 @@ const groupStatRows = computed(() => {
   }))
 })
 
+// Arma la frase "vos vs él/ella" desde chemistry/rivalry (perspectiva propia).
+// Prioridad: rivalry (más específico y competitivo) sobre chemistry, mismo
+// criterio que buildHypeMessage en functions/index.js — si hay ambos, gana el
+// que tenga más partidos en común.
+function buildVersusLine(nickname, chemistry, rivalry) {
+  const name = nickname || 'él/ella'
+
+  if (rivalry && rivalry.gamesAgainst >= MIN_HEAD_TO_HEAD_MATCHES) {
+    if (!chemistry || rivalry.gamesAgainst >= chemistry.gamesTogether) {
+      const winRate = rivalry.winsAgainst / rivalry.gamesAgainst
+      if (winRate >= 0.5) {
+        return {
+          icon: 'local_fire_department',
+          color: 'deep-orange-8',
+          text: `Cuando te enfrentás a ${name}, le ganás ${rivalry.winsAgainst} de ${rivalry.gamesAgainst}. Que no se entere.`,
+        }
+      }
+      return {
+        icon: 'sentiment_dissatisfied',
+        color: 'red-8',
+        text: `Cuando te enfrentás a ${name}, perdés ${rivalry.lossesAgainst} de ${rivalry.gamesAgainst}. Ponete las pilas hoy.`,
+      }
+    }
+  }
+
+  if (chemistry && chemistry.gamesTogether >= MIN_HEAD_TO_HEAD_MATCHES) {
+    const winRate = chemistry.winsTogether / chemistry.gamesTogether
+    if (winRate >= 0.5) {
+      return {
+        icon: 'handshake',
+        color: 'green-8',
+        text: `Cuando jugás CON ${name}, ganan ${chemistry.winsTogether} de ${chemistry.gamesTogether}. Sos su amuleto.`,
+      }
+    }
+    return {
+      icon: 'sync_problem',
+      color: 'orange-8',
+      text: `Cuando jugás CON ${name}, les cuesta ganar (${chemistry.winsTogether} de ${chemistry.gamesTogether}). A ver si la próxima cambia.`,
+    }
+  }
+
+  return null
+}
+
 async function loadProfile(uid) {
   profile.value = null
   loadError.value = null
   myRating.value = 0
   sharedGroupId.value = null
   badges.value = []
+  versusLine.value = null
 
   // El perfil propio se edita en /perfil, no tiene sentido "verse" acá
   if (uid === authStore.user?.uid) {
@@ -299,6 +368,15 @@ async function loadProfile(uid) {
     }
 
     myRating.value = (await fetchMyRatingFor(uid)) ?? 0
+
+    if (authStore.user?.uid) {
+      try {
+        const { chemistry, rivalry } = await fetchVersus(authStore.user.uid, uid)
+        versusLine.value = buildVersusLine(profile.value.nickname || profile.value.displayName, chemistry, rivalry)
+      } catch {
+        versusLine.value = null
+      }
+    }
 
     const groupIds = Object.keys(profile.value.statsByGroup ?? {})
     const entries = await Promise.all(

@@ -47,12 +47,15 @@ const UserSchema = {
     assists:       'number',      // Asistencias acumuladas (total individual)
     matchesPlayed: 'number',      // Partidos jugados (total individual)
     mvps:          'number',      // Veces elegido MVP del partido
+    murallas:      'number',      // Veces elegido Muralla (mejor defensor) del partido
     wins:          'number',      // Partidos ganados (según result de cada playerStats)
     draws:         'number',      // Empatados
     losses:        'number',      // Perdidos
   },
 
-  // Desglose de las mismas estadísticas, pero separadas por grupo.
+  // Desglose de las mismas estadísticas, pero separadas por grupo. También
+  // incluye wins/draws/losses aunque no se hayan repetido en este comentario
+  // arriba de cada campo — mismo set que `stats`, por grupo.
   // Lo escribe ÚNICAMENTE la Cloud Function onPlayerStatsWritten (por diferencia)
   // cuando el partido tiene un groupId asociado.
   statsByGroup: {
@@ -61,11 +64,28 @@ const UserSchema = {
       assists:       'number',
       matchesPlayed: 'number',
       mvps:          'number',
+      murallas:      'number',
+      wins:          'number',
+      draws:         'number',
+      losses:        'number',
     },
   },
 
   createdAt:   'Timestamp',
   updatedAt:   'Timestamp',
+
+  // Rachas activas, recalculadas por diferencia en cada resultado cargado
+  // (onPlayerStatsWritten, junto al resto del acumulador — no hay scheduler
+  // ni scan extra). "Consecutivo" se corta apenas el jugador tiene un partido
+  // que no cumple la condición; no cuenta partidos donde no jugó.
+  // Alimenta las frases de runMatchHypeNotify cuando no hay dato de rivalry
+  // más específico para armar la frase "vs".
+  streaks: {
+    matchesPlayedStreak: 'number', // Partidos consecutivos jugados sin faltar
+    goallessStreak:      'number', // Partidos consecutivos SIN convertir
+    noWinStreak:         'number', // Partidos consecutivos sin ganar (E o L)
+    lossStreak:          'number', // Derrotas consecutivas
+  }, // | undefined
 
   // "Mundial personal" (ausente hasta la primera activación): modo de juego
   // individual y opcional. Cada jugador lo activa desde su perfil; avanza de
@@ -162,6 +182,27 @@ const ChemistrySchema = {
 
 /**
  * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: users/{uid}/rivalry/{otherUid}
+ *  Historial de resultados jugando en EQUIPOS DISTINTOS que otro jugador
+ *  (cara a cara). Mismo criterio de lectura abierta y misma mecánica que
+ *  ChemistrySchema — es el mismo trigger (updateChemistryForPlayerStat en
+ *  functions/index.js) el que escribe ambas subcolecciones a la vez, comparando
+ *  team === other.team (chemistry) vs team !== other.team (rivalry).
+ *  Simétrico: users/{A}/rivalry/{B} y users/{B}/rivalry/{A} llevan el resultado
+ *  de cada uno DESDE SU PROPIA perspectiva (si A ganó, wins de A y losses de B).
+ *  Alimenta las frases "vs" del aviso de pre-partido (runMatchHypeNotify).
+ * ══════════════════════════════════════════════════════════
+ */
+const RivalrySchema = {
+  gamesAgainst:  'number', // Partidos enfrentados (equipos distintos)
+  winsAgainst:   'number', // De esos, ganados por este jugador (perdidos por el otro)
+  drawsAgainst:  'number',
+  lossesAgainst: 'number', // Perdidos por este jugador (ganados por el otro)
+  lastPlayedAt:  'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
  *  COLECCIÓN: matches
  *  Path: /matches/{matchId}
  * ══════════════════════════════════════════════════════════
@@ -223,7 +264,20 @@ const MatchSchema = {
                                    // (manualmente, o automático a las 36hs junto con
                                    // resultLocked) — solo lo escribe closeMvpVoting
 
+  // Muralla (mejor defensor): MISMA mecánica que MVP, votación independiente
+  // (closeVotingForMatch('muralla', ...) en functions/index.js) — puede
+  // cerrarse antes o después que la de MVP, cada una con su propio campo.
+  murallaUserId:      'string | null',
+  murallaName:        'string | null',
+  murallaVotingClosed: 'boolean',
+
   cloudTaskName:  'string | null', // Referencia a la Cloud Task programada
+
+  // Centinelas de tareas periódicas (SCHEDULED_TASKS en functions/index.js):
+  // cada uno evita que su aviso se mande dos veces, se fija ANTES de notificar.
+  lowSignupAlertSent:    'boolean', // ya se avisó "faltan jugadores" (6-8hs antes)
+  hypeMsgSent:           'boolean', // ya se mandó el hype pre-partido (4-6hs antes)
+  postMatchReminderSent: 'boolean', // ya se recordó cargar stats/votar (3hs después)
 
   createdBy:      'string',        // uid del creador — puede anotarse A SÍ MISMO
                                    // desde el momento cero (sin esperar openAt)
@@ -337,6 +391,20 @@ const MvpVoteSchema = {
 
 /**
  * ══════════════════════════════════════════════════════════
+ *  SUBCOLECCIÓN: matches/{matchId}/murallaVotes/{voterId}
+ *  Votación de Muralla (mejor defensor) — MISMA mecánica que MvpVoteSchema,
+ *  en una colección separada porque es una votación independiente (puede
+ *  cerrarse antes o después que la de MVP). El conteo final lo hace la
+ *  Cloud Function closeMurallaVoting.
+ * ══════════════════════════════════════════════════════════
+ */
+const MurallaVoteSchema = {
+  votedForUserId: 'string',
+  updatedAt:      'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
  *  SUBCOLECCIÓN: badges  (insignias mensuales)
  *  Path: /users/{uid}/badges/{badgeId}
  *  docId = `{period}_{type}_{groupId}`  ej: '2026-08_topScorer_abc123'
@@ -365,6 +433,33 @@ const BadgeSchema = {
 
 /**
  * ══════════════════════════════════════════════════════════
+ *  COLECCIÓN: events  (feed de actividad)
+ *  Path: /events/{eventId}   (docId autogenerado)
+ * ══════════════════════════════════════════════════════════
+ *
+ *  Timeline liviano de lo que pasa en un grupo: alguien se anotó, alguien ganó
+ *  una insignia, alguien cortó/entró en una racha. Cada evento lo escribe UN
+ *  trigger puntual (onRegistrationCreated, el mismo runMonthlyBadges, etc.) —
+ *  nunca un scan ni un cálculo agregado, es solo "grabar lo que ya pasó" en el
+ *  momento en que pasa. `groupId: null` es un evento sin grupo (no debería
+ *  ocurrir en la práctica ya que el feed se lee siempre acotado a un grupo).
+ *
+ *  Se lee por groupId + orden temporal — mismo patrón de índice que matches
+ *  (groupId ASC + fecha DESC). NADIE escribe esto desde el cliente: las reglas
+ *  niegan toda escritura, solo el admin SDK.
+ */
+const EventSchema = {
+  groupId:   'string',        // Grupo al que pertenece (para el feed del grupo)
+  type:      "'registration' | 'badge' | 'streak'",
+  actorId:    'string',       // uid del protagonista del evento
+  actorName:  'string',       // denormalizado (apodo al momento del evento)
+  matchId:    'string | null', // partido relacionado, si aplica
+  text:       'string',       // frase ya armada, lista para mostrar tal cual
+  createdAt:  'Timestamp',
+}
+
+/**
+ * ══════════════════════════════════════════════════════════
  *  SUBCOLECCIÓN: playerStats
  *  Path: /matches/{matchId}/playerStats/{userId}
  * ══════════════════════════════════════════════════════════
@@ -382,7 +477,16 @@ const PlayerStatsSchema = {
                                   // Cloud Function closeMvpVoting (o un admin
                                   // global como escape hatch); el cliente
                                   // nunca manda este campo.
+  muralla:     'boolean',         // true si ganó la votación de Muralla (mejor
+                                  // defensor) — acumula stats.murallas, mismo
+                                  // criterio que `mvp` (solo closeMurallaVoting
+                                  // o admin lo escriben).
   team:        "'A' | 'B' | null",
+  result:      "'W' | 'E' | 'L' | null", // Derivado de team + el marcador del
+                                  // partido, lo calcula computeResult() en
+                                  // usePlayerStats.js al guardar. Alimenta
+                                  // stats.wins/draws/losses (onPlayerStatsWritten),
+                                  // la química y rivalidad por pares, y las rachas.
   groupId:     'string | null',   // Grupo del partido (para statsByGroup)
   savedAt:     'Timestamp',
 }

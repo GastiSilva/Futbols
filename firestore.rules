@@ -304,6 +304,18 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      // ── users/{userId}/rivalry ───────────────────────────────────────────────
+      // Historial cara a cara jugando en EQUIPOS DISTINTOS que otro jugador.
+      // Mismo criterio de apertura que chemistry (agregado objetivo, no dato
+      // sensible) y misma Cloud Function como única escritora — es el mismo
+      // trigger, updateChemistryForPlayerStat, el que llena ambas colecciones.
+      match /rivalry/{otherUid} {
+
+        allow read: if isAuthenticated();
+
+        allow write: if false;
+      }
+
       // ── users/{userId}/private ──────────────────────────────────────────────
       // Datos derivados que solo el dueño del perfil puede ver (ej. el promedio
       // de estrellas de su descripción). Doc separado del users/{userId}
@@ -877,6 +889,7 @@ service cloud.firestore {
           (
             isMemberOfMatchGroup(matchId)
             && !('mvp' in request.resource.data)
+            && !('muralla' in request.resource.data)
             && statsPayloadIsValid(userId)
           )
           || isAdmin();
@@ -884,7 +897,7 @@ service cloud.firestore {
         allow update: if
           (
             isMemberOfMatchGroup(matchId)
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mvp'])
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mvp', 'muralla'])
             && statsPayloadIsValid(userId)
           )
           || isAdmin();
@@ -908,6 +921,30 @@ service cloud.firestore {
           && isOwner(voterId)
           && matchData(matchId).status == 'finished'
           && matchData(matchId).get('mvpVotingClosed', false) == false
+          && request.resource.data.votedForUserId is string
+          && request.resource.data.votedForUserId != request.auth.uid
+          && exists(/databases/$(database)/documents/matches/$(matchId)/registrations/$(request.resource.data.votedForUserId))
+          && get(/databases/$(database)/documents/matches/$(matchId)/registrations/$(request.resource.data.votedForUserId)).data.get('isOnWaitlist', false) == false;
+
+        allow delete: if isAdmin();
+      }
+
+      // ──────────────────────────────────────────────────────────────────────
+      // MURALLA VOTES (mejor defensor del partido)
+      // ──────────────────────────────────────────────────────────────────────
+      // Misma mecánica que MVP VOTES, en una colección separada porque es una
+      // votación INDEPENDIENTE: puede seguir abierta aunque la de MVP ya se
+      // haya cerrado (o viceversa) — cada una la cierra su propia Cloud
+      // Function (closeMurallaVoting) fijando murallaVotingClosed.
+      match /murallaVotes/{voterId} {
+
+        allow read: if isAuthenticated();
+
+        allow create, update: if
+          (isAdmin() || isMemberOfMatchGroup(matchId) || isGroupless(matchId))
+          && isOwner(voterId)
+          && matchData(matchId).status == 'finished'
+          && matchData(matchId).get('murallaVotingClosed', false) == false
           && request.resource.data.votedForUserId is string
           && request.resource.data.votedForUserId != request.auth.uid
           && exists(/databases/$(database)/documents/matches/$(matchId)/registrations/$(request.resource.data.votedForUserId))
@@ -1067,6 +1104,28 @@ service cloud.firestore {
       // Nunca se borran, ni por un admin: es el registro de la denuncia.
       // Se dan de baja cambiando `status`, igual que joinRequests.
       allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // EVENTS (feed de actividad del grupo)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Timeline liviano: alguien se anotó, ganó una insignia, etc. Igual límite
+    // estructural que `matches`: `request.query` solo expone limit/offset/
+    // orderBy, nunca las cláusulas `where` — no hay forma de verificar en
+    // `list` que el `groupId` pedido sea uno del que el caller es miembro. El
+    // aislamiento real lo da `get` (si lee el doc puntual, sí se verifica
+    // membresía) y que el cliente pida solo el groupId que le corresponde;
+    // `list` exige `limit` explícito, mismo criterio que matches (línea 392).
+    // Nadie escribe desde el cliente: solo triggers puntuales vía admin SDK
+    // (onRegistrationCreated, runMonthlyBadges).
+    match /events/{eventId} {
+
+      allow get: if isAuthenticated()
+                 && isMemberOfGroup(resource.data.groupId, request.auth.uid);
+
+      allow list: if isAuthenticated() && request.query.limit <= 50;
+
+      allow write: if false;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -368,16 +368,16 @@
           <template v-if="userRegistration">
             <div class="column items-center q-gutter-xs">
               <q-icon
-                :name="userRegistration.isOnWaitlist ? 'hourglass_top' : 'check_circle'"
-                :color="userRegistration.isOnWaitlist ? 'orange-8' : 'positive'"
+                :name="myEntry?.waitlisted ? 'hourglass_top' : 'check_circle'"
+                :color="myEntry?.waitlisted ? 'orange-8' : 'positive'"
                 size="34px"
               />
               <div class="text-subtitle1 text-weight-bold text-center">
-                <span v-if="!userRegistration.isOnWaitlist" class="text-positive">
-                  ¡Sos titular! · Posición #{{ userRegistration.position }}
+                <span v-if="!myEntry?.waitlisted" class="text-positive">
+                  ¡Sos titular! · Posición #{{ myEntry?.displayPosition }}
                 </span>
                 <span v-else class="text-orange-8">
-                  Lista de espera · Puesto #{{ userRegistration.position - match.maxPlayers }}
+                  Lista de espera · Puesto #{{ myEntry.displayPosition - match.maxPlayers }}
                 </span>
               </div>
               <q-btn
@@ -597,7 +597,7 @@
               <q-item v-for="reg in startersNoTeam" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
                 <q-item-section avatar>
                   <q-avatar size="28px" color="green-2" text-color="green-9">
-                    {{ reg.position }}
+                    {{ reg.displayPosition }}
                   </q-avatar>
                 </q-item-section>
                 <q-item-section>{{ reg.displayName }}</q-item-section>
@@ -611,7 +611,7 @@
           <q-item v-for="reg in starters" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
             <q-item-section avatar>
               <q-avatar size="28px" color="green-2" text-color="green-9">
-                {{ reg.position }}
+                {{ reg.displayPosition }}
               </q-avatar>
             </q-item-section>
             <q-item-section>{{ reg.displayName }}</q-item-section>
@@ -632,7 +632,7 @@
             <q-item v-for="reg in waitlist" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
               <q-item-section avatar>
                 <q-avatar size="28px" color="orange-2" text-color="orange-9">
-                  {{ reg.position - match.maxPlayers }}
+                  {{ reg.displayPosition - match.maxPlayers }}
                 </q-avatar>
               </q-item-section>
               <q-item-section>{{ reg.displayName }}</q-item-section>
@@ -653,6 +653,13 @@
           </div>
 
           <MatchMvpVoting
+            :match="match"
+            :match-id="route.params.id"
+            :player-stats="playerStats"
+            :can-close-voting="canLoadResult"
+          />
+
+          <MatchMurallaVoting
             :match="match"
             :match-id="route.params.id"
             :player-stats="playerStats"
@@ -764,6 +771,7 @@ import { useMatchInvite, setPendingInvite } from 'src/composables/useMatchInvite
 import { buildListText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import MatchMvpVoting from 'src/components/MatchMvpVoting.vue'
+import MatchMurallaVoting from 'src/components/MatchMurallaVoting.vue'
 import ApplicationChat from 'src/components/ApplicationChat.vue'
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
@@ -880,12 +888,39 @@ const myRegistrationsVisibleAtLabel = computed(() => {
 const visibleCupos = computed(() => {
   const isFree = match.value?.maxPlayers == null
   if (!match.value || !canSeeRegistrations(match.value)) return { current: 0, max: 0, ratio: 0, isFree }
-  const current = match.value.currentPlayers ?? 0
+  // Se cuenta la lista real, no `currentPlayers`: con el contador desfasado la
+  // barra decía 12/14 mientras abajo se veían 9 anotados.
+  const current = registrations.value.length
   const max = match.value.maxPlayers ?? 0
   return { current, max, ratio: isFree ? 0 : (max ? current / max : 0), isFree }
 })
-const starters = computed(() => registrations.value.filter((r) => !r.isOnWaitlist))
-const waitlist = computed(() => registrations.value.filter((r) => r.isOnWaitlist))
+// El número que ve el jugador NO es `reg.position` sino su lugar real en la
+// lista. `position` es un campo GUARDADO: se calcula con el contador
+// `currentPlayers` al anotarse, y solo lo renumera la CF onRegistrationDeleted
+// cuando alguien se baja. Si esa función falla, no está desplegada, o alguien
+// borra una inscripción por fuera de `removeRegistration` (la consola de
+// Firebase, por ejemplo), quedan huecos —la lista salta del 5 al 9— o incluso
+// números repetidos. Derivarlo del índice mantiene el orden de llegada (la
+// query ya viene con orderBy('position')) pero numera siempre 1..N, sin
+// depender de que nada de fondo haya corrido.
+// Por el mismo motivo `waitlisted` se recalcula acá en vez de confiar en el
+// `isOnWaitlist` guardado: con el contador inflado, un titular podía figurar
+// como suplente.
+const orderedRegs = computed(() =>
+  registrations.value.map((r, i) => ({
+    ...r,
+    displayPosition: i + 1,
+    waitlisted: match.value?.maxPlayers != null && i + 1 > match.value.maxPlayers,
+  })),
+)
+const starters = computed(() => orderedRegs.value.filter((r) => !r.waitlisted))
+const waitlist = computed(() => orderedRegs.value.filter((r) => r.waitlisted))
+// La fila propia, ya renumerada — alimenta el cartel "¡Sos titular! · #N".
+const myEntry = computed(() =>
+  userRegistration.value
+    ? (orderedRegs.value.find((r) => r.id === userRegistration.value.id) ?? null)
+    : null,
+)
 
 // ── Armado de equipos (antes de jugar) ───────────────────────────────────────
 // Solo quien tiene acceso anticipado en el grupo (OG/owner/admin) o admin

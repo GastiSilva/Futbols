@@ -39,6 +39,7 @@
         <q-tab name="goals" label="Goleadores" icon="sports_soccer" />
         <q-tab name="assists" label="Asistidores" icon="assistant" />
         <q-tab name="mvps" label="MVPs" icon="military_tech" />
+        <q-tab name="murallas" label="Murallas" icon="shield" />
         <q-tab name="mundial" label="Mundial" icon="emoji_events" />
       </q-tabs>
 
@@ -185,6 +186,51 @@
         </q-list>
       </q-tab-panel>
 
+      <!-- ── Murallas ────────────────────────────────────────────────── -->
+      <q-tab-panel name="murallas" class="q-pa-none">
+        <q-list separator>
+          <q-item v-if="activeMurallas.length === 0" class="text-grey-6 text-center q-pa-lg">
+            <q-item-section>Sin datos</q-item-section>
+          </q-item>
+          <q-item
+            v-for="(player, idx) in activeMurallas"
+            :key="player.id"
+            :class="idx < 3 ? 'bg-blue-1' : ''"
+          >
+            <q-item-section avatar>
+              <q-avatar
+                :color="medalColor(idx)"
+                text-color="white"
+                size="36px"
+                font-size="16px"
+              >
+                {{ idx < 3 ? ['🥇', '🥈', '🥉'][idx] : idx + 1 }}
+              </q-avatar>
+            </q-item-section>
+
+            <q-item-section avatar>
+              <q-avatar size="40px">
+                <img :src="player.photoURL" :alt="player.displayName" referrerpolicy="no-referrer" />
+              </q-avatar>
+            </q-item-section>
+
+            <q-item-section>
+              <q-item-label class="text-weight-bold">{{ player.displayName }}</q-item-label>
+              <q-item-label caption>{{ player.stats?.matchesPlayed ?? 0 }} partidos</q-item-label>
+            </q-item-section>
+
+            <q-item-section side>
+              <div class="column items-end">
+                <span class="text-h6 text-weight-bold text-blue-8">
+                  {{ player.stats?.murallas ?? 0 }}
+                </span>
+                <span class="text-caption text-grey-6">Murallas</span>
+              </div>
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </q-tab-panel>
+
       <!-- ── Mundial ─────────────────────────────────────────────────── -->
       <q-tab-panel name="mundial" class="q-pa-none">
         <q-list separator>
@@ -231,6 +277,7 @@ const {
   groupScorers: activeScorers,
   groupAssisters: activeAssisters,
   groupMvps: activeMvps,
+  groupMurallas: activeMurallas,
   loadingGroup,
   fetchGroupRanking,
   clearGroupRanking,

@@ -13,6 +13,7 @@ export function useLeaderboard() {
   const groupScorers = ref([])
   const groupAssisters = ref([])
   const groupMvps = ref([])
+  const groupMurallas = ref([])
   const loadingGroup = ref(false)
 
   // ── Ranking filtrado por miembros de un grupo ─────────────────────────────
@@ -23,6 +24,7 @@ export function useLeaderboard() {
       groupScorers.value = []
       groupAssisters.value = []
       groupMvps.value = []
+      groupMurallas.value = []
       return
     }
     loadingGroup.value = true
@@ -48,7 +50,7 @@ export function useLeaderboard() {
       const usersWithGroupStats = users.map((u) => ({
         ...u,
         displayName: u.nickname || u.displayName,
-        stats: u.statsByGroup?.[groupId] ?? { goals: 0, assists: 0, matchesPlayed: 0, mvps: 0 },
+        stats: u.statsByGroup?.[groupId] ?? { goals: 0, assists: 0, matchesPlayed: 0, mvps: 0, murallas: 0 },
       }))
 
       groupScorers.value = [...usersWithGroupStats].sort(
@@ -60,6 +62,9 @@ export function useLeaderboard() {
       groupMvps.value = [...usersWithGroupStats].sort(
         (a, b) => (b.stats?.mvps ?? 0) - (a.stats?.mvps ?? 0),
       )
+      groupMurallas.value = [...usersWithGroupStats].sort(
+        (a, b) => (b.stats?.murallas ?? 0) - (a.stats?.murallas ?? 0),
+      )
     } finally {
       loadingGroup.value = false
     }
@@ -69,12 +74,14 @@ export function useLeaderboard() {
     groupScorers.value = []
     groupAssisters.value = []
     groupMvps.value = []
+    groupMurallas.value = []
   }
 
   return {
     groupScorers,
     groupAssisters,
     groupMvps,
+    groupMurallas,
     loadingGroup,
     fetchGroupRanking,
     clearGroupRanking,
