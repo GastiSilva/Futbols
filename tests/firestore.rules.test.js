@@ -41,8 +41,6 @@ const MATCH_A = 'matchA'   // partido del grupo A
 const PUBLIC_MATCH = 'matchPublico'  // partido del grupo A, publicado (isPublic)
 const FINISHED_MATCH = 'matchTerminado'  // partido del grupo A ya jugado (votaciones abiertas)
 const CARLOS = 'carlos'    // suplente del partido terminado (no llegó a jugar)
-const EVENT_A = 'eventoA'  // evento del feed, grupo A
-const EVENT_B = 'eventoB'  // evento del feed, grupo B (ajeno)
 
 // Fechas relativas: la lista ya está abierta
 const PAST = new Date(Date.now() - 60 * 60 * 1000)
@@ -188,17 +186,6 @@ beforeEach(async () => {
     })
     await setDoc(doc(db, 'matches', FINISHED_MATCH, 'registrations', CARLOS), {
       userId: CARLOS, displayName: 'Carlos', isGuest: false, position: 3, isOnWaitlist: true,
-    })
-
-    // Feed de actividad: un evento de cada grupo. Los escribe SOLO el backend
-    // (onRegistrationCreated / runMonthlyBadges) por admin SDK.
-    await setDoc(doc(db, 'events', EVENT_A), {
-      groupId: GROUP_A, type: 'registration', actorId: BOB, actorName: 'Bob',
-      matchId: MATCH_A, text: 'Bob se anotó a un partido', createdAt: PAST,
-    })
-    await setDoc(doc(db, 'events', EVENT_B), {
-      groupId: GROUP_B, type: 'registration', actorId: MALLORY, actorName: 'Mallory',
-      matchId: 'matchB', text: 'Mallory se anotó a un partido', createdAt: PAST,
     })
 
     // Historial cara a cara, escrito por updateChemistryForPlayerStat (admin SDK).
@@ -914,6 +901,49 @@ describe('Miembros: no auto-promoverse', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe('Lectura de los votos de MVP (voto secreto + podio)', () => {
+  // Las reglas de escritura de mvpVotes ya se cubren indirectamente en el
+  // bloque de Muralla (son idénticas). Acá se fija lo propio de la LECTURA,
+  // que es lo que sostiene el voto secreto mientras la votación transcurre.
+
+  test('con la votación ABIERTA, cada uno lee SOLO su propio voto', async () => {
+    // Voto secreto: si cualquiera pudiera leer el voto ajeno, esconder el
+    // recuento en la pantalla sería maquillaje — se cuenta desde la consola.
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'matches', FINISHED_MATCH, 'mvpVotes', ALICE), {
+        votedForUserId: BOB,
+      })
+    })
+    await assertFails(
+      getDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'mvpVotes', ALICE)),
+    )
+    await assertSucceeds(
+      getDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'mvpVotes', BOB)),
+    )
+  })
+
+  test('con la votación ABIERTA nadie puede listar los votos', async () => {
+    await assertFails(
+      getDocs(collection(ctx(BOB), 'matches', FINISHED_MATCH, 'mvpVotes')),
+    )
+  })
+
+  test('CERRADA la votación, los votos se pueden listar (alimentan el podio)', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await updateDoc(doc(c.firestore(), 'matches', FINISHED_MATCH), {
+        mvpVotingClosed: true,
+      })
+    })
+    await assertSucceeds(
+      getDocs(collection(ctx(BOB), 'matches', FINISHED_MATCH, 'mvpVotes')),
+    )
+    await assertSucceeds(
+      getDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'mvpVotes', ALICE)),
+    )
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 describe('Votación de Muralla (mejor defensor)', () => {
   // Mismas reglas que mvpVotes en una colección aparte: son votaciones
   // INDEPENDIENTES (cada una la cierra su propia Cloud Function). Lo que se
@@ -1017,9 +1047,39 @@ describe('Votación de Muralla (mejor defensor)', () => {
     )
   })
 
-  test('los votos se pueden leer (el recuento se ve en vivo)', async () => {
+  test('con la votación ABIERTA, cada uno lee SOLO su propio voto', async () => {
+    // Voto secreto: si cualquiera pudiera leer el voto ajeno, esconder el
+    // recuento en la pantalla sería maquillaje — se cuenta desde la consola.
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await setDoc(doc(c.firestore(), 'matches', FINISHED_MATCH, 'murallaVotes', ALICE), {
+        votedForUserId: BOB,
+      })
+    })
+    await assertFails(
+      getDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', ALICE)),
+    )
+    await assertSucceeds(
+      getDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', BOB)),
+    )
+  })
+
+  test('con la votación ABIERTA nadie puede listar los votos', async () => {
+    await assertFails(
+      getDocs(collection(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes')),
+    )
+  })
+
+  test('CERRADA la votación, los votos se pueden listar (alimentan el podio)', async () => {
+    await testEnv.withSecurityRulesDisabled(async (c) => {
+      await updateDoc(doc(c.firestore(), 'matches', FINISHED_MATCH), {
+        murallaVotingClosed: true,
+      })
+    })
     await assertSucceeds(
       getDocs(collection(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes')),
+    )
+    await assertSucceeds(
+      getDoc(doc(ctx(BOB), 'matches', FINISHED_MATCH, 'murallaVotes', ALICE)),
     )
   })
 
@@ -1035,56 +1095,6 @@ describe('Votación de Muralla (mejor defensor)', () => {
     await assertSucceeds(
       deleteDoc(doc(ctx(ADMIN, { admin: true }), 'matches', FINISHED_MATCH, 'murallaVotes', BOB)),
     )
-  })
-})
-
-// ─────────────────────────────────────────────────────────────────────────────
-describe('Feed de actividad (events)', () => {
-  test('un miembro del grupo puede leer un evento de SU grupo', async () => {
-    await assertSucceeds(getDoc(doc(ctx(BOB), 'events', EVENT_A)))
-  })
-
-  test('alguien de otro grupo NO puede leer ese evento', async () => {
-    await assertFails(getDoc(doc(ctx(MALLORY), 'events', EVENT_A)))
-  })
-
-  test('listar sin limit falla', async () => {
-    // Mismo límite estructural que matches: request.query no expone las
-    // cláusulas where, así que el aislamiento por grupo no es expresable al
-    // listar. Lo que sí se puede exigir es un tope de resultados.
-    await assertFails(getDocs(collection(ctx(BOB), 'events')))
-  })
-
-  test('listar con un limit por encima del tope falla', async () => {
-    await assertFails(getDocs(query(collection(ctx(BOB), 'events'), limit(200))))
-  })
-
-  test('listar con un limit dentro del tope funciona', async () => {
-    await assertSucceeds(
-      getDocs(query(collection(ctx(BOB), 'events'), where('groupId', '==', GROUP_A), limit(30))),
-    )
-  })
-
-  test('ni el admin global puede listar sin limit', async () => {
-    await assertFails(getDocs(collection(ctx(ADMIN, { admin: true }), 'events')))
-  })
-
-  test('nadie escribe eventos desde el cliente, ni un admin', async () => {
-    // El feed lo escriben SOLO triggers del backend. Si el cliente pudiera,
-    // cualquiera inventaría actividad ajena dentro del grupo.
-    await assertFails(setDoc(doc(ctx(BOB), 'events', 'inventado'), {
-      groupId: GROUP_A, type: 'registration', actorId: BOB, actorName: 'Bob',
-      matchId: MATCH_A, text: 'Bob metió 10 goles', createdAt: PAST,
-    }))
-    await assertFails(setDoc(doc(ctx(ADMIN, { admin: true }), 'events', 'inventadoAdmin'), {
-      groupId: GROUP_A, type: 'badge', actorId: BOB, actorName: 'Bob',
-      matchId: null, text: 'inventado', createdAt: PAST,
-    }))
-  })
-
-  test('nadie puede editar ni borrar un evento', async () => {
-    await assertFails(updateDoc(doc(ctx(BOB), 'events', EVENT_A), { text: 'otra cosa' }))
-    await assertFails(deleteDoc(doc(ctx(ADMIN, { admin: true }), 'events', EVENT_A)))
   })
 })
 
@@ -1123,5 +1133,63 @@ describe('Historial cara a cara (chemistry / rivalry)', () => {
 
   test('nadie puede borrarlas', async () => {
     await assertFails(deleteDoc(doc(ctx(BOB), 'users', BOB, 'rivalry', ALICE)))
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Equipos armados: el sello teamsAssignedAt', () => {
+  // Lo escribe assignTeams (useRegistration.js) en el mismo batch que reparte
+  // los `team`. Es lo que le da el pie al aviso de hype: sin este sello, el
+  // mensaje no puede afirmar contra quién jugás hoy. Mismo permiso que asignar
+  // los equipos — acceso anticipado en el grupo (OG/owner/admin) o admin.
+
+  test('quien arma los equipos puede sellar el momento', async () => {
+    await assertSucceeds(
+      updateDoc(doc(ctx(ALICE), 'matches', MATCH_A), {
+        teamsAssignedAt: new Date(), updatedAt: new Date(),
+      }),
+    )
+  })
+
+  test('un miembro común NO puede sellarlo (tampoco puede armar equipos)', async () => {
+    await assertFails(
+      updateDoc(doc(ctx(BOB), 'matches', MATCH_A), {
+        teamsAssignedAt: new Date(), updatedAt: new Date(),
+      }),
+    )
+  })
+
+  test('alguien de otro grupo NO puede sellarlo', async () => {
+    await assertFails(
+      updateDoc(doc(ctx(MALLORY), 'matches', MATCH_A), {
+        teamsAssignedAt: new Date(), updatedAt: new Date(),
+      }),
+    )
+  })
+
+  test('por esta rama NO se puede colar ningún otro campo', async () => {
+    // Si el sello sirviera de rendija para tocar otra cosa, quien arma los
+    // equipos podría cerrar la lista o cambiar el resultado de paso.
+    await assertFails(
+      updateDoc(doc(ctx(ALICE), 'matches', MATCH_A), {
+        teamsAssignedAt: new Date(), status: 'closed',
+      }),
+    )
+    await assertFails(
+      updateDoc(doc(ctx(ALICE), 'matches', MATCH_A), {
+        teamsAssignedAt: new Date(), maxPlayers: 99,
+      }),
+    )
+  })
+
+  test('nadie puede marcar hypeMsgSent desde el cliente', async () => {
+    // Lo escribe SOLO runMatchHypeNotify por admin SDK. Si el cliente pudiera,
+    // cualquiera se saltearía el aviso de todo el grupo poniéndolo en true.
+    await assertFails(
+      updateDoc(doc(ctx(ALICE), 'matches', MATCH_A), { hypeMsgSent: true }),
+    )
+    await assertFails(
+      updateDoc(doc(ctx(BOB), 'matches', MATCH_A), { hypeMsgSent: true }),
+    )
   })
 })

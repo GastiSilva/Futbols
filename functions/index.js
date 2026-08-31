@@ -327,7 +327,7 @@ async function runMatchLowSignupAlert() {
 
 // ── 5b2. Scheduled: aviso de "hype" personalizado antes de cada partido ──────
 // Corre cada 10 min. Para cada partido cuya `date` cae dentro de la ventana
-// [ahora+4h, ahora+6h], y que todavía no se avisó (`hypeMsgSent`), recorre
+// [ahora+30min, ahora+6h], y que todavía no se avisó (`hypeMsgSent`), recorre
 // SOLO a los inscriptos de ESE partido (no la base entera de usuarios: la
 // combinatoria de "vs" contra todo el mundo sería cara e irrelevante — a cada
 // uno le importa únicamente con quién juega HOY) y le arma una frase
@@ -344,7 +344,35 @@ async function runMatchLowSignupAlert() {
 // historial siempre") para que no le toque siempre a los mismos veteranos del
 // grupo.
 const MIN_HEAD_TO_HEAD_MATCHES = 3
-const HYPE_SHARE_OF_PLAYERS = 0.5
+// Porción de los TITULARES que recibe el aviso. Sobre titulares y no sobre
+// todos los anotados: al suplente que quizás ni juega, un "hoy tenés enfrente
+// a Fulano" le llega de una charla que no es la suya.
+const HYPE_SHARE_OF_PLAYERS = 0.6
+// Cuánto hay que esperar desde el ÚLTIMO retoque de los equipos antes de
+// avisar. No es un margen técnico: es el tiempo que tarda el que arma los
+// equipos en aceptar la sugerencia y después mover dos o tres jugadores a
+// mano. Avisar en el acto mandaría el mensaje con una formación que cambia
+// treinta segundos más tarde.
+//
+// Sumado al tick de 10 min de la tarea, el aviso cae entre 2 y 12 minutos
+// después del último retoque. NO acelerar el tick para achicar esa ventana:
+// el aviso sale entre 30 min y 6 horas antes del partido, así que la
+// diferencia entre 7 y 12 minutos no la nota nadie, mientras que el tick sí
+// se paga las 24 horas (cada corrida es una lectura, haya partidos o no: a
+// 10 min son 144 lecturas por día, a 5 min 288, a 2 min 720). Lo que importa
+// de este mecanismo es que el mensaje diga la verdad sobre los equipos, no
+// que llegue rápido.
+const HYPE_TEAMS_DEBOUNCE_MS = 2 * 60 * 1000
+// Ventana de anticipación. El techo (6h) es el mismo de antes; el piso (30
+// min) existe porque un aviso que llega cuando ya estás entrando a la cancha
+// no sirve para nada.
+const HYPE_MAX_LEAD_MS = 6 * 60 * 60 * 1000
+const HYPE_MIN_LEAD_MS = 30 * 60 * 1000
+// Si a esta altura los equipos todavía no se armaron, se deja de esperar y se
+// avisa igual — pero SOLO con rachas personales, que no dependen de quién
+// juega con quién. Muchos grupos arman los equipos en la cancha: sin esta
+// salida se quedarían sin aviso para siempre.
+const HYPE_NO_TEAMS_FALLBACK_MS = 60 * 60 * 1000
 
 // Fisher-Yates in-place, alcanza para listas de ~10-20 jugadores por partido.
 function shuffle(arr) {
@@ -358,8 +386,8 @@ function shuffle(arr) {
 async function runMatchHypeNotify() {
   const db = admin.firestore()
   const now = new Date()
-  const windowStart = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + 4 * 60 * 60 * 1000))
-  const windowEnd = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + 6 * 60 * 60 * 1000))
+  const windowStart = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + HYPE_MIN_LEAD_MS))
+  const windowEnd = admin.firestore.Timestamp.fromDate(new Date(now.getTime() + HYPE_MAX_LEAD_MS))
 
   const snap = await db
     .collection('matches')
@@ -377,11 +405,39 @@ async function runMatchHypeNotify() {
     if (match.hypeMsgSent) continue
 
     const regsSnap = await docSnap.ref.collection('registrations').get()
+    // SOLO titulares con cuenta: el suplente puede no llegar a jugar, y los
+    // invitados sin cuenta no tienen historial ni a dónde recibir el aviso.
     const players = regsSnap.docs
       .map((d) => d.data())
-      .filter((r) => r.userId) // invitados sin cuenta no tienen historial
+      .filter((r) => r.userId && r.isOnWaitlist !== true)
 
     if (players.length < 2) continue
+
+    // ── ¿Es el momento de avisar? ────────────────────────────────────────
+    // El aviso quiere decir "hoy jugás CON este y CONTRA este otro", y eso
+    // recién se sabe cuando están los equipos. Tres caminos:
+    //   1. Equipos armados y quietos hace rato  → se avisa con equipos.
+    //   2. Equipos armados recién / moviéndose  → se espera (se reintenta en
+    //      el próximo tick; NO se marca hypeMsgSent).
+    //   3. Falta poco y no hay equipos          → se avisa igual, pero solo
+    //      con rachas personales, que no afirman nada sobre la formación.
+    const msUntilMatch = (match.date?.toMillis?.() ?? 0) - now.getTime()
+    const teamsAssignedAt = match.teamsAssignedAt?.toMillis?.() ?? null
+    const teamsSettled =
+      teamsAssignedAt != null && now.getTime() - teamsAssignedAt >= HYPE_TEAMS_DEBOUNCE_MS
+    const outOfTime = msUntilMatch <= HYPE_NO_TEAMS_FALLBACK_MS
+
+    if (!teamsSettled && !outOfTime) {
+      logger.info(
+        `runMatchHypeNotify: ${matchId} en espera (equipos ${teamsAssignedAt ? 'recién tocados' : 'sin armar'}, ` +
+        `faltan ${Math.round(msUntilMatch / 60000)} min)`,
+      )
+      continue
+    }
+
+    // Con los equipos quietos el mensaje puede afirmar la formación de hoy;
+    // sin ellos se cae a lo personal (la racha de cada uno).
+    const useTeams = teamsSettled
 
     // Se marca ANTES de mandar, mismo criterio que el resto de las colas: un
     // fallo a mitad de camino no debe reintentar de punta a punta al minuto
@@ -394,15 +450,18 @@ async function runMatchHypeNotify() {
     for (const player of players) {
       try {
         const others = players.filter((p) => p.userId !== player.userId)
-        const message = await buildHypeMessage(player.userId, others)
+        const message = await buildHypeMessage(player.userId, others, {
+          useTeams,
+          myTeam: player.team ?? null,
+        })
         if (message) candidates.push({ player, message })
       } catch (error) {
         logger.error(`runMatchHypeNotify: falló armar el hype de ${player.userId} en ${matchId}`, error)
       }
     }
 
-    // 2) Cupo proporcional a los anotados (no a los calificados): con 14
-    // jugadores el tope es 7 aunque calificaran los 14. Mínimo 1 para que un
+    // 2) Cupo proporcional a los TITULARES (no a los calificados): con 14
+    // titulares el tope es 8 aunque calificaran los 14. Mínimo 1 para que un
     // partido chico no se quede sin ningún aviso.
     const quota = Math.max(1, Math.round(players.length * HYPE_SHARE_OF_PLAYERS))
     const chosen = shuffle(candidates).slice(0, quota)
@@ -422,7 +481,9 @@ async function runMatchHypeNotify() {
       }
     }
     logger.info(
-      `runMatchHypeNotify: ${matchId} → ${sent}/${quota} enviados (${candidates.length} calificaban de ${players.length} anotados)`,
+      `runMatchHypeNotify: ${matchId} → ${sent}/${quota} enviados ` +
+      `(${candidates.length} calificaban de ${players.length} titulares, ` +
+      `${useTeams ? 'con equipos armados' : 'sin equipos: solo rachas'})`,
     )
   }
 }
@@ -433,19 +494,31 @@ async function runMatchHypeNotify() {
 // Si hay varios candidatos que alcanzan el piso, se toma el de más partidos
 // en común (el vínculo más "cargado" de datos, no el primero que aparezca).
 // Prioridad 2 (fallback): racha personal, sin cruce con nadie en particular.
-async function buildHypeMessage(userId, others) {
+async function buildHypeMessage(userId, others, { useTeams = false, myTeam = null } = {}) {
   const db = admin.firestore()
+
+  // Sin equipos armados no se puede afirmar quién es compañero y quién rival,
+  // así que no se busca ningún cruce: se va derecho a la racha personal, que
+  // es cierta sin importar cómo se repartan después. Antes esto no se
+  // distinguía y el mensaje decía "hoy jugás con Fulano" mirando SOLO el
+  // historial — o sea que la mitad de las veces Fulano terminaba en el equipo
+  // de enfrente y la app quedaba mintiendo.
+  if (!useTeams || !myTeam) return buildStreakMessage(userId)
 
   let bestRival = null
   let bestChem = null
 
   for (const other of others) {
+    // El cruce tiene que ser el de HOY: rival = está en el otro equipo,
+    // compañero = está en el mío. Quien no tenga equipo asignado queda afuera.
+    if (!other.team) continue
+    const isRivalToday = other.team !== myTeam
     const [rivSnap, chemSnap] = await Promise.all([
       db.collection('users').doc(userId).collection('rivalry').doc(other.userId).get(),
       db.collection('users').doc(userId).collection('chemistry').doc(other.userId).get(),
     ])
 
-    if (rivSnap.exists) {
+    if (isRivalToday && rivSnap.exists) {
       const r = rivSnap.data()
       if ((r.gamesAgainst ?? 0) >= MIN_HEAD_TO_HEAD_MATCHES) {
         if (!bestRival || r.gamesAgainst > bestRival.data.gamesAgainst) {
@@ -453,7 +526,7 @@ async function buildHypeMessage(userId, others) {
         }
       }
     }
-    if (chemSnap.exists) {
+    if (!isRivalToday && chemSnap.exists) {
       const c = chemSnap.data()
       if ((c.gamesTogether ?? 0) >= MIN_HEAD_TO_HEAD_MATCHES) {
         if (!bestChem || c.gamesTogether > bestChem.data.gamesTogether) {
@@ -496,6 +569,17 @@ async function buildHypeMessage(userId, others) {
   }
 
   // Fallback: racha personal, sin cruce con nadie de la lista.
+  return buildStreakMessage(userId)
+}
+
+// ── Helper: el mensaje "personal", el que no depende de con quién juega ──────
+// Es el fallback de buildHypeMessage y, cuando los equipos no se armaron, el
+// ÚNICO mensaje posible: una racha es cierta sin importar cómo se reparta la
+// cancha. Devuelve null si el jugador todavía no tiene rachas calculadas
+// (se llenan con el primer resultado que se carga después del deploy) o si
+// ninguna alcanza para decir algo.
+async function buildStreakMessage(userId) {
+  const db = admin.firestore()
   const userSnap = await db.collection('users').doc(userId).get()
   const streaks = userSnap.data()?.streaks
   if (!streaks) return null
@@ -520,8 +604,8 @@ async function buildHypeMessage(userId, others) {
   }
   if ((streaks.matchesPlayedStreak ?? 0) >= 4) {
     return {
-      title: '💪 El que nunca afloja',
-      body: `Llevás ${streaks.matchesPlayedStreak} partidos seguidos sin faltar. Hoy, uno más.`,
+      title: '💪 De los que siempre están',
+      body: `Ya llevás ${streaks.matchesPlayedStreak} partidos jugados. Hoy, uno más.`,
     }
   }
 
@@ -912,22 +996,6 @@ async function runMonthlyBadges() {
         )
       } catch (error) {
         logger.error(`runMonthlyBadges: falló el aviso a ${userId}`, error)
-      }
-
-      try {
-        const winnerName = win.winnerName ?? 'Alguien'
-        await writeEvent({
-          groupId: win.groupId,
-          type: 'badge',
-          actorId: userId,
-          actorName: winnerName,
-          text:
-            win.def.type === PRESENT_BADGE.type
-              ? `${winnerName} se ganó la medalla de Presente en ${win.groupName}`
-              : `${winnerName} ganó el ${win.def.label} de ${win.groupName} (${win.value} ${unit})`,
-        })
-      } catch (error) {
-        logger.error(`runMonthlyBadges: falló el evento de feed para ${userId}`, error)
       }
     }
   }
@@ -1691,52 +1759,6 @@ exports.recalcAllStats = onCall(
       `recalcAllStats: ${statsSnap.size} playerStats → ${usersSnap.size} usuarios actualizados, química recalculada para ${chemByUser.size} usuarios`,
     )
     return { success: true, playerStats: statsSnap.size, users: usersSnap.size, chemistryUsers: chemByUser.size }
-  },
-)
-
-// ── Helper: escribir un evento en el feed de actividad de un grupo ──────────
-// Sin grupo no hay feed (no hay "dónde" mostrarlo — el feed siempre se lee
-// acotado a un groupId), así que se omite en silencio.
-async function writeEvent({ groupId, type, actorId, actorName, matchId = null, text }) {
-  if (!groupId) return
-  await admin.firestore().collection('events').add({
-    groupId,
-    type,
-    actorId,
-    actorName: actorName ?? 'Alguien',
-    matchId,
-    text,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  })
-}
-
-// ── 10b. Trigger: alguien se anotó a un partido → evento de feed ────────────
-// Liviano a propósito: no dispara ninguna notificación (ya existen los avisos
-// de apertura/recordatorio), solo deja constancia para el timeline del grupo.
-exports.onRegistrationCreated = onDocumentCreated(
-  { region: LOCATION, document: 'matches/{matchId}/registrations/{regId}' },
-  async (event) => {
-    try {
-      const reg = event.data?.data()
-      if (!reg) return
-      const { matchId } = event.params
-      const matchSnap = await admin.firestore().collection('matches').doc(matchId).get()
-      if (!matchSnap.exists) return
-      const match = matchSnap.data()
-      if (!match.groupId) return
-
-      const actorName = reg.displayName || reg.guestName || 'Alguien'
-      await writeEvent({
-        groupId: match.groupId,
-        type: 'registration',
-        actorId: reg.userId ?? null,
-        actorName,
-        matchId,
-        text: `${actorName} se anotó a "${match.title ?? 'un partido'}"`,
-      })
-    } catch (error) {
-      logger.error('onRegistrationCreated: error', error)
-    }
   },
 )
 

@@ -97,7 +97,9 @@ const UserSchema = {
   // (ver firestore.rules).
   mundial: {
     active:   'boolean',
-    phase:    "'groups' | 'round_of_16' | 'quarter' | 'semi' | 'final' | 'champion' | 'eliminated'",
+    // round_of_32 = dieciseisavos: es la primera llave al clasificar de grupos
+    // (PHASE_AFTER_GROUPS en functions/mundial-rules.js). Faltaba en esta lista.
+    phase:    "'groups' | 'round_of_32' | 'round_of_16' | 'quarter' | 'semi' | 'final' | 'champion' | 'eliminated'",
     startedAt: 'Timestamp | null',
     endedAt:   'Timestamp | null',
     groupMatchResults: "Array<'W'|'E'|'L'>", // hasta 3, en orden de carga
@@ -429,33 +431,6 @@ const BadgeSchema = {
                             // ES ordenar cronológicamente
   value:     'number',      // cuántos goles/asistencias/MVPs fueron
   wonAt:     'Timestamp',
-}
-
-/**
- * ══════════════════════════════════════════════════════════
- *  COLECCIÓN: events  (feed de actividad)
- *  Path: /events/{eventId}   (docId autogenerado)
- * ══════════════════════════════════════════════════════════
- *
- *  Timeline liviano de lo que pasa en un grupo: alguien se anotó, alguien ganó
- *  una insignia, alguien cortó/entró en una racha. Cada evento lo escribe UN
- *  trigger puntual (onRegistrationCreated, el mismo runMonthlyBadges, etc.) —
- *  nunca un scan ni un cálculo agregado, es solo "grabar lo que ya pasó" en el
- *  momento en que pasa. `groupId: null` es un evento sin grupo (no debería
- *  ocurrir en la práctica ya que el feed se lee siempre acotado a un grupo).
- *
- *  Se lee por groupId + orden temporal — mismo patrón de índice que matches
- *  (groupId ASC + fecha DESC). NADIE escribe esto desde el cliente: las reglas
- *  niegan toda escritura, solo el admin SDK.
- */
-const EventSchema = {
-  groupId:   'string',        // Grupo al que pertenece (para el feed del grupo)
-  type:      "'registration' | 'badge' | 'streak'",
-  actorId:    'string',       // uid del protagonista del evento
-  actorName:  'string',       // denormalizado (apodo al momento del evento)
-  matchId:    'string | null', // partido relacionado, si aplica
-  text:       'string',       // frase ya armada, lista para mostrar tal cual
-  createdAt:  'Timestamp',
 }
 
 /**

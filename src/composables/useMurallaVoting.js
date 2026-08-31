@@ -7,14 +7,7 @@
 // murallaUserId/murallaName.
 // ─────────────────────────────────────────────────────────────────────────────
 import { ref } from 'vue'
-import {
-  doc,
-  collection,
-  getDoc,
-  setDoc,
-  onSnapshot,
-  serverTimestamp,
-} from 'firebase/firestore'
+import { collection, doc, getDoc, getDocs, setDoc, serverTimestamp } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 import { db, functions } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
@@ -53,15 +46,20 @@ export function useMurallaVoting() {
     return snap.exists() ? snap.data().votedForUserId : null
   }
 
-  // Escucha en tiempo real todos los votos del partido — callback recibe
-  // { tally: Map<votedForUserId, count>, votes: Array<{voterId, votedForUserId}> }
-  function subscribeToVotes(matchId, callback) {
-    return onSnapshot(collection(db, 'matches', matchId, 'murallaVotes'), (snap) => {
-      const votes = snap.docs.map((d) => ({ voterId: d.id, votedForUserId: d.data().votedForUserId }))
-      const tally = new Map()
-      votes.forEach((v) => tally.set(v.votedForUserId, (tally.get(v.votedForUserId) ?? 0) + 1))
-      callback({ tally, votes })
+  // Recuento de votos del partido: Map<votedForUserId, cantidad>.
+  //
+  // Es un getDocs de una sola vez, NO un onSnapshot: mientras la votación está
+  // abierta las reglas ni siquiera dejan listar esta colección (voto secreto),
+  // así que esto solo se usa para pintar el podio de una votación ya cerrada
+  // — y un resultado cerrado no cambia más, no hay nada que escuchar en vivo.
+  async function fetchTally(matchId) {
+    const snap = await getDocs(collection(db, 'matches', matchId, 'murallaVotes'))
+    const tally = new Map()
+    snap.docs.forEach((d) => {
+      const target = d.data().votedForUserId
+      if (target) tally.set(target, (tally.get(target) ?? 0) + 1)
     })
+    return tally
   }
 
   // Cierra la votación: cuenta los votos server-side y fija la Muralla del partido.
@@ -85,7 +83,7 @@ export function useMurallaVoting() {
     error,
     castVote,
     getMyVote,
-    subscribeToVotes,
+    fetchTally,
     closeMurallaVoting,
   }
 }

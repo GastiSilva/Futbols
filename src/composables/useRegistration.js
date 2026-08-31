@@ -532,6 +532,17 @@ export function useRegistration() {
       assignments.forEach(({ registrationId, team }) => {
         batch.update(doc(db, 'matches', matchId, 'registrations', registrationId), { team })
       })
+      // Sello de "los equipos quedaron armados en este momento". Va en el MISMO
+      // batch que los `team` para que no exista el estado intermedio "equipos
+      // repartidos pero sin sellar". Lo consume runMatchHypeNotify: el aviso
+      // previo al partido sale unos minutos DESPUÉS de este sello, así el
+      // mensaje puede afirmar con quién jugás y contra quién de verdad. Cada
+      // reasignación lo pisa, y eso reinicia la espera — mientras se sigan
+      // moviendo jugadores, el aviso no sale.
+      batch.update(doc(db, 'matches', matchId), {
+        teamsAssignedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
       await batch.commit()
     } catch (err) {
       error.value = err.message

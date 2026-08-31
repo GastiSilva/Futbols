@@ -197,6 +197,32 @@
             </template>
 
             <template v-else-if="mundial.active">
+              <!-- La fase actual, dicha con todas las letras. Antes lo único
+                   que la distinguía era el paso pintado del stepper, que en un
+                   celular entra apretado y con el título cortado: se podía
+                   estar en dieciseisavos sin que la pantalla lo dijera en
+                   ningún lado. -->
+              <div class="row items-center justify-between no-wrap q-mb-sm">
+                <div>
+                  <div class="text-h6 text-weight-bold text-primary">
+                    {{ PHASE_LABELS[mundial.phase] }}
+                  </div>
+                  <div class="text-caption text-grey-6">
+                    <template v-if="mundialMatchesToTitle === 1">
+                      Ganás y sos campeón
+                    </template>
+                    <template v-else>
+                      {{ mundialMatchesToTitle }} partidos para el título
+                    </template>
+                  </div>
+                </div>
+                <img
+                  src="/icons/mundial-trophy.webp"
+                  alt=""
+                  class="mundial-trophy-icon mundial-trophy-icon--lg"
+                />
+              </div>
+
               <q-stepper
                 :model-value="mundial.phase"
                 flat
@@ -218,8 +244,14 @@
                 />
               </q-stepper>
 
-              <div v-if="mundial.phase === 'groups'" class="row q-gutter-xs items-center">
-                <span class="text-caption text-grey-6">Resultados:</span>
+              <!-- El camino recorrido, en CUALQUIER fase. Antes esto vivía
+                   detrás de un v-if de fase de grupos, así que al clasificar
+                   desaparecía y se perdía el rastro de cómo habías entrado. -->
+              <div
+                v-if="mundial.groupMatchResults?.length"
+                class="row q-gutter-xs items-center"
+              >
+                <span class="text-caption text-grey-6">Grupos:</span>
                 <q-chip
                   v-for="(r, i) in mundial.groupMatchResults"
                   :key="i"
@@ -229,9 +261,15 @@
                 >
                   {{ r }}
                 </q-chip>
-                <span v-if="mundial.groupMatchResults.length === 0" class="text-caption text-grey-6">
-                  esperando tu primer partido
+                <span v-if="mundial.phase !== 'groups'" class="text-caption text-grey-6">
+                  · clasificado
                 </span>
+              </div>
+              <div
+                v-else-if="mundial.phase === 'groups'"
+                class="text-caption text-grey-6"
+              >
+                Esperando tu primer partido
               </div>
 
               <div v-if="mundial.phase === 'final'" class="row items-center q-gutter-sm">
@@ -263,9 +301,6 @@
                 <span v-if="mundial.lastResult !== 'champion'" class="text-grey-7">
                   Quedaste eliminado {{ mundial.lastResult === 'eliminated_groups' ? 'en la fase de grupos' : 'en eliminación directa' }}.
                 </span>
-                <span v-if="mundial.titles > 0" class="text-caption text-grey-6 q-ml-xs">
-                  ({{ mundial.titles }} título{{ mundial.titles === 1 ? '' : 's' }} en total)
-                </span>
               </div>
               <q-btn
                 label="Activar Mundial nuevo"
@@ -276,6 +311,30 @@
                 :loading="mundialLoading"
                 @click="handleActivateMundial"
               />
+            </template>
+
+            <!-- Palmarés: fuera de los tres estados de arriba a propósito.
+                 Los títulos solo se veían en la pantalla de "mundial
+                 terminado", así que apenas activabas uno nuevo tu historial
+                 desaparecía de la vista — justo lo que da ganas de seguir
+                 jugando. -->
+            <template v-if="mundial.runsPlayed > 0">
+              <q-separator class="q-my-sm" />
+              <div class="row items-center q-gutter-xs">
+                <q-icon
+                  :name="mundial.titles > 0 ? 'military_tech' : 'history'"
+                  :color="mundial.titles > 0 ? 'amber-8' : 'grey-6'"
+                  size="18px"
+                />
+                <span class="text-caption text-grey-7">
+                  <b>{{ mundial.titles }}</b>
+                  título{{ mundial.titles === 1 ? '' : 's' }}
+                  ·
+                  <b>{{ mundial.runsPlayed }}</b>
+                  mundial{{ mundial.runsPlayed === 1 ? '' : 'es' }}
+                  jugado{{ mundial.runsPlayed === 1 ? '' : 's' }}
+                </span>
+              </div>
             </template>
           </q-card-section>
         </q-card>
@@ -547,6 +606,23 @@ const showCoinFlip = ref(false)
 function stepIconFor(phase) {
   return phase === 'groups' ? 'table_chart' : 'sports_soccer'
 }
+
+// Partidos que faltan para levantar la copa. En fase de grupos son los que
+// quedan del grupo (3 en total) más las cinco llaves; ya clasificado, es una
+// llave por fase que falte, contando la final. Sirve para que la pantalla diga
+// algo concreto en vez de solo pintar un paso del stepper.
+const MUNDIAL_GROUP_MATCHES = 3
+const mundialMatchesToTitle = computed(() => {
+  const m = mundial.value
+  if (!m?.active) return 0
+  const knockoutCount = PHASE_ORDER.length - PHASE_ORDER.indexOf('round_of_32')
+  if (m.phase === 'groups') {
+    const restantes = Math.max(0, MUNDIAL_GROUP_MATCHES - (m.groupMatchResults?.length ?? 0))
+    return restantes + knockoutCount
+  }
+  const idx = PHASE_ORDER.indexOf(m.phase)
+  return idx < 0 ? 0 : PHASE_ORDER.length - idx
+})
 
 async function refreshMundial() {
   mundial.value = await getMyMundial()

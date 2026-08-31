@@ -5,6 +5,26 @@
       MVP: {{ match.mvpName }}
     </q-chip>
     <div v-else class="text-caption text-grey-6">Empate en la votación — sin MVP</div>
+
+    <!-- Podio: los tres puestos más votados, no solo el ganador. Reparte el
+         reconocimiento de la MISMA votación entre más jugadores; el que salió
+         segundo por un voto hoy no se entera de nada. Los empates comparten
+         puesto (por eso puede haber dos 🥇 y ningún 🥈). -->
+    <q-list v-if="podium.length > 0" dense class="q-mt-sm">
+      <q-item v-for="p in podium" :key="p.userId" dense class="q-px-none">
+        <q-item-section avatar style="min-width: 34px">
+          <span class="text-h6">{{ medalFor(p.place) }}</span>
+        </q-item-section>
+        <q-item-section>
+          <q-item-label class="text-body2">{{ p.displayName }}</q-item-label>
+        </q-item-section>
+        <q-item-section side>
+          <span class="text-caption text-grey-6">
+            {{ p.votes }} {{ p.votes === 1 ? 'voto' : 'votos' }}
+          </span>
+        </q-item-section>
+      </q-item>
+    </q-list>
   </div>
 
   <!-- Votación de MVP abierta -->
@@ -18,6 +38,11 @@
       Ya votaste a <b>{{ candidateName(myMvpVote) }}</b> — podés cambiar tu voto.
     </div>
 
+    <!-- Voto secreto: la lista NO muestra cuántos votos lleva cada candidato.
+         Ver el parcial condiciona al que todavía no votó (se vota al que ya va
+         ganando, o se vota "por lástima" al que va último), y una votación que
+         se mira mientras transcurre deja de medir quién jugó mejor. El recuento
+         aparece recién al cerrar, y lo hace la CF, no el cliente. -->
     <q-list separator dense>
       <q-item
         v-for="c in mvpCandidates"
@@ -26,9 +51,6 @@
         @click="handleVote(c.userId)"
       >
         <q-item-section>{{ c.displayName }}</q-item-section>
-        <q-item-section side>
-          <span class="text-caption text-grey-6">{{ mvpTally.get(c.userId) ?? 0 }} votos</span>
-        </q-item-section>
         <q-item-section side v-if="myMvpVote === c.userId">
           <q-icon name="check_circle" color="amber-8" />
         </q-item-section>
@@ -61,10 +83,11 @@
 // menos cohesionada de todo el proyecto). El bloque se trae su propio estado:
 // la página madre solo le pasa el partido y quién puede cerrar la votación.
 // ─────────────────────────────────────────────────────────────────────────────
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { useMvpVoting } from 'src/composables/useMvpVoting'
 import { useAuthStore } from 'src/stores/auth.store'
+import { buildPodium, PODIUM_MEDALS } from 'src/utils/podium'
 
 const props = defineProps({
   match: { type: Object, required: true },
@@ -78,12 +101,14 @@ const props = defineProps({
 
 const $q = useQuasar()
 const authStore = useAuthStore()
-const { castVote, getMyVote, subscribeToVotes, closeMvpVoting } = useMvpVoting()
+const { castVote, getMyVote, fetchTally, closeMvpVoting } = useMvpVoting()
 
 const myMvpVote = ref(null)
-const mvpTally = ref(new Map())
 const votingLoading = ref(false)
-let stopVotesListener = null
+// Puestos crudos ({ userId, votes, place }); el nombre se resuelve aparte
+// porque playerStats puede llegar DESPUÉS que el podio (son dos cargas
+// distintas de la página madre) y si no quedaría clavado en "alguien".
+const rawPodium = ref([])
 
 // Nadie se vota a sí mismo (las reglas de Firestore también lo prohíben).
 const mvpCandidates = computed(() =>
@@ -94,21 +119,39 @@ function candidateName(userId) {
   return props.playerStats.find((p) => p.userId === userId)?.displayName ?? 'alguien'
 }
 
+const podium = computed(() =>
+  rawPodium.value.map((p) => ({ ...p, displayName: candidateName(p.userId) })),
+)
+
+function medalFor(place) {
+  return PODIUM_MEDALS[place - 1] ?? ''
+}
+
+// El podio se arma con los votos ya cerrados. Si la lectura falla (partido
+// viejo, permisos, sin votos) simplemente no se muestra: es decorativo, el
+// ganador oficial ya viene en el doc del partido.
+async function loadPodium() {
+  try {
+    rawPodium.value = buildPodium(await fetchTally(props.matchId))
+  } catch {
+    rawPodium.value = []
+  }
+}
+
 watch(
   () => [props.match?.status, props.match?.mvpVotingClosed],
   ([status, votingClosed]) => {
-    stopVotesListener?.()
-    stopVotesListener = null
-    if (status !== 'finished' || votingClosed) return
-
-    stopVotesListener = subscribeToVotes(props.matchId, ({ tally }) => {
-      mvpTally.value = tally
-    })
+    myMvpVote.value = null
+    rawPodium.value = []
+    if (status !== 'finished') return
+    if (votingClosed) {
+      loadPodium()
+      return
+    }
     getMyVote(props.matchId).then((v) => { myMvpVote.value = v })
   },
   { immediate: true },
 )
-onUnmounted(() => stopVotesListener?.())
 
 // Voto optimista: se pinta al instante y se revierte si el servidor lo rechaza.
 async function handleVote(votedForUserId) {
@@ -126,6 +169,7 @@ async function handleCloseVoting() {
   votingLoading.value = true
   try {
     const result = await closeMvpVoting(props.matchId)
+    await loadPodium()
     $q.notify({
       type: 'positive',
       icon: 'military_tech',

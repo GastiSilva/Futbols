@@ -25,11 +25,6 @@
          encontrar el estado de lo que se postuló. -->
     <MyApplicationsCard v-if="!authStore.isGuest" />
 
-    <!-- Qué pasó en tus grupos: quién se anotó, quién ganó una insignia. Da un
-         motivo de entrar aunque no tengas un partido para anotarte esta
-         semana. -->
-    <ActivityFeedCard v-if="!authStore.isGuest" />
-
     <!-- ── Recién llegado: sin grupos y sin partidos ──────────────────────── -->
     <!--
       Antes acá había un cartel que decía "no hay partidos, avisale al admin":
@@ -651,7 +646,6 @@ import { buildListText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import WelcomeHome from 'src/components/WelcomeHome.vue'
 import MyApplicationsCard from 'src/components/MyApplicationsCard.vue'
-import ActivityFeedCard from 'src/components/ActivityFeedCard.vue'
 
 const $q = useQuasar()
 const router = useRouter()

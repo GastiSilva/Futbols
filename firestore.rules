@@ -524,6 +524,23 @@ service cloud.firestore {
           (isAdmin() || isMemberOfMatchGroup(matchId))
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['venueReserved', 'updatedAt'])
+        )
+
+        ||
+
+        // Sellar el momento en que se armaron los equipos. Lo escribe
+        // assignTeams (useRegistration.js) en el MISMO batch que reparte los
+        // `team` de cada inscripto, y es lo que le da el pie al hype: el aviso
+        // sale recién unos minutos después de este sello, así la frase "hoy
+        // tenés enfrente a Fulano" se apoya en los equipos de verdad y no en
+        // el historial. Cada reasignación lo vuelve a estampar, y eso reinicia
+        // la espera — si el DT sigue moviendo gente, el aviso no sale a mitad
+        // del acomode. Mismo permiso que asignar `team`: acceso anticipado en
+        // el grupo del partido (OG/owner/admin) o admin global.
+        (
+          (isAdmin() || hasEarlyAccessInMatchGroup(matchId))
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['teamsAssignedAt', 'updatedAt'])
         );
 
       // Borrar un partido: admin global, quien lo creó, o quien tiene acceso
@@ -914,7 +931,20 @@ service cloud.firestore {
       // (closeMvpVoting, Cloud Function, la cierra fijando mvpVotingClosed).
       match /mvpVotes/{voterId} {
 
-        allow read: if isAuthenticated();
+        // Voto SECRETO mientras la votación está abierta: cada uno lee
+        // únicamente el suyo (para poder mostrarle "ya votaste a X"). Recién
+        // cuando se cierra queda todo legible, que es lo que alimenta el podio
+        // del partido. Si la lectura fuera libre desde el vamos, esconder el
+        // recuento en la UI sería puro maquillaje: cualquiera lo cuenta desde
+        // la consola y vuelve el efecto de arrastre que se quiso evitar.
+        allow get: if isAuthenticated()
+                   && (
+                     isOwner(voterId)
+                     || matchData(matchId).get('mvpVotingClosed', false) == true
+                   );
+
+        allow list: if isAuthenticated()
+                    && matchData(matchId).get('mvpVotingClosed', false) == true;
 
         allow create, update: if
           (isAdmin() || isMemberOfMatchGroup(matchId) || isGroupless(matchId))
@@ -938,7 +968,20 @@ service cloud.firestore {
       // Function (closeMurallaVoting) fijando murallaVotingClosed.
       match /murallaVotes/{voterId} {
 
-        allow read: if isAuthenticated();
+        // Voto SECRETO mientras la votación está abierta: cada uno lee
+        // únicamente el suyo (para poder mostrarle "ya votaste a X"). Recién
+        // cuando se cierra queda todo legible, que es lo que alimenta el podio
+        // del partido. Si la lectura fuera libre desde el vamos, esconder el
+        // recuento en la UI sería puro maquillaje: cualquiera lo cuenta desde
+        // la consola y vuelve el efecto de arrastre que se quiso evitar.
+        allow get: if isAuthenticated()
+                   && (
+                     isOwner(voterId)
+                     || matchData(matchId).get('murallaVotingClosed', false) == true
+                   );
+
+        allow list: if isAuthenticated()
+                    && matchData(matchId).get('murallaVotingClosed', false) == true;
 
         allow create, update: if
           (isAdmin() || isMemberOfMatchGroup(matchId) || isGroupless(matchId))
@@ -1104,28 +1147,6 @@ service cloud.firestore {
       // Nunca se borran, ni por un admin: es el registro de la denuncia.
       // Se dan de baja cambiando `status`, igual que joinRequests.
       allow delete: if false;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // EVENTS (feed de actividad del grupo)
-    // ─────────────────────────────────────────────────────────────────────────
-    // Timeline liviano: alguien se anotó, ganó una insignia, etc. Igual límite
-    // estructural que `matches`: `request.query` solo expone limit/offset/
-    // orderBy, nunca las cláusulas `where` — no hay forma de verificar en
-    // `list` que el `groupId` pedido sea uno del que el caller es miembro. El
-    // aislamiento real lo da `get` (si lee el doc puntual, sí se verifica
-    // membresía) y que el cliente pida solo el groupId que le corresponde;
-    // `list` exige `limit` explícito, mismo criterio que matches (línea 392).
-    // Nadie escribe desde el cliente: solo triggers puntuales vía admin SDK
-    // (onRegistrationCreated, runMonthlyBadges).
-    match /events/{eventId} {
-
-      allow get: if isAuthenticated()
-                 && isMemberOfGroup(resource.data.groupId, request.auth.uid);
-
-      allow list: if isAuthenticated() && request.query.limit <= 50;
-
-      allow write: if false;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
