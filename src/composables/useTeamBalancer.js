@@ -10,7 +10,14 @@
 // exacto (DP sobre subconjuntos sería exponencial e inviable) — alcanza con
 // una partición greedy + varias aleatorias, quedándose con la de menor costo.
 // ─────────────────────────────────────────────────────────────────────────────
-import { getPosition } from 'src/utils/positions'
+import { getPosition, PITCH_POSITIONS } from 'src/utils/positions'
+
+// Posiciones que se le pueden sortear a un invitado. El arco queda afuera a
+// propósito: ser arquero es un rol declarado, no algo que se rifa — un
+// arquero imaginario le haría creer al balance posicional que ese lado ya
+// está cubierto, y el equipo terminaría armado alrededor de un puesto que
+// nadie va a ocupar.
+const GUEST_POSITION_POOL = PITCH_POSITIONS.filter((p) => p.zone !== 'arco')
 
 const W_STRENGTH = 10
 const W_POSITION = 3
@@ -165,6 +172,29 @@ export function suggestTeams(players, iterations = DEFAULT_ITERATIONS) {
   return best
 }
 
+/**
+ * Posición sorteada para un invitado (alguien sin cuenta, anotado por otro).
+ *
+ * Un invitado no tiene stats ni posiciones favoritas. La fuerza ya le queda
+ * neutra sola (`playerStrength` devuelve 0.5 cuando `matchesPlayed === 0`),
+ * pero sin zona quedaba fuera del balance posicional: el algoritmo lo
+ * repartía a ciegas y podía juntar a los cuatro invitados de un lado. Con una
+ * zona sorteada entra al reparto como lo que es — alguien que juega donde
+ * haga falta.
+ *
+ * ⚠️ El sorteo se hace UNA sola vez, al armar la lista de jugadores, nunca
+ * adentro de la función de costo: el costo se evalúa cientos de veces por
+ * sugerencia y una zona que cambie en cada llamada convertiría la comparación
+ * entre particiones en ruido puro. Cada vez que se aprieta "Sugerir equipos"
+ * se vuelve a sortear, así que re-sugerir mueve de verdad a los invitados.
+ *
+ * @returns {string[]} un único código de posición, listo para `preferredPositions`
+ */
+export function randomGuestPositions() {
+  const pick = GUEST_POSITION_POOL[Math.floor(Math.random() * GUEST_POSITION_POOL.length)]
+  return [pick.code]
+}
+
 export function useTeamBalancer() {
-  return { suggestTeams }
+  return { suggestTeams, randomGuestPositions }
 }

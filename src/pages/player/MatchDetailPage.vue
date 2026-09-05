@@ -484,6 +484,18 @@
                 @click="handleSuggestTeams"
               />
               <q-btn
+                v-if="!teamPreview"
+                flat
+                dense
+                no-caps
+                color="primary"
+                icon="content_paste"
+                label="Pegar equipos"
+                @click="openPasteTeams"
+              >
+                <q-tooltip>Cargar los equipos que ya armaron por WhatsApp</q-tooltip>
+              </q-btn>
+              <q-btn
                 v-if="teamPreview"
                 unelevated
                 dense
@@ -537,6 +549,9 @@
                     @click="goToProfile(p)"
                   >
                     <span class="ellipsis">{{ p.displayName }}</span>
+                    <q-icon v-if="!p.userId" name="person_outline" size="14px" class="q-ml-xs">
+                      <q-tooltip>Invitado — se le sorteó la posición</q-tooltip>
+                    </q-icon>
                   </q-chip>
                 </div>
                 <div class="col-12 col-sm-6">
@@ -554,9 +569,37 @@
                     @click="goToProfile(p)"
                   >
                     <span class="ellipsis">{{ p.displayName }}</span>
+                    <q-icon v-if="!p.userId" name="person_outline" size="14px" class="q-ml-xs">
+                      <q-tooltip>Invitado — se le sorteó la posición</q-tooltip>
+                    </q-icon>
                   </q-chip>
                 </div>
               </div>
+
+              <!-- Quedan sin equipo los que el texto pegado no nombró. Se
+                   muestran igual: esconderlos haría creer que la formación
+                   está completa cuando falta gente por acomodar. -->
+              <div v-if="previewNoTeam.length > 0" class="q-mt-sm">
+                <div class="text-caption text-weight-bold text-orange-8 q-mb-xs">
+                  Sin equipo ({{ previewNoTeam.length }})
+                </div>
+                <q-chip
+                  v-for="p in previewNoTeam"
+                  :key="p.registrationId"
+                  dense
+                  removable
+                  clickable
+                  color="orange-2"
+                  text-color="orange-9"
+                  icon="swap_horiz"
+                  class="preview-chip"
+                  @remove="togglePreviewTeam(p.registrationId)"
+                  @click="goToProfile(p)"
+                >
+                  <span class="ellipsis">{{ p.displayName }}</span>
+                </q-chip>
+              </div>
+
               <div class="text-caption text-grey-5 q-mt-xs">
                 Tocá la ✕ de un jugador para pasarlo al otro equipo.
               </div>
@@ -740,6 +783,46 @@
       </q-card>
     </q-dialog>
 
+    <!-- Los equipos ya armados en el chat del grupo, pegados tal cual. Lo que
+         se carga acá es una PROPUESTA: se revisa con los chips y recién ahí
+         se acepta. -->
+    <q-dialog v-model="showPasteTeams">
+      <q-card style="width: 440px; max-width: 92vw">
+        <q-card-section class="row items-center q-gutter-sm q-pb-none">
+          <q-icon name="content_paste" color="green-8" size="24px" />
+          <div class="text-subtitle1 text-weight-bold">Pegar equipos</div>
+        </q-card-section>
+        <q-card-section class="text-body2 text-grey-8">
+          Pegá el mensaje donde armaron los equipos. Poné
+          <strong>Equipo A:</strong> y <strong>Equipo B:</strong> antes de cada tanda
+          (o separalas con un renglón en blanco). Los nombres se emparejan con
+          los anotados, así que alcanza con el nombre de pila.
+        </q-card-section>
+        <q-card-section class="q-pt-none">
+          <q-input
+            v-model="pastedTeamsText"
+            type="textarea"
+            outlined
+            autogrow
+            input-style="min-height: 150px"
+            :placeholder="PASTE_PLACEHOLDER"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn v-close-popup flat no-caps color="grey-7" label="Cancelar" />
+          <q-btn
+            unelevated
+            no-caps
+            color="primary"
+            class="pill-btn"
+            label="Cargar equipos"
+            :disable="!pastedTeamsText.trim()"
+            @click="handleParsePastedTeams"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Chat 1-a-1 con quien se postuló -->
     <ApplicationChat
       v-if="chatWith"
@@ -769,6 +852,7 @@ import { useAuth } from 'src/composables/useAuth'
 import { useAuthStore } from 'src/stores/auth.store'
 import { useMatchInvite, setPendingInvite } from 'src/composables/useMatchInvite'
 import { buildListText, shareListText } from 'src/utils/shareList'
+import { parseTeamsText } from 'src/utils/parseTeamsText'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import MatchMvpVoting from 'src/components/MatchMvpVoting.vue'
 import MatchMurallaVoting from 'src/components/MatchMurallaVoting.vue'
@@ -802,7 +886,7 @@ const { getMyRole } = useGroups()
 const { fetchPlayerStats } = usePlayerStats()
 const { fetchForecast } = useWeather()
 const { getVenue } = useVenues()
-const { suggestTeams } = useTeamBalancer()
+const { suggestTeams, randomGuestPositions } = useTeamBalancer()
 const { joinMatchGroup } = useMatchInvite()
 const { logout } = useAuth()
 const authStore = useAuthStore()
@@ -946,23 +1030,49 @@ const startersNoTeam = computed(() => starters.value.filter((r) => r.team !== 'A
 
 // Propuesta pendiente de aceptar/descartar — null cuando no hay preview activo.
 const teamPreview = ref(null)
+// "Sugerir equipos" reparte a todos, pero un listado pegado puede no nombrar
+// a alguien: esos quedan acá para que se vean y se puedan acomodar.
+const previewNoTeam = computed(() =>
+  (teamPreview.value ?? []).filter((p) => p.team !== 'A' && p.team !== 'B'),
+)
 const suggestingTeams = ref(false)
 const acceptingTeams = ref(false)
 
-// Lee stats/preferredPositions/chemistry de cada titular (con cuenta) y arma
-// la propuesta con useTeamBalancer — misma lógica que antes vivía en
-// PostMatchPage, pero acá se aplica ANTES de jugar, no después.
+// Lee stats/preferredPositions/chemistry de cada titular y arma la propuesta
+// con useTeamBalancer — misma lógica que antes vivía en PostMatchPage, pero
+// acá se aplica ANTES de jugar, no después.
+//
+// Los INVITADOS (sin cuenta) entran al reparto igual que todos: antes se los
+// filtraba y quedaban afuera de los equipos, así que quien organiza tenía que
+// acomodarlos a mano justo cuando más apurado está. No tienen historial ni
+// posiciones, así que van con fuerza neutra y una posición sorteada — juegan
+// donde caiga, que es exactamente lo que pasa en la cancha.
 async function handleSuggestTeams() {
-  const withAccount = starters.value.filter((r) => r.userId)
-  if (withAccount.length < 2) {
-    $q.notify({ type: 'warning', message: 'Hacen falta al menos 2 titulares con cuenta para sugerir equipos.' })
+  const candidates = starters.value
+  if (candidates.length < 2) {
+    $q.notify({ type: 'warning', message: 'Hacen falta al menos 2 titulares para sugerir equipos.' })
     return
   }
 
   suggestingTeams.value = true
   try {
     const players = await Promise.all(
-      withAccount.map(async (reg) => {
+      candidates.map(async (reg) => {
+        // Invitado: no hay `users/{uid}` que leer. `userId` queda en null a
+        // propósito —así el chip no navega a un perfil que no existe y la
+        // química de los demás no lo encuentra nunca, que es lo correcto: no
+        // tiene historial con nadie.
+        if (!reg.userId) {
+          return {
+            userId: null,
+            registrationId: reg.id,
+            displayName: reg.displayName,
+            isGuest: true,
+            stats: {},
+            preferredPositions: randomGuestPositions(),
+            chemistry: new Map(),
+          }
+        }
         const [userSnap, chemSnap] = await Promise.all([
           getDoc(doc(db, 'users', reg.userId)),
           getDocs(collection(db, 'users', reg.userId, 'chemistry')),
@@ -972,6 +1082,7 @@ async function handleSuggestTeams() {
           userId: reg.userId,
           registrationId: reg.id,
           displayName: reg.displayName,
+          isGuest: false,
           stats: userData.stats ?? {},
           preferredPositions: userData.preferredPositions ?? [],
           chemistry: new Map(chemSnap.docs.map((d) => [d.id, d.data()])),
@@ -989,6 +1100,66 @@ async function handleSuggestTeams() {
   } finally {
     suggestingTeams.value = false
   }
+}
+
+// ── Pegar equipos armados por fuera (WhatsApp) ───────────────────────────────
+// Muchos grupos arman A y B en el chat y recién después abren la app. Sin
+// esta puerta había que rearmar la formación chip por chip, y lo más probable
+// era que nadie lo hiciera: entonces el aviso previo al partido, las
+// estadísticas por equipo y el resultado quedaban con equipos que no fueron
+// los que jugaron.
+// El texto pegado NO se guarda directo: cae en la MISMA propuesta editable
+// que usa "Sugerir equipos" (`teamPreview`), así se ve a quién emparejó con
+// quién antes de aceptar. Un nombre mal escrito en el chat no puede mover a
+// nadie sin que se vea primero.
+const showPasteTeams = ref(false)
+const pastedTeamsText = ref('')
+
+const PASTE_PLACEHOLDER = `Equipo A:
+- Juan
+- Pedro
+
+Equipo B:
+- Marcos
+- Lucía`
+
+function openPasteTeams() {
+  pastedTeamsText.value = ''
+  showPasteTeams.value = true
+}
+
+function handleParsePastedTeams() {
+  const result = parseTeamsText(pastedTeamsText.value, starters.value)
+
+  if (result.assignedCount === 0) {
+    $q.notify({
+      type: 'warning',
+      timeout: 6000,
+      message: result.sawHeaders
+        ? 'No reconocí a ninguno de esos nombres entre los titulares.'
+        : 'No encontré los equipos. Poné "Equipo A:" y "Equipo B:" antes de cada tanda (o separalas con un renglón en blanco).',
+    })
+    return
+  }
+
+  teamPreview.value = result.assignments
+  showPasteTeams.value = false
+
+  // Lo que la app no pudo resolver se dice de frente en vez de dejarlo pasar:
+  // el que pegó el texto es el único que sabe si "Juan" era Juan Cruz o Juan
+  // Pérez, y todavía está a tiempo de corregirlo con los chips.
+  const avisos = []
+  if (result.unmatched.length) avisos.push(`No están en la lista: ${result.unmatched.join(', ')}`)
+  if (result.ambiguous.length) avisos.push(`Nombre repetido, revisá: ${result.ambiguous.join(', ')}`)
+  if (result.missing.length) avisos.push(`Sin equipo: ${result.missing.join(', ')}`)
+
+  $q.notify({
+    type: avisos.length ? 'warning' : 'positive',
+    icon: 'groups',
+    timeout: avisos.length ? 8000 : 3500,
+    message: `${result.assignedCount} jugadores asignados.`,
+    caption: avisos.join(' · ') || undefined,
+  })
 }
 
 function togglePreviewTeam(registrationId) {
