@@ -281,6 +281,13 @@ const MatchSchema = {
   hypeMsgSent:           'boolean', // ya se mandó el hype pre-partido (4-6hs antes)
   postMatchReminderSent: 'boolean', // ya se recordó cargar stats/votar (3hs después)
 
+  // Reenvío MANUAL de "la lista sigue abierta" (botón de OG/owner/admin/
+  // creador, resendMatchListNotification). Rate limit por partido: cooldown
+  // + tope diario — ver el comentario junto a esa callable en functions/index.js.
+  manualReminderLastAt: 'Timestamp | null',
+  manualReminderDay:    'string | null', // 'YYYY-MM-DD' en huso AR — día del contador
+  manualReminderCount:  'number',        // reenvíos usados en manualReminderDay
+
   createdBy:      'string',        // uid del creador — puede anotarse A SÍ MISMO
                                    // desde el momento cero (sin esperar openAt)
 

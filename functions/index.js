@@ -223,6 +223,114 @@ exports.scheduleMatchReminderNotification = onCall(
   },
 )
 
+// ── 3b. Callable: reenviar manualmente el aviso de "lista abierta" ───────────
+// Los avisos automáticos (match_open, match_reminder) salen una sola vez. En
+// grupos donde la lista queda abierta toda la semana, esa única notificación
+// se pierde en el chat y nadie se acuerda de anotarse — de ahí este botón,
+// pensado para el organizador que quiere "revivir" la lista a mitad de
+// semana. Manda a los miembros del grupo que TODAVÍA no están anotados
+// (mismo patrón que match_reminder/low_signup_alert).
+//
+// Rate limit "chill": cooldown entre envíos + tope diario, los dos por
+// PARTIDO (no por usuario ni global) y guardados en el propio doc del
+// partido — así no hace falta una colección aparte ni un índice nuevo. Todo
+// el chequeo y el conteo vive en UNA transacción para que dos taps casi
+// simultáneos (doble click, dos admins a la vez) no se cuelen los dos.
+const MANUAL_REMINDER_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 3hs entre reenvíos
+const MANUAL_REMINDER_MAX_PER_DAY = 2 // tope por día de calendario (AR)
+
+// Fecha 'YYYY-MM-DD' en huso de Argentina — define cuándo "empieza de nuevo"
+// el contador diario, consistente con el resto de la app (horarios en AR).
+function argDateKey(date) {
+  return date.toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' })
+}
+
+// Mismo criterio de "acceso anticipado" que memberHasEarlyAccess en las
+// reglas de Firestore (OG u owner/admin del grupo), más el creador del
+// partido — así el que lo armó puede revivir su propia lista aunque no sea
+// OG. A propósito NO reusa assertCanManageMatchNotifications: ese helper
+// solo deja pasar a owner/admin, y acá se pidió explícitamente que los OG
+// también puedan tocar el botón.
+async function assertCanResendMatchListNotification(auth, match, tx) {
+  if (auth?.token?.admin === true) return
+  const uid = auth?.uid
+  if (!uid) throw new HttpsError('permission-denied', 'No tenés permiso para reenviar este aviso.')
+  if (match.createdBy === uid) return
+
+  const groupId = match.groupId
+  if (groupId) {
+    const memberRef = admin.firestore()
+      .collection('groups').doc(groupId).collection('members').doc(uid)
+    const memberSnap = await tx.get(memberRef)
+    if (memberSnap.exists) {
+      const m = memberSnap.data()
+      if (m.og === true || ['owner', 'admin'].includes(m.role)) return
+    }
+  }
+  throw new HttpsError('permission-denied', 'No tenés permiso para reenviar este aviso.')
+}
+
+exports.resendMatchListNotification = onCall(
+  { region: LOCATION, invoker: 'public' },
+  async (request) => {
+    const { matchId } = request.data
+    if (!matchId) throw new HttpsError('invalid-argument', 'Falta matchId.')
+
+    const db = admin.firestore()
+    const matchRef = db.collection('matches').doc(matchId)
+
+    const { groupId, matchTitle } = await db.runTransaction(async (tx) => {
+      const matchSnap = await tx.get(matchRef)
+      if (!matchSnap.exists) throw new HttpsError('not-found', 'El partido no existe.')
+      const match = matchSnap.data()
+
+      await assertCanResendMatchListNotification(request.auth, match, tx)
+
+      if (!match.groupId) {
+        throw new HttpsError('failed-precondition', 'Este partido no tiene grupo — no hay a quién reenviarle el aviso.')
+      }
+      if (match.status !== 'open') {
+        throw new HttpsError('failed-precondition', 'Solo se puede reenviar mientras la lista está abierta.')
+      }
+
+      const now = new Date()
+      const todayKey = argDateKey(now)
+      const lastSentMs = match.manualReminderLastAt ? match.manualReminderLastAt.toMillis() : 0
+      const elapsedMs = now.getTime() - lastSentMs
+
+      if (elapsedMs < MANUAL_REMINDER_COOLDOWN_MS) {
+        const waitMin = Math.ceil((MANUAL_REMINDER_COOLDOWN_MS - elapsedMs) / 60000)
+        throw new HttpsError('resource-exhausted', `Esperá ${waitMin} min antes de reenviar de nuevo.`)
+      }
+
+      const countToday = match.manualReminderDay === todayKey ? (match.manualReminderCount ?? 0) : 0
+      if (countToday >= MANUAL_REMINDER_MAX_PER_DAY) {
+        throw new HttpsError('resource-exhausted', 'Ya usaste los reenvíos de hoy para este partido — probá mañana.')
+      }
+
+      tx.update(matchRef, {
+        manualReminderLastAt: admin.firestore.Timestamp.fromDate(now),
+        manualReminderDay: todayKey,
+        manualReminderCount: countToday + 1,
+      })
+
+      return { groupId: match.groupId, matchTitle: match.title ?? 'el partido' }
+    })
+
+    const alreadyRegistered = await getRegisteredUserIds(matchId)
+    await sendFCMToGroupMembers(
+      groupId,
+      '📋 ¡La lista sigue abierta!',
+      `Todavía hay lugar en "${matchTitle}". ¡Anotate antes de que se llene!`,
+      { matchId, type: 'match_list_reminder' },
+      alreadyRegistered,
+    )
+
+    logger.info(`Reenvío manual de lista: ${matchId} (grupo ${groupId})`)
+    return { success: true }
+  },
+)
+
 // ── Tarea: enviar recordatorios ──────────────────────────────────────────────
 async function runMatchReminderQueue() {
   {

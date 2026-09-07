@@ -19,7 +19,8 @@ import {
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore'
-import { db } from 'src/services/firebase'
+import { httpsCallable } from 'firebase/functions'
+import { db, functions } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
 
 // Tope de resultados de cualquier query a `matches`. Las reglas EXIGEN un
@@ -28,6 +29,32 @@ import { useAuthStore } from 'src/stores/auth.store'
 // entera. Toda query nueva a `matches` tiene que llevarlo o Firestore la
 // rechaza con permission-denied.
 export const MATCH_QUERY_LIMIT = 200
+
+// ── Reenvío manual de "la lista sigue abierta" ────────────────────────────
+// ⚠️ Estas dos constantes están DUPLICADAS en functions/index.js (junto a la
+// callable resendMatchListNotification) y TIENEN que coincidir: el límite
+// real lo aplica el backend en una transacción, esto acá es solo para que el
+// botón muestre el estado sin depender de una llamada de red que además
+// consumiría el rate limit calculándolo.
+export const MANUAL_REMINDER_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 3hs entre reenvíos
+export const MANUAL_REMINDER_MAX_PER_DAY = 2 // tope por día de calendario (AR)
+
+// Estado del botón a partir de los campos que ya vienen en el propio doc del
+// partido (manualReminderLastAt/Day/Count) — no hace falta ninguna lectura
+// extra, se deriva de lo que subscribeToMatch ya trae en tiempo real.
+export function manualReminderStatus(match) {
+  if (!match) return { canSend: false, waitMs: 0, remainingToday: MANUAL_REMINDER_MAX_PER_DAY }
+
+  const now = Date.now()
+  const lastSentMs = match.manualReminderLastAt?.toMillis?.() ?? 0
+  const waitMs = Math.max(0, MANUAL_REMINDER_COOLDOWN_MS - (now - lastSentMs))
+
+  const todayKey = new Date(now).toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' })
+  const usedToday = match.manualReminderDay === todayKey ? (match.manualReminderCount ?? 0) : 0
+  const remainingToday = Math.max(0, MANUAL_REMINDER_MAX_PER_DAY - usedToday)
+
+  return { canSend: waitMs === 0 && remainingToday > 0, waitMs, remainingToday }
+}
 
 // ── Formatos de partido → cupos máximos ───────────────────────────────────────
 // 'libre' no tiene tope: maxPlayers queda null, cualquiera se anota siempre
@@ -655,6 +682,16 @@ export function useMatch() {
     }
   }
 
+  // ── Reenviar manualmente el aviso de "lista abierta" ──────────────────────
+  // El chequeo de permiso y el rate limit son responsabilidad del backend
+  // (transacción sobre el propio doc del partido) — acá solo se invoca la
+  // callable y se deja pasar el error tal cual, con su `message` en
+  // castellano ya armado del lado del servidor.
+  async function resendListNotification(matchId) {
+    const call = httpsCallable(functions, 'resendMatchListNotification')
+    await call({ matchId })
+  }
+
   return {
     matches,
     publicMatches,
@@ -676,6 +713,7 @@ export function useMatch() {
     finishMatch,
     toggleVenueReserved,
     setMatchPublic,
+    resendListNotification,
     stopListening,
     stopListeningPublic,
     stopListeningFinished,

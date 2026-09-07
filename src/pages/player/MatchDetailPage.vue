@@ -456,16 +456,31 @@
             <template v-if="match.maxPlayers == null">Anotados ({{ starters.length }})</template>
             <template v-else>Anotados ({{ starters.length }}/{{ match.maxPlayers }})</template>
           </div>
-          <q-btn
-            flat
-            dense
-            round
-            icon="share"
-            color="green-9"
-            @click="shareList"
-          >
-            <q-tooltip>Compartir lista</q-tooltip>
-          </q-btn>
+          <div class="row items-center q-gutter-xs">
+            <q-btn
+              v-if="canResendReminder"
+              flat
+              dense
+              round
+              icon="campaign"
+              :color="reminderStatus.canSend ? 'orange-9' : 'grey-5'"
+              :loading="resendingReminder"
+              :disable="!reminderStatus.canSend"
+              @click="handleResendReminder"
+            >
+              <q-tooltip>{{ reminderTooltip }}</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              icon="share"
+              color="green-9"
+              @click="shareList"
+            >
+              <q-tooltip>Compartir lista</q-tooltip>
+            </q-btn>
+          </div>
         </q-card-section>
 
         <!-- Armado de equipos (OG/admin, desde que la lista está cerrada) -->
@@ -840,7 +855,7 @@
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { date, useQuasar } from 'quasar'
-import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
+import { useMatch, getEffectiveStatus, manualReminderStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { usePlayerStats } from 'src/composables/usePlayerStats'
 import { useRegistration } from 'src/composables/useRegistration'
@@ -871,7 +886,7 @@ function goToProfile(reg) {
   if (authStore.isGuest) return
   router.push({ name: 'profile-view', params: { uid: reg.userId } })
 }
-const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved, finishMatch, setMatchPublic } = useMatch()
+const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved, finishMatch, setMatchPublic, resendListNotification } = useMatch()
 
 const {
   applications,
@@ -1005,6 +1020,47 @@ const myEntry = computed(() =>
     ? (orderedRegs.value.find((r) => r.id === userRegistration.value.id) ?? null)
     : null,
 )
+
+// ── Reenviar manualmente "la lista sigue abierta" ─────────────────────────
+// Pensado para grupos donde la lista queda abierta toda la semana: el aviso
+// automático de apertura sale una sola vez y se pierde en el chat. Mismo
+// criterio de acceso que "acceso anticipado" (OG u owner/admin del grupo),
+// más el creador del partido, aunque no sea OG — el backend es quien de
+// verdad lo exige (assertCanResendMatchListNotification en
+// functions/index.js); esto solo evita mostrar el botón a quien igual
+// rebotaría.
+const canResendReminder = computed(() => {
+  if (!match.value) return false
+  if (!match.value.groupId) return false
+  if (match.value.status !== 'open') return false
+  if (authStore.isAdmin) return true
+  if (match.value.createdBy === authStore.user?.uid) return true
+  return authStore.isOgInGroup(match.value.groupId)
+})
+// Se deriva de los campos que ya trae el doc del partido (sin lectura
+// extra) — ver manualReminderStatus en useMatch.js para el porqué del
+// cooldown + tope diario duplicados con el backend.
+const reminderStatus = computed(() => manualReminderStatus(match.value))
+const reminderTooltip = computed(() => {
+  const s = reminderStatus.value
+  if (s.canSend) return `Reenviar aviso de lista abierta (quedan ${s.remainingToday} hoy)`
+  if (s.remainingToday === 0) return 'Ya usaste los reenvíos de hoy para este partido'
+  const waitMin = Math.ceil(s.waitMs / 60000)
+  return `Podés reenviar en ${waitMin} min`
+})
+const resendingReminder = ref(false)
+
+async function handleResendReminder() {
+  resendingReminder.value = true
+  try {
+    await resendListNotification(route.params.id)
+    $q.notify({ type: 'positive', icon: 'campaign', message: 'Aviso reenviado al grupo.' })
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    resendingReminder.value = false
+  }
+}
 
 // ── Armado de equipos (antes de jugar) ───────────────────────────────────────
 // Solo quien tiene acceso anticipado en el grupo (OG/owner/admin) o admin
