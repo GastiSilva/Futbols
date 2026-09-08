@@ -28,7 +28,7 @@
 
     <div class="q-gutter-sm">
       <q-card
-        v-for="option in options"
+        v-for="option in visibleOptions"
         :key="option.label"
         flat
         bordered
@@ -50,7 +50,9 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { PUBLIC_MATCHES_ENABLED } from 'src/utils/features'
 
 const router = useRouter()
 
@@ -81,8 +83,15 @@ const options = [
     icon: 'travel_explore',
     color: 'deep-orange-7',
     to: { name: 'public-matches' },
+    needsPublicMatches: true,
   },
 ]
+
+// "Partidos abiertos" puede estar apagado (ver src/utils/features.js): si lo
+// está, no se ofrece la tarjeta que lleva a una pantalla que no existe.
+const visibleOptions = computed(() =>
+  options.filter((o) => !o.needsPublicMatches || PUBLIC_MATCHES_ENABLED),
+)
 
 function go(option) {
   router.push(option.to)

@@ -88,6 +88,7 @@
                  y se le ofrece crear la cuenta. -->
             <template v-if="!isGuest">
               <q-item
+                v-if="publicMatchesEnabled"
                 clickable
                 v-ripple
                 class="drawer-item"
@@ -254,6 +255,7 @@ import { useAuth } from 'src/composables/useAuth'
 import { setPendingInvite } from 'src/composables/useMatchInvite'
 import { useAuthStore } from 'src/stores/auth.store'
 import { ROLE_LABELS, ROLE_COLORS } from 'src/stores/auth.store'
+import { PUBLIC_MATCHES_ENABLED } from 'src/utils/features'
 import NotificationBell from 'src/components/NotificationBell.vue'
 
 const router = useRouter()
@@ -262,6 +264,7 @@ const { user, isAdmin, logout } = useAuth()
 const authStore = useAuthStore()
 
 const isGuest = computed(() => authStore.isGuest)
+const publicMatchesEnabled = PUBLIC_MATCHES_ENABLED
 
 const roleBadgeLabel = computed(() =>
   isGuest.value ? 'Invitado' : (ROLE_LABELS[authStore.role] ?? 'Jugador'),

@@ -1870,11 +1870,20 @@ exports.recalcAllStats = onCall(
   },
 )
 
+// "Ana, Beto y Caco" — para el aviso cuando entra más de un suplente de una.
+function formatNameList(names) {
+  if (!names || names.length === 0) return 'un suplente'
+  if (names.length === 1) return names[0]
+  return `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`
+}
+
 // ── 11. Trigger: al borrarse una inscripción, re-numerar y promover suplentes ─
 // Cuando alguien se baja (o lo sacan) de un partido:
 //  1. Re-numera las posiciones de todas las inscripciones (1..N, sin huecos).
 //  2. Recalcula isOnWaitlist (position > maxPlayers).
-//  3. Si un suplente pasó a titular, le manda una notificación FCM.
+//  3. Si un suplente pasó a titular, le manda una notificación FCM personal.
+//  4. Avisa al grupo que alguien se bajó (siempre; el texto cambia según si
+//     entró un suplente, quedó lugar, o no).
 exports.onRegistrationDeleted = onDocumentDeleted(
   { region: LOCATION, document: 'matches/{matchId}/registrations/{regId}' },
   async (event) => {
@@ -1912,6 +1921,7 @@ exports.onRegistrationDeleted = onDocumentDeleted(
         )
 
         const promotedUsers = []
+        const promotedNames = []
         const registeredUserIds = []
         let pos = 0
         regsSnap.docs.forEach((docSnap) => {
@@ -1927,6 +1937,7 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           // Estaba en lista de espera y ahora entra como titular
           if (reg.isOnWaitlist === true && !isOnWaitlist && reg.userId) {
             promotedUsers.push(reg.userId)
+            promotedNames.push(reg.displayName || reg.guestName || 'un suplente')
           }
         })
 
@@ -1950,53 +1961,83 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           matchTitle: match.title ?? 'un partido',
           groupId: match.groupId ?? null,
           promoted: promotedUsers,
+          promotedNames,
           createdBy: match.createdBy ?? null,
           status: match.status ?? null,
-          // ¿Quedó un lugar libre de verdad? (partido aún admite anotaciones y
-          // cupo sin llenar, es decir sin suplentes que tapen el hueco).
-          // OJO: no exigir status === 'open' a secas — el scheduler que pasa
-          // 'scheduled' → 'open' corre cada 1 min y puede tener lag; el mismo
-          // criterio que getEffectiveStatus() en el cliente (useMatch.js) es
-          // "no está cerrado ni terminado", no el string exacto 'open'.
-          // En formato libre (maxPlayers null) nunca hay "lugar que se liberó":
-          // no hay cupo que llenar, así que no corresponde el broadcast masivo.
-          spotOpen:
-            match.status !== 'closed' &&
-            match.status !== 'finished' &&
-            maxPlayers != null &&
-            regsSnap.size < maxPlayers,
+          // ¿Quedó un lugar libre de verdad? (cupo con límite y sin llenar).
+          // Solo cambia el TEXTO del aviso ("¡hay lugar!" vs "se bajó X"); el
+          // aviso al grupo sale igual haya o no lugar. En formato libre
+          // (maxPlayers null) nunca se afirma "hay lugar": no hay cupo.
+          spotOpen: maxPlayers != null && regsSnap.size < maxPlayers,
           registeredUserIds,
         }
       })
 
       if (!info) return
-      const { matchTitle, groupId, promoted, createdBy, status, spotOpen, registeredUserIds } = info
+      const { matchTitle, groupId, promoted, promotedNames, createdBy, status, spotOpen, registeredUserIds } = info
 
-      // 1) Suplentes que ascendieron a titular: aviso personal
+      // 1) Cada suplente que pasó a titular: aviso PERSONAL de que ya está adentro.
       for (const userId of promoted) {
         await sendFCMToUser(
           userId,
           '🎉 ¡Entraste a la lista!',
-          `Se liberó un lugar en "${matchTitle}" y pasaste de suplente a titular.`,
+          `Se bajó ${leaverName} de "${matchTitle}" y pasaste de suplente a titular.`,
           { matchId, type: 'waitlist_promoted' },
         )
         logger.info(`Suplente promovido y notificado: ${userId} (partido ${matchId})`)
       }
 
-      if (promoted.length === 0 && spotOpen) {
-        // 2) No había suplentes y quedó lugar → avisar (solo al grupo del
-        // partido si tiene uno; a todos si es un partido global sin grupo)
-        const title = '⚽ ¡Se liberó un lugar!'
-        const body = `Se bajó ${leaverName} de "${matchTitle}". ¡Hay lugar, anotáte!`
-        if (groupId) {
-          await sendFCMToGroupMembers(groupId, title, body, { matchId, type: 'spot_available' }, registeredUserIds)
+      // 2) Aviso al grupo: SIEMPRE que alguien se baja, mientras el partido siga
+      //    aceptando gente. Cambia solo el texto según qué pasó con el lugar:
+      //      · entró un suplente → "se bajó X y entró Y de suplente"
+      //      · quedó lugar libre → "se bajó X, ¡hay lugar!"
+      //      · sin lugar (formato libre, o seguía lleno con más suplentes) → "se bajó X"
+      //    Se excluye a los que ya están anotados — incluidos los suplentes
+      //    recién promovidos, que ya recibieron su aviso personal en (1).
+      if (status !== 'finished' && status !== 'closed') {
+        let title
+        let body
+        let type
+        if (promoted.length > 0) {
+          type = 'roster_change'
+          title = '🔄 Cambio en la lista'
+          body = promotedNames.length === 1
+            ? `Se bajó ${leaverName} de "${matchTitle}" y entró ${promotedNames[0]} de suplente.`
+            : `Se bajó ${leaverName} de "${matchTitle}" y entraron de suplentes: ${formatNameList(promotedNames)}.`
+        } else if (spotOpen) {
+          type = 'spot_available'
+          title = '⚽ ¡Se liberó un lugar!'
+          body = `Se bajó ${leaverName} de "${matchTitle}". ¡Hay lugar, anotáte!`
         } else {
-          await sendFCMToAllUsers(title, body, { matchId, type: 'spot_available' }, registeredUserIds)
+          type = 'registration_left'
+          title = '📋 Se bajó un jugador'
+          body = `Se bajó ${leaverName} de "${matchTitle}".`
         }
-        logger.info(`Lugar libre en ${matchId}: broadcast a ${groupId ? 'grupo ' + groupId : 'todos'} (se bajó ${leaverName})`)
-      } else if (createdBy && createdBy !== leaverUserId) {
-        // 3) El lugar se tapó con un suplente (o la lista no está abierta):
-        //    solo avisamos al organizador que alguien se bajó.
+
+        if (groupId) {
+          await sendFCMToGroupMembers(groupId, title, body, { matchId, type }, registeredUserIds)
+        } else {
+          await sendFCMToAllUsers(title, body, { matchId, type }, registeredUserIds)
+        }
+        logger.info(
+          `onRegistrationDeleted: ${matchId} broadcast a ${groupId ? 'grupo ' + groupId : 'todos'} ` +
+          `(se bajó ${leaverName}, promovidos=${promoted.length}, spotOpen=${spotOpen})`,
+        )
+      } else {
+        logger.info(
+          `onRegistrationDeleted: ${matchId} sin broadcast (status=${status}, se bajó ${leaverName})`,
+        )
+      }
+
+      // 3) El organizador SIEMPRE se entera de una baja, aunque esté anotado (y
+      //    por eso excluido del broadcast de (2)). No se le repite si él mismo
+      //    se bajó ni si ya recibió el aviso personal de suplente.
+      if (
+        createdBy &&
+        createdBy !== leaverUserId &&
+        !promoted.includes(createdBy) &&
+        registeredUserIds.includes(createdBy)
+      ) {
         await sendFCMToUser(
           createdBy,
           '📋 Se bajó un jugador',
@@ -2004,16 +2045,6 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           { matchId, type: 'registration_left' },
         )
         logger.info(`Organizador ${createdBy} notificado: se bajó ${leaverName} (${matchId})`)
-      } else {
-        // Ninguna rama aplicó: no había suplente, no hay lugar real (o el
-        // partido ya no admite anotaciones), y el que se bajó era el propio
-        // creador (o no tiene creador) → nadie a quien avisar. Se deja
-        // constancia explícita para que esto nunca vuelva a quedar en silencio.
-        logger.info(
-          `onRegistrationDeleted: sin notificación para ${matchId} (se bajó ${leaverName}, ` +
-          `status=${status}, spotOpen=${spotOpen}, promoted=${promoted.length}, ` +
-          `createdBy=${createdBy}, leaverUserId=${leaverUserId})`,
-        )
       }
     } catch (error) {
       logger.error(`onRegistrationDeleted: error procesando baja en ${event.params.matchId}`, error)

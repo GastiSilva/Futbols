@@ -23,7 +23,7 @@
          también (no solo en "Partidos abiertos") porque es la pantalla de
          "Partidos" en general — es donde alguien de afuera del grupo espera
          encontrar el estado de lo que se postuló. -->
-    <MyApplicationsCard v-if="!authStore.isGuest" />
+    <MyApplicationsCard v-if="publicMatchesEnabled && !authStore.isGuest" />
 
     <!-- ── Recién llegado: sin grupos y sin partidos ──────────────────────── -->
     <!--
@@ -646,8 +646,10 @@ import { buildListText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import WelcomeHome from 'src/components/WelcomeHome.vue'
 import MyApplicationsCard from 'src/components/MyApplicationsCard.vue'
+import { PUBLIC_MATCHES_ENABLED } from 'src/utils/features'
 
 const $q = useQuasar()
+const publicMatchesEnabled = PUBLIC_MATCHES_ENABLED
 const router = useRouter()
 const { user, isAdmin } = useAuth()
 

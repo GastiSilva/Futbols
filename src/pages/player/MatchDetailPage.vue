@@ -102,7 +102,7 @@
            pantalla que trata de eso. Esta página ya tiene demasiada
            información como para sumarle una card de gestión más. -->
       <q-banner
-        v-if="match.isPublic && canManageMatch"
+        v-if="publicMatchesEnabled && match.isPublic && canManageMatch"
         dense
         rounded
         class="bg-orange-1 text-orange-10 q-mb-md"
@@ -129,7 +129,7 @@
            organizador, pero ve lo que opina el resto antes de meter a un
            desconocido. -->
       <q-card
-        v-if="canManageMatch && pendingApplications.length > 0"
+        v-if="publicMatchesEnabled && canManageMatch && pendingApplications.length > 0"
         flat
         bordered
         class="q-mb-md"
@@ -212,7 +212,7 @@
       <!-- ── Sondeo para los ya anotados (no organizadores) ─────────────────
            A los que van a jugar les llega la notificación y opinan acá. -->
       <q-card
-        v-else-if="!canManageMatch && userRegistration && pendingApplications.length > 0"
+        v-else-if="publicMatchesEnabled && !canManageMatch && userRegistration && pendingApplications.length > 0"
         flat
         bordered
         class="q-mb-md"
@@ -869,6 +869,7 @@ import { useMatchInvite, setPendingInvite } from 'src/composables/useMatchInvite
 import { buildListText, shareListText } from 'src/utils/shareList'
 import { parseTeamsText } from 'src/utils/parseTeamsText'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
+import { PUBLIC_MATCHES_ENABLED } from 'src/utils/features'
 import MatchMvpVoting from 'src/components/MatchMvpVoting.vue'
 import MatchMurallaVoting from 'src/components/MatchMurallaVoting.vue'
 import ApplicationChat from 'src/components/ApplicationChat.vue'
@@ -878,6 +879,7 @@ import { db } from 'src/services/firebase'
 const $q = useQuasar()
 const route = useRoute()
 const router = useRouter()
+const publicMatchesEnabled = PUBLIC_MATCHES_ENABLED
 
 // Invitados (isGuest, sin cuenta) no tienen perfil — no navega para esos
 function goToProfile(reg) {
@@ -933,8 +935,9 @@ onMounted(async () => {
   subscribeToMatch(route.params.id)
   subscribeToRegistrations(route.params.id)
   // Postulaciones: solo las lee gente del grupo del partido (lo exigen las
-  // reglas), así que para un invitado anónimo ni se intenta.
-  if (!authStore.isGuest) subscribeToApplications(route.params.id)
+  // reglas), así que para un invitado anónimo ni se intenta. Con "Partidos
+  // abiertos" apagado (src/utils/features.js) no hay postulaciones que leer.
+  if (publicMatchesEnabled && !authStore.isGuest) subscribeToApplications(route.params.id)
 
   if (route.query.registrate === '1') {
     showRegisterPrompt.value = true

@@ -1,5 +1,7 @@
 // src/router/routes.js
 
+import { PUBLIC_MATCHES_ENABLED } from 'src/utils/features'
+
 const routes = [
   // ── Autenticación ──────────────────────────────────────────────────────────
   {
@@ -65,6 +67,10 @@ const routes = [
         name: 'public-matches',
         component: () => import('src/pages/player/PublicMatchesPage.vue'),
         meta: { requiresAuth: true },
+        // "Partidos abiertos" puede estar apagado (ver src/utils/features.js).
+        // Con el flag en false la pantalla queda inaccesible aunque alguien
+        // tenga el link guardado: se lo manda de vuelta a Partidos.
+        beforeEnter: () => (PUBLIC_MATCHES_ENABLED ? true : { name: 'player-dashboard' }),
       },
       {
         path: 'ranking',
