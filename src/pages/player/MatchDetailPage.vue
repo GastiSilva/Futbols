@@ -458,19 +458,6 @@
           </div>
           <div class="row items-center q-gutter-xs">
             <q-btn
-              v-if="canResendReminder"
-              flat
-              dense
-              round
-              icon="campaign"
-              :color="reminderStatus.canSend ? 'orange-9' : 'grey-5'"
-              :loading="resendingReminder"
-              :disable="!reminderStatus.canSend"
-              @click="handleResendReminder"
-            >
-              <q-tooltip>{{ reminderTooltip }}</q-tooltip>
-            </q-btn>
-            <q-btn
               flat
               dense
               round
@@ -633,6 +620,11 @@
               <q-list dense>
                 <q-item v-for="reg in startersTeamA" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
                   <q-item-section>{{ reg.displayName }}</q-item-section>
+                  <q-item-section v-if="canReplaceRegs" side>
+                    <q-btn flat round dense size="sm" icon="swap_horiz" color="grey-6" @click.stop="openReplace(reg)">
+                      <q-tooltip>Reemplazar (jugó otro en su lugar)</q-tooltip>
+                    </q-btn>
+                  </q-item-section>
                 </q-item>
               </q-list>
             </div>
@@ -643,6 +635,11 @@
               <q-list dense>
                 <q-item v-for="reg in startersTeamB" :key="reg.id" :clickable="!!reg.userId" @click="goToProfile(reg)">
                   <q-item-section>{{ reg.displayName }}</q-item-section>
+                  <q-item-section v-if="canReplaceRegs" side>
+                    <q-btn flat round dense size="sm" icon="swap_horiz" color="grey-6" @click.stop="openReplace(reg)">
+                      <q-tooltip>Reemplazar (jugó otro en su lugar)</q-tooltip>
+                    </q-btn>
+                  </q-item-section>
                 </q-item>
               </q-list>
             </div>
@@ -659,6 +656,11 @@
                   </q-avatar>
                 </q-item-section>
                 <q-item-section>{{ reg.displayName }}</q-item-section>
+                <q-item-section v-if="canReplaceRegs" side>
+                  <q-btn flat round dense size="sm" icon="swap_horiz" color="grey-6" @click.stop="openReplace(reg)">
+                    <q-tooltip>Reemplazar (jugó otro en su lugar)</q-tooltip>
+                  </q-btn>
+                </q-item-section>
               </q-item>
             </q-list>
           </template>
@@ -675,6 +677,11 @@
             <q-item-section>{{ reg.displayName }}</q-item-section>
             <q-item-section v-if="reg.isGuest" side>
               <q-badge color="grey-5" label="Invitado" />
+            </q-item-section>
+            <q-item-section v-if="canReplaceRegs" side>
+              <q-btn flat round dense size="sm" icon="swap_horiz" color="grey-6" @click.stop="openReplace(reg)">
+                <q-tooltip>Reemplazar (jugó otro en su lugar)</q-tooltip>
+              </q-btn>
             </q-item-section>
           </q-item>
         </q-list>
@@ -697,6 +704,11 @@
               <q-item-section v-if="reg.isGuest" side>
                 <q-badge color="grey-5" label="Invitado" />
               </q-item-section>
+              <q-item-section v-if="canReplaceRegs" side>
+                <q-btn flat round dense size="sm" icon="swap_horiz" color="grey-6" @click.stop="openReplace(reg)">
+                  <q-tooltip>Reemplazar (jugó otro en su lugar)</q-tooltip>
+                </q-btn>
+              </q-item-section>
             </q-item>
           </q-list>
         </template>
@@ -715,6 +727,7 @@
             :match-id="route.params.id"
             :player-stats="playerStats"
             :can-close-voting="canLoadResult"
+            :can-reopen-voting="canReopenVoting"
           />
 
           <MatchMurallaVoting
@@ -722,6 +735,7 @@
             :match-id="route.params.id"
             :player-stats="playerStats"
             :can-close-voting="canLoadResult"
+            :can-reopen-voting="canReopenVoting"
           />
 
           <!-- Goleadores por equipo -->
@@ -838,6 +852,53 @@
       </q-card>
     </q-dialog>
 
+    <!-- Reemplazar a un anotado: "no vino Gonza, jugó Nahuel". Lo resuelve la
+         CF replaceRegistration (mismo lugar en la lista, mismo equipo, stats
+         movidas si ya se jugó, sin aviso de "se liberó un lugar"). -->
+    <q-dialog v-model="showReplace">
+      <q-card style="width: 400px; max-width: 92vw">
+        <q-card-section class="row items-center q-gutter-sm q-pb-none">
+          <q-icon name="swap_horiz" color="primary" size="24px" />
+          <div class="text-subtitle1 text-weight-bold">Reemplazar a {{ replaceTarget?.displayName }}</div>
+        </q-card-section>
+        <q-card-section class="text-body2 text-grey-8">
+          Elegí quién jugó en su lugar. Se queda con su lugar en la lista y su equipo<template
+            v-if="match?.status === 'finished'"
+          >, y lo que se cargó del partido (goles, resultado) pasa a su nombre — así puede recibir votos</template>.
+        </q-card-section>
+        <q-card-section class="q-pt-none">
+          <q-select
+            v-model="replaceWith"
+            :options="replaceOptions"
+            :loading="loadingReplaceMembers"
+            option-label="label"
+            option-value="userId"
+            outlined
+            dense
+            label="Miembro del grupo"
+            :disable="loadingReplaceMembers"
+          >
+            <template #no-option>
+              <q-item><q-item-section class="text-grey-6">No hay miembros sin anotar.</q-item-section></q-item>
+            </template>
+          </q-select>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn v-close-popup flat no-caps color="grey-7" label="Cancelar" />
+          <q-btn
+            unelevated
+            no-caps
+            color="primary"
+            class="pill-btn"
+            label="Reemplazar"
+            :disable="!replaceWith"
+            :loading="replacing"
+            @click="handleReplace"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
     <!-- Chat 1-a-1 con quien se postuló -->
     <ApplicationChat
       v-if="chatWith"
@@ -855,7 +916,7 @@
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { date, useQuasar } from 'quasar'
-import { useMatch, getEffectiveStatus, manualReminderStatus } from 'src/composables/useMatch'
+import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { usePlayerStats } from 'src/composables/usePlayerStats'
 import { useRegistration } from 'src/composables/useRegistration'
@@ -888,7 +949,7 @@ function goToProfile(reg) {
   if (authStore.isGuest) return
   router.push({ name: 'profile-view', params: { uid: reg.userId } })
 }
-const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved, finishMatch, setMatchPublic, resendListNotification } = useMatch()
+const { currentMatch: match, loading, subscribeToMatch, stopListening, toggleVenueReserved, finishMatch, setMatchPublic } = useMatch()
 
 const {
   applications,
@@ -899,7 +960,7 @@ const {
   sendMessage,
   stopListening: stopApplications,
 } = useApplications()
-const { getMyRole } = useGroups()
+const { getMyRole, getGroupMembers } = useGroups()
 const { fetchPlayerStats } = usePlayerStats()
 const { fetchForecast } = useWeather()
 const { getVenue } = useVenues()
@@ -920,6 +981,7 @@ const {
   subscribeToRegistrations,
   stopListening: stopRegistrations,
   assignTeams,
+  replaceRegistration,
 } = useRegistration()
 
 // ── Llegada por link de invitación ──────────────────────────────────────────
@@ -1024,44 +1086,67 @@ const myEntry = computed(() =>
     : null,
 )
 
-// ── Reenviar manualmente "la lista sigue abierta" ─────────────────────────
-// Pensado para grupos donde la lista queda abierta toda la semana: el aviso
-// automático de apertura sale una sola vez y se pierde en el chat. Mismo
-// criterio de acceso que "acceso anticipado" (OG u owner/admin del grupo),
-// más el creador del partido, aunque no sea OG — el backend es quien de
-// verdad lo exige (assertCanResendMatchListNotification en
-// functions/index.js); esto solo evita mostrar el botón a quien igual
-// rebotaría.
-const canResendReminder = computed(() => {
-  if (!match.value) return false
-  if (!match.value.groupId) return false
-  if (match.value.status !== 'open') return false
+// El reenvío manual del aviso de "lista abierta" vive en la fila de gestión
+// del Dashboard (DashboardPage.canResendReminderFor), no acá.
+
+// ── Reemplazar a un anotado por otro miembro del grupo ──────────────────────
+// Mismo permiso que el backend (replaceRegistration): OG u owner/admin del
+// grupo, quien creó el partido, o admin global. Sirve antes de jugar (avisó
+// que no viene y ya se sabe quién va) y después (no vino y nadie podía votar
+// al que jugó en su lugar). Solo partidos de grupo: el reemplazo tiene que
+// ser alguien del grupo.
+const canReplaceRegs = computed(() => {
+  if (!match.value?.groupId || authStore.isGuest) return false
   if (authStore.isAdmin) return true
   if (match.value.createdBy === authStore.user?.uid) return true
   return authStore.isOgInGroup(match.value.groupId)
 })
-// Se deriva de los campos que ya trae el doc del partido (sin lectura
-// extra) — ver manualReminderStatus en useMatch.js para el porqué del
-// cooldown + tope diario duplicados con el backend.
-const reminderStatus = computed(() => manualReminderStatus(match.value))
-const reminderTooltip = computed(() => {
-  const s = reminderStatus.value
-  if (s.canSend) return `Reenviar aviso de lista abierta (quedan ${s.remainingToday} hoy)`
-  if (s.remainingToday === 0) return 'Ya usaste los reenvíos de hoy para este partido'
-  const waitMin = Math.ceil(s.waitMs / 60000)
-  return `Podés reenviar en ${waitMin} min`
-})
-const resendingReminder = ref(false)
 
-async function handleResendReminder() {
-  resendingReminder.value = true
+const showReplace = ref(false)
+const replaceTarget = ref(null)
+const replaceWith = ref(null)
+const replaceMembers = ref([])
+const loadingReplaceMembers = ref(false)
+const replacing = ref(false)
+
+// Solo miembros que todavía no están en la lista (titulares o suplentes).
+const replaceOptions = computed(() => {
+  const inList = new Set(registrations.value.map((r) => r.userId).filter(Boolean))
+  return replaceMembers.value
+    .filter((m) => !inList.has(m.userId ?? m.id))
+    .map((m) => ({ userId: m.userId ?? m.id, label: m.nickname || m.displayName || 'Sin nombre' }))
+})
+
+async function openReplace(reg) {
+  replaceTarget.value = reg
+  replaceWith.value = null
+  showReplace.value = true
+  loadingReplaceMembers.value = true
   try {
-    await resendListNotification(route.params.id)
-    $q.notify({ type: 'positive', icon: 'campaign', message: 'Aviso reenviado al grupo.' })
+    replaceMembers.value = await getGroupMembers(match.value.groupId)
   } catch (err) {
     $q.notify({ type: 'negative', message: err.message })
   } finally {
-    resendingReminder.value = false
+    loadingReplaceMembers.value = false
+  }
+}
+
+async function handleReplace() {
+  if (!replaceTarget.value || !replaceWith.value) return
+  replacing.value = true
+  try {
+    const res = await replaceRegistration(route.params.id, replaceTarget.value.id, replaceWith.value.userId)
+    showReplace.value = false
+    $q.notify({ type: 'positive', icon: 'swap_horiz', message: `${res.newName} ocupa el lugar de ${res.oldName}.` })
+    // Si ya se jugó, las stats cambiaron de dueño: recargarlas para que el
+    // nuevo aparezca como candidato en las votaciones.
+    if (match.value?.status === 'finished') {
+      playerStats.value = await fetchPlayerStats(route.params.id)
+    }
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    replacing.value = false
   }
 }
 
@@ -1388,6 +1473,12 @@ watch(
 // no estuviera bloqueado (resultLocked, a las 36hs), pero esa condición se
 // saltaba para el admin global — así que en la práctica el dueño de la app
 // cargaba siempre y al resto le saltaba PERMISSION_DENIED.
+// Reabrir una votación ya cerrada: solo owner/admin del grupo o admin global
+// (lo vuelve a exigir la CF assertCanReopenVoting).
+const canReopenVoting = computed(
+  () => authStore.isAdmin || ['owner', 'admin'].includes(myGroupRole.value),
+)
+
 const canLoadResult = computed(() => {
   const st = getEffectiveStatus(match.value)
   const done = st === 'closed' || st === 'finished' || st === 'full'

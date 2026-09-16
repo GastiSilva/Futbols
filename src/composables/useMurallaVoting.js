@@ -78,6 +78,24 @@ export function useMurallaVoting() {
     }
   }
 
+  // Reabre una votación cerrada (solo owner/admin del grupo o admin global —
+  // lo exige la CF). Los votos ya emitidos se conservan; el ganador se borra
+  // hasta que se vuelva a cerrar.
+  async function reopenMurallaVoting(matchId) {
+    loading.value = true
+    error.value = null
+    try {
+      const fn = httpsCallable(functions, 'reopenMurallaVoting')
+      const result = await fn({ matchId })
+      return result.data
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
     loading,
     error,
@@ -85,5 +103,6 @@ export function useMurallaVoting() {
     getMyVote,
     fetchTally,
     closeMurallaVoting,
+    reopenMurallaVoting,
   }
 }

@@ -117,6 +117,11 @@
         </q-list>
       </div>
 
+      <!-- Registro de bajas: quiénes se anotan y después no están -->
+      <div class="col-12 q-mt-md">
+        <DropoutsReport />
+      </div>
+
       <!-- Gestión de roles de usuarios -->
       <div class="col-12 q-mt-md">
         <div class="text-subtitle1 text-weight-bold q-mb-md">
@@ -232,6 +237,7 @@ import { httpsCallable } from 'firebase/functions'
 import { db, functions } from 'src/services/firebase'
 import { useMatch } from 'src/composables/useMatch'
 import { useAuthStore } from 'src/stores/auth.store'
+import DropoutsReport from 'src/components/DropoutsReport.vue'
 
 const $q = useQuasar()
 const authStore = useAuthStore()

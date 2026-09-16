@@ -77,6 +77,24 @@ export function useMvpVoting() {
     }
   }
 
+  // Reabre una votación cerrada (solo owner/admin del grupo o admin global —
+  // lo exige la CF). Los votos ya emitidos se conservan; el ganador se borra
+  // hasta que se vuelva a cerrar.
+  async function reopenMvpVoting(matchId) {
+    loading.value = true
+    error.value = null
+    try {
+      const fn = httpsCallable(functions, 'reopenMvpVoting')
+      const result = await fn({ matchId })
+      return result.data
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
     loading,
     error,
@@ -84,5 +102,6 @@ export function useMvpVoting() {
     getMyVote,
     fetchTally,
     closeMvpVoting,
+    reopenMvpVoting,
   }
 }

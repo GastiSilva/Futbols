@@ -219,6 +219,7 @@ import { useVersus } from 'src/composables/useVersus'
 import { useAuthStore } from 'src/stores/auth.store'
 import { positionLabel, normalizePositions } from 'src/utils/positions'
 import { findTeam } from 'src/utils/teams'
+import { describeVersus } from 'src/utils/versus'
 import ReportUserDialog from 'src/components/ReportUserDialog.vue'
 import BadgeShelf from 'src/components/BadgeShelf.vue'
 import { useBadges } from 'src/composables/useBadges'
@@ -293,47 +294,49 @@ const groupStatRows = computed(() => {
 })
 
 // Arma la frase "vos vs él/ella" desde chemistry/rivalry (perspectiva propia).
-// Prioridad: rivalry (más específico y competitivo) sobre chemistry, mismo
-// criterio que buildHypeMessage en functions/index.js — si hay ambos, gana el
-// que tenga más partidos en común.
+// Entre rivalry y chemistry gana el que tenga más partidos en común, mismo
+// criterio que buildHypeMessage en functions/index.js. El texto y el tono
+// salen de describeVersus (src/utils/versus.js): el tono compara ganados
+// contra PERDIDOS, así los empates no se leen como derrotas.
+const VERSUS_STYLE = {
+  rival: {
+    good: { icon: 'local_fire_department', color: 'deep-orange-8' },
+    even: { icon: 'balance', color: 'blue-grey-7' },
+    bad: { icon: 'sports_kabaddi', color: 'red-8' },
+  },
+  mate: {
+    good: { icon: 'handshake', color: 'green-8' },
+    even: { icon: 'balance', color: 'blue-grey-7' },
+    bad: { icon: 'sync_problem', color: 'orange-8' },
+  },
+}
+
 function buildVersusLine(nickname, chemistry, rivalry) {
   const name = nickname || 'él/ella'
+  const rivalGames = rivalry?.gamesAgainst ?? 0
+  const mateGames = chemistry?.gamesTogether ?? 0
 
-  if (rivalry && rivalry.gamesAgainst >= MIN_HEAD_TO_HEAD_MATCHES) {
-    if (!chemistry || rivalry.gamesAgainst >= chemistry.gamesTogether) {
-      const winRate = rivalry.winsAgainst / rivalry.gamesAgainst
-      if (winRate >= 0.5) {
-        return {
-          icon: 'local_fire_department',
-          color: 'deep-orange-8',
-          text: `Cuando te enfrentás a ${name}, le ganás ${rivalry.winsAgainst} de ${rivalry.gamesAgainst}. Que no se entere.`,
-        }
-      }
-      return {
-        icon: 'sentiment_dissatisfied',
-        color: 'red-8',
-        text: `Cuando te enfrentás a ${name}, perdés ${rivalry.lossesAgainst} de ${rivalry.gamesAgainst}. Ponete las pilas hoy.`,
-      }
-    }
-  }
+  let kind = null
+  if (rivalGames >= MIN_HEAD_TO_HEAD_MATCHES && rivalGames >= mateGames) kind = 'rival'
+  else if (mateGames >= MIN_HEAD_TO_HEAD_MATCHES) kind = 'mate'
+  else if (rivalGames >= MIN_HEAD_TO_HEAD_MATCHES) kind = 'rival'
+  if (!kind) return null
 
-  if (chemistry && chemistry.gamesTogether >= MIN_HEAD_TO_HEAD_MATCHES) {
-    const winRate = chemistry.winsTogether / chemistry.gamesTogether
-    if (winRate >= 0.5) {
-      return {
-        icon: 'handshake',
-        color: 'green-8',
-        text: `Cuando jugás CON ${name}, ganan ${chemistry.winsTogether} de ${chemistry.gamesTogether}. Sos su amuleto.`,
-      }
-    }
-    return {
-      icon: 'sync_problem',
-      color: 'orange-8',
-      text: `Cuando jugás CON ${name}, les cuesta ganar (${chemistry.winsTogether} de ${chemistry.gamesTogether}). A ver si la próxima cambia.`,
-    }
-  }
-
-  return null
+  const line = kind === 'rival'
+    ? describeVersus('rival', name, {
+        games: rivalGames,
+        wins: rivalry.winsAgainst ?? 0,
+        draws: rivalry.drawsAgainst ?? 0,
+        losses: rivalry.lossesAgainst ?? 0,
+      })
+    : describeVersus('mate', name, {
+        games: mateGames,
+        wins: chemistry.winsTogether ?? 0,
+        draws: chemistry.drawsTogether ?? 0,
+        losses: chemistry.lossesTogether ?? 0,
+      })
+  if (!line) return null
+  return { ...VERSUS_STYLE[kind][line.tone], text: line.text }
 }
 
 async function loadProfile(uid) {

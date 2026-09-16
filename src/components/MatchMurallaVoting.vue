@@ -25,6 +25,20 @@
         </q-item-section>
       </q-item>
     </q-list>
+
+    <q-btn
+      v-if="canReopenVoting"
+      flat
+      dense
+      no-caps
+      size="sm"
+      color="grey-7"
+      icon="lock_open"
+      label="Reabrir votación"
+      class="q-mt-xs"
+      :loading="votingLoading"
+      @click="handleReopenVoting"
+    />
   </div>
 
   <!-- Votación de Muralla abierta -->
@@ -95,11 +109,13 @@ const props = defineProps({
   playerStats: { type: Array, default: () => [] },
   // Solo quien puede cargar el resultado puede cerrar la votación a mano.
   canCloseVoting: { type: Boolean, default: false },
+  // Reabrir una votación cerrada: solo owner/admin del grupo o admin global.
+  canReopenVoting: { type: Boolean, default: false },
 })
 
 const $q = useQuasar()
 const authStore = useAuthStore()
-const { castVote, getMyVote, fetchTally, closeMurallaVoting } = useMurallaVoting()
+const { castVote, getMyVote, fetchTally, closeMurallaVoting, reopenMurallaVoting } = useMurallaVoting()
 
 const myMurallaVote = ref(null)
 const votingLoading = ref(false)
@@ -178,5 +194,24 @@ async function handleCloseVoting() {
   } finally {
     votingLoading.value = false
   }
+}
+
+function handleReopenVoting() {
+  $q.dialog({
+    title: 'Reabrir votación',
+    message: 'Los votos que ya se hicieron se mantienen y cada uno puede cambiar el suyo. El ganador se vuelve a calcular cuando se cierre.',
+    cancel: { flat: true, label: 'No' },
+    ok: { unelevated: true, color: 'primary', label: 'Reabrir' },
+  }).onOk(async () => {
+    votingLoading.value = true
+    try {
+      await reopenMurallaVoting(props.matchId)
+      $q.notify({ type: 'positive', icon: 'lock_open', message: 'Votación de Muralla reabierta.' })
+    } catch (err) {
+      $q.notify({ type: 'negative', message: err.message })
+    } finally {
+      votingLoading.value = false
+    }
+  })
 }
 </script>

@@ -44,7 +44,8 @@ import {
   serverTimestamp,
   writeBatch,
 } from 'firebase/firestore'
-import { db } from 'src/services/firebase'
+import { httpsCallable } from 'firebase/functions'
+import { db, functions } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
 import { getEffectiveStatus } from 'src/composables/useMatch'
 
@@ -521,6 +522,30 @@ export function useRegistration() {
   // anticipado en el grupo del partido (OG/owner/admin) o admin global —
   // reforzado también en las reglas de Firestore (solo pueden tocar `team`).
   /**
+   * Reemplaza una inscripción por otro miembro del grupo ("no vino Gonza,
+   * jugó Nahuel"). Lo hace la CF replaceRegistration: conserva el lugar en la
+   * lista y el equipo, mueve las stats si el partido ya se jugó y no dispara
+   * el aviso de "se liberó un lugar".
+   * @param {string} matchId
+   * @param {string} registrationId
+   * @param {string} newUserId
+   */
+  async function replaceRegistration(matchId, registrationId, newUserId) {
+    loading.value = true
+    error.value = null
+    try {
+      const call = httpsCallable(functions, 'replaceRegistration')
+      const res = await call({ matchId, registrationId, newUserId })
+      return res.data
+    } catch (err) {
+      error.value = err.message
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
    * @param {string} matchId
    * @param {Array<{ registrationId: string, team: 'A'|'B'|null }>} assignments
    */
@@ -625,6 +650,7 @@ export function useRegistration() {
     leaveMatch,
     removeRegistration,
     assignTeams,
+    replaceRegistration,
     canRegister,
     msUntilOpen,
     canSeeRegistrations,

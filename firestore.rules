@@ -1150,6 +1150,20 @@ service cloud.firestore {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // DROPOUTS (registro de bajas: se anotó y no estuvo)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Lo escriben SOLO las Cloud Functions (onRegistrationDeleted al bajarse,
+    // replaceRegistration cuando otro jugó en su lugar). Lo lee SOLO un admin
+    // global, desde su panel. Nadie más: ni el propio jugador ni el grupo — es
+    // una herramienta para que el admin detecte a los que se bajan siempre,
+    // no un escrache público. Si el cliente pudiera escribir, cualquiera
+    // borra sus bajas o le carga bajas a otro.
+    match /dropouts/{dropoutId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // VENUES (sedes / canchas)
     // ─────────────────────────────────────────────────────────────────────────
     match /venues/{venueId} {

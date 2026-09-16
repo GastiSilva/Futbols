@@ -293,7 +293,7 @@
             <!-- ── Acciones de gestión: editar datos / calcular equipos ──────── -->
             <!-- OG/owner/admin del grupo, quien creó el partido, o admin global -->
             <div
-              v-if="canManageMatch(match) || canManageTeamsFor(match)"
+              v-if="canManageMatch(match) || canManageTeamsFor(match) || canResendReminderFor(match)"
               class="row q-gutter-sm q-mt-md"
             >
               <q-btn
@@ -318,6 +318,24 @@
                 class="col"
                 :to="{ name: 'match-detail', params: { id: match.id }, hash: '#equipos' }"
               />
+              <!-- Reenviar el aviso de lista abierta: vive en esta fila de
+                   gestión y no dentro del detalle, donde quedaba al lado del
+                   armado de equipos y parecía parte de eso. -->
+              <q-btn
+                v-if="canResendReminderFor(match)"
+                flat
+                dense
+                no-caps
+                icon="campaign"
+                label="Reenviar aviso"
+                class="col"
+                :color="reminderStatusFor(match).canSend ? 'orange-9' : 'grey-5'"
+                :disable="!reminderStatusFor(match).canSend"
+                :loading="resendingMatchId === match.id"
+                @click="handleResendReminder(match)"
+              >
+                <q-tooltip>{{ reminderTooltipFor(match) }}</q-tooltip>
+              </q-btn>
               <q-btn
                 v-if="canManageMatch(match)"
                 flat
@@ -639,7 +657,7 @@ import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 import { useRegistration } from 'src/composables/useRegistration'
-import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
+import { useMatch, getEffectiveStatus, manualReminderStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
 import { buildListText, shareListText } from 'src/utils/shareList'
@@ -682,6 +700,7 @@ const {
   subscribeToFinished,
   stopListeningFinished,
   deleteMatch,
+  resendListNotification,
 } = useMatch()
 const { getGroupMembers } = useGroups()
 const authStore = useAuthStore()
@@ -703,6 +722,12 @@ const upcomingMatches = computed(() =>
     status: getEffectiveStatus(m),
     groupId: m.groupId ?? null,
     createdBy: m.createdBy ?? null,
+    // Estado GUARDADO (no el efectivo): un partido lleno sigue 'open' en
+    // Firestore y el reenvío del aviso se decide con este.
+    rawStatus: m.status,
+    manualReminderLastAt: m.manualReminderLastAt ?? null,
+    manualReminderDay: m.manualReminderDay ?? null,
+    manualReminderCount: m.manualReminderCount ?? 0,
   })) ?? [],
 )
 
@@ -1132,6 +1157,41 @@ function canManageTeamsFor(match) {
   const listaCerrada = match.status === 'closed' || match.status === 'full' || match.status === 'finished'
   if (!listaCerrada) return false
   return isAdmin.value || (!!match.groupId && authStore.isOgInGroup(match.groupId))
+}
+
+// Reenviar "la lista sigue abierta": OG/owner/admin del grupo, quien creó el
+// partido, o admin global — mismo criterio que valida el backend
+// (assertCanResendMatchListNotification). Solo con la lista abierta.
+function canResendReminderFor(match) {
+  if (!match?.groupId || match.rawStatus !== 'open') return false
+  if (isAdmin.value) return true
+  if (match.createdBy === user.value?.uid) return true
+  return authStore.isOgInGroup(match.groupId)
+}
+
+function reminderStatusFor(match) {
+  return manualReminderStatus(match)
+}
+
+function reminderTooltipFor(match) {
+  const s = manualReminderStatus(match)
+  if (s.canSend) return `Reenviar aviso de lista abierta (quedan ${s.remainingToday} hoy)`
+  if (s.remainingToday === 0) return 'Ya usaste los reenvíos de hoy para este partido'
+  return `Podés reenviar en ${Math.ceil(s.waitMs / 60000)} min`
+}
+
+const resendingMatchId = ref(null)
+
+async function handleResendReminder(match) {
+  resendingMatchId.value = match.id
+  try {
+    await resendListNotification(match.id)
+    $q.notify({ type: 'positive', icon: 'campaign', message: 'Aviso reenviado al grupo.' })
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err.message })
+  } finally {
+    resendingMatchId.value = null
+  }
 }
 
 // ¿Puedo quitar esta inscripción? (quien lo anotó, o admin)

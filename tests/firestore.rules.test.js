@@ -101,6 +101,7 @@ beforeEach(async () => {
       name: 'Grupo B', createdBy: MALLORY, inviteCode: 'BBBB2222', memberCount: 1,
     })
 
+    await setDoc(doc(db, 'dropouts', 'd1'), { userId: BOB, matchId: MATCH_A, kind: 'left', hoursBeforeMatch: 2 })
     await setDoc(doc(db, 'groups', GROUP_A, 'members', ALICE), { userId: ALICE, role: 'owner', og: true })
     await setDoc(doc(db, 'groups', GROUP_A, 'members', BOB), { userId: BOB, role: 'member', og: false })
     await setDoc(doc(db, 'groups', GROUP_B, 'members', MALLORY), { userId: MALLORY, role: 'owner', og: true })
@@ -602,6 +603,31 @@ describe('Reportes de usuarios', () => {
   test('un invitado anónimo no puede reportar', async () => {
     await assertFails(
       addDoc(collection(guestCtx(GUEST), 'reports'), validReport(GUEST, BOB)),
+    )
+  })
+})
+
+describe('Registro de bajas (dropouts)', () => {
+  test('un admin global puede leerlo', async () => {
+    await assertSucceeds(getDocs(collection(ctx(ADMIN, { admin: true }), 'dropouts')))
+  })
+
+  test('el propio jugador NO puede leer sus bajas', async () => {
+    await assertFails(getDoc(doc(ctx(BOB), 'dropouts', 'd1')))
+  })
+
+  test('el owner de un grupo tampoco puede listarlas', async () => {
+    await assertFails(getDocs(collection(ctx(ALICE), 'dropouts')))
+  })
+
+  test('nadie puede borrar una baja, ni el jugador ni un admin', async () => {
+    await assertFails(deleteDoc(doc(ctx(BOB), 'dropouts', 'd1')))
+    await assertFails(deleteDoc(doc(ctx(ADMIN, { admin: true }), 'dropouts', 'd1')))
+  })
+
+  test('nadie puede cargarle una baja a otro desde el cliente', async () => {
+    await assertFails(
+      setDoc(doc(ctx(ADMIN, { admin: true }), 'dropouts', 'd2'), { userId: MALLORY, kind: 'left' }),
     )
   })
 })

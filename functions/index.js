@@ -251,10 +251,15 @@ function argDateKey(date) {
 // OG. A propósito NO reusa assertCanManageMatchNotifications: ese helper
 // solo deja pasar a owner/admin, y acá se pidió explícitamente que los OG
 // también puedan tocar el botón.
-async function assertCanResendMatchListNotification(auth, match, tx) {
+async function assertCanResendMatchListNotification(
+  auth,
+  match,
+  tx,
+  deniedMessage = 'No tenés permiso para reenviar este aviso.',
+) {
   if (auth?.token?.admin === true) return
   const uid = auth?.uid
-  if (!uid) throw new HttpsError('permission-denied', 'No tenés permiso para reenviar este aviso.')
+  if (!uid) throw new HttpsError('permission-denied', deniedMessage)
   if (match.createdBy === uid) return
 
   const groupId = match.groupId
@@ -267,7 +272,7 @@ async function assertCanResendMatchListNotification(auth, match, tx) {
       if (m.og === true || ['owner', 'admin'].includes(m.role)) return
     }
   }
-  throw new HttpsError('permission-denied', 'No tenés permiso para reenviar este aviso.')
+  throw new HttpsError('permission-denied', deniedMessage)
 }
 
 exports.resendMatchListNotification = onCall(
@@ -444,18 +449,12 @@ async function runMatchLowSignupAlert() {
 // común (más específico y social, "hoy jugás con/contra Fulano"); si no hay
 // cruce que alcance el piso, cae a su racha personal (streaks).
 //
-// Tope deliberado: aunque calificaran TODOS los inscriptos, solo se les manda
-// a lo sumo la MITAD (HYPE_SHARE_OF_PLAYERS) — que le llegue algo a cada uno
-// de los 14 anotados un rato antes de jugar se siente como spam de la app, no
-// como una posta puntual entre amigos. Si hay más candidatos calificados que
-// cupo, se sortea entre ellos (no "los primeros de la lista" ni "los de más
-// historial siempre") para que no le toque siempre a los mismos veteranos del
-// grupo.
+// Le llega a TODOS los titulares que tengan algo para decirles (un cruce con
+// alguien de la lista o una racha). Antes había un tope del 60% sorteado para
+// que no se sintiera spam, pero el pedido fue el contrario: a los que les
+// llega les gusta, y el que se quedaba afuera del sorteo no entendía por qué
+// a su compañero sí y a él no. Quien no lo quiera lo apaga desde el perfil.
 const MIN_HEAD_TO_HEAD_MATCHES = 3
-// Porción de los TITULARES que recibe el aviso. Sobre titulares y no sobre
-// todos los anotados: al suplente que quizás ni juega, un "hoy tenés enfrente
-// a Fulano" le llega de una charla que no es la suya.
-const HYPE_SHARE_OF_PLAYERS = 0.6
 // Cuánto hay que esperar desde el ÚLTIMO retoque de los equipos antes de
 // avisar. No es un margen técnico: es el tiempo que tarda el que arma los
 // equipos en aceptar la sugerencia y después mover dos o tres jugadores a
@@ -481,15 +480,6 @@ const HYPE_MIN_LEAD_MS = 30 * 60 * 1000
 // juega con quién. Muchos grupos arman los equipos en la cancha: sin esta
 // salida se quedarían sin aviso para siempre.
 const HYPE_NO_TEAMS_FALLBACK_MS = 60 * 60 * 1000
-
-// Fisher-Yates in-place, alcanza para listas de ~10-20 jugadores por partido.
-function shuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[arr[i], arr[j]] = [arr[j], arr[i]]
-  }
-  return arr
-}
 
 async function runMatchHypeNotify() {
   const db = admin.firestore()
@@ -568,14 +558,9 @@ async function runMatchHypeNotify() {
       }
     }
 
-    // 2) Cupo proporcional a los TITULARES (no a los calificados): con 14
-    // titulares el tope es 8 aunque calificaran los 14. Mínimo 1 para que un
-    // partido chico no se quede sin ningún aviso.
-    const quota = Math.max(1, Math.round(players.length * HYPE_SHARE_OF_PLAYERS))
-    const chosen = shuffle(candidates).slice(0, quota)
-
+    // 2) Sin cupo: le llega a todos los que tienen un mensaje.
     let sent = 0
-    for (const { player, message } of chosen) {
+    for (const { player, message } of candidates) {
       try {
         await sendFCMToUser(
           player.userId,
@@ -589,10 +574,71 @@ async function runMatchHypeNotify() {
       }
     }
     logger.info(
-      `runMatchHypeNotify: ${matchId} → ${sent}/${quota} enviados ` +
+      `runMatchHypeNotify: ${matchId} → ${sent}/${candidates.length} enviados ` +
       `(${candidates.length} calificaban de ${players.length} titulares, ` +
       `${useTeams ? 'con equipos armados' : 'sin equipos: solo rachas'})`,
     )
+  }
+}
+
+// ── Helper: frase del cara a cara (rival o compañero) ────────────────────────
+// ⚠️ Copia de src/utils/versus.js (el perfil usa esa). El tono sale de comparar
+// GANADOS contra PERDIDOS — el empate no suma para ningún lado. Antes salía de
+// ganados/jugados, así que 2G-2E-2P se leía como derrota y "perdés 0 de 6"
+// venía con un "ponete las pilas". Mantener las dos copias iguales.
+function versusPlural(n, singular, pluralForm) {
+  return `${n} ${n === 1 ? singular : pluralForm}`
+}
+
+function formatVersusRecord(wins, draws, losses) {
+  const parts = []
+  if (wins > 0) parts.push(versusPlural(wins, 'ganado', 'ganados'))
+  if (draws > 0) parts.push(versusPlural(draws, 'empatado', 'empatados'))
+  if (losses > 0) parts.push(versusPlural(losses, 'perdido', 'perdidos'))
+  if (parts.length <= 1) return parts[0] ?? ''
+  return `${parts.slice(0, -1).join(', ')} y ${parts[parts.length - 1]}`
+}
+
+function describeVersus(kind, name, { games = 0, wins = 0, draws = 0, losses = 0 } = {}) {
+  if (games <= 0) return null
+  const record = formatVersusRecord(wins, draws, losses)
+  const rival = kind === 'rival'
+
+  if (wins === 0 && losses === 0) {
+    return {
+      tone: 'even',
+      text: rival
+        ? `Con ${name} empatan siempre: ${versusPlural(draws, 'empate', 'empates')} en ${games}. Hoy alguien tiene que ganar.`
+        : `Con ${name} en el mismo equipo empatan siempre (${versusPlural(draws, 'empate', 'empates')}). Hoy toca ganar.`,
+    }
+  }
+  if (losses === 0) {
+    return {
+      tone: 'good',
+      text: rival
+        ? `Contra ${name} estás invicto: ${record}. Que no se entere.`
+        : `Con ${name} no pierden nunca: ${record}. Sos su amuleto.`,
+    }
+  }
+  if (wins > losses) {
+    return {
+      tone: 'good',
+      text: rival ? `Contra ${name} vas arriba: ${record}.` : `Con ${name} les va bien: ${record}.`,
+    }
+  }
+  if (wins === losses) {
+    return {
+      tone: 'even',
+      text: rival
+        ? `Contra ${name} está parejo: ${record}. Hoy se desempata.`
+        : `Con ${name} están parejos: ${record}. Hoy se desempata.`,
+    }
+  }
+  return {
+    tone: 'bad',
+    text: rival
+      ? `Contra ${name} vas abajo: ${record}. Hoy es el día de descontar.`
+      : `Con ${name} les cuesta: ${record}. A ver si hoy cambia.`,
   }
 }
 
@@ -648,31 +694,29 @@ async function buildHypeMessage(userId, others, { useTeams = false, myTeam = nul
   // vínculo con más "peso estadístico" para hoy.
   if (bestRival && (!bestChem || bestRival.data.gamesAgainst >= bestChem.data.gamesTogether)) {
     const { name, data } = bestRival
-    const winRate = data.winsAgainst / data.gamesAgainst
-    if (winRate >= 0.5) {
-      return {
-        title: '🔥 Hoy tenés revancha',
-        body: `Tenés enfrente a ${name}. Le ganaste ${data.winsAgainst} de las últimas ${data.gamesAgainst}. Que no se entere.`,
-      }
-    }
-    return {
-      title: '😬 Hoy se corta la mala',
-      body: `Tenés enfrente a ${name}. Contra él/ella perdés seguido (${data.lossesAgainst} de ${data.gamesAgainst}). Hoy es el día.`,
+    const line = describeVersus('rival', name, {
+      games: data.gamesAgainst ?? 0,
+      wins: data.winsAgainst ?? 0,
+      draws: data.drawsAgainst ?? 0,
+      losses: data.lossesAgainst ?? 0,
+    })
+    if (line) {
+      const emoji = { good: '🔥', even: '⚖️', bad: '😤' }[line.tone]
+      return { title: `${emoji} Hoy tenés enfrente a ${name}`, body: line.text }
     }
   }
 
   if (bestChem) {
     const { name, data } = bestChem
-    const winRate = data.winsTogether / data.gamesTogether
-    if (winRate >= 0.5) {
-      return {
-        title: '🤝 Buena dupla',
-        body: `Hoy jugás con ${name}. Juntos ganan ${data.winsTogether} de ${data.gamesTogether}. No la cortes.`,
-      }
-    }
-    return {
-      title: '🎯 A cambiar la historia',
-      body: `Hoy jugás con ${name}. Juntos les cuesta ganar (${data.winsTogether} de ${data.gamesTogether}). A ver si hoy es distinto.`,
+    const line = describeVersus('mate', name, {
+      games: data.gamesTogether ?? 0,
+      wins: data.winsTogether ?? 0,
+      draws: data.drawsTogether ?? 0,
+      losses: data.lossesTogether ?? 0,
+    })
+    if (line) {
+      const emoji = { good: '🤝', even: '⚖️', bad: '🎯' }[line.tone]
+      return { title: `${emoji} Hoy jugás con ${name}`, body: line.text }
     }
   }
 
@@ -786,6 +830,10 @@ async function runPostMatchReminder() {
 // el resultado, en vez de que cada votación pise el `lockResult` de la otra
 // con dos writes separados. Un admin global siempre puede seguir editando
 // después de esto.
+// Ventana de una votación REABIERTA a mano antes de que el auto-cierre la
+// vuelva a cerrar. Se cuenta desde `votingReopenedAt`, no desde finishedAt.
+const REOPENED_VOTING_WINDOW_MS = 24 * 60 * 60 * 1000
+
 async function runAutoCloseMatches() {
   {
     const db = admin.firestore()
@@ -799,9 +847,17 @@ async function runAutoCloseMatches() {
 
     if (snap.empty) return
 
+    const reopenThreshold = Date.now() - REOPENED_VOTING_WINDOW_MS
+
     for (const docSnap of snap.docs) {
       const match = docSnap.data()
-      if (match.resultLocked === true) continue
+      const bothClosed = match.mvpVotingClosed === true && match.murallaVotingClosed === true
+      // Un resultado bloqueado se saltea... salvo que un admin del grupo haya
+      // reabierto alguna votación: esa se vuelve a cerrar sola cuando vence
+      // su propia ventana (REOPENED_VOTING_WINDOW_MS desde que se reabrió).
+      if (match.resultLocked === true && bothClosed) continue
+      const reopenedAt = match.votingReopenedAt?.toMillis?.() ?? 0
+      if (reopenedAt > reopenThreshold) continue
 
       try {
         if (match.mvpVotingClosed !== true) await closeVotingForMatch('mvp', docSnap.id)
@@ -1357,6 +1413,80 @@ function makeCloseVotingCallable(kind) {
 exports.closeMvpVoting = makeCloseVotingCallable('mvp')
 exports.closeMurallaVoting = makeCloseVotingCallable('muralla')
 
+// ── 7c. Callables: reabrir una votación ya cerrada ───────────────────────────
+// Para cuando se cerró antes de tiempo (faltaban votar varios, o se cargó mal
+// quién jugó y recién se corrigió con "Reemplazar"). Solo el owner/admin del
+// grupo o un admin global — mismo permiso que cerrarla.
+//
+// Los votos NO se borran: el que ya votó sigue contando y puede cambiar su
+// voto. Lo que sí se deshace es el ganador (campo del partido + la marca en
+// playerStats), porque mientras se vota no hay ganador: dejarlo puesto
+// seguiría sumándole un MVP en el perfil a alguien que quizás pierde en la
+// segunda vuelta. Al volver a cerrar, closeVotingForMatch lo recalcula todo.
+//
+// `votingReopenedAt` le da a la votación reabierta su propia ventana antes de
+// que el auto-cierre de las 36hs la vuelva a cerrar (ver runAutoCloseMatches):
+// sin eso, reabrir un partido de hace dos días duraría hasta el próximo tick
+// de la hora.
+function makeReopenVotingCallable(kind) {
+  const cfg = VOTING_KINDS[kind]
+  return onCall({ region: LOCATION, invoker: 'public' }, async (request) => {
+    const { matchId } = request.data
+    if (!matchId) throw new HttpsError('invalid-argument', 'matchId requerido.')
+
+    await assertCanReopenVoting(request.auth, matchId)
+
+    const db = admin.firestore()
+    const matchRef = db.collection('matches').doc(matchId)
+    const matchSnap = await matchRef.get()
+    if (!matchSnap.exists) throw new HttpsError('not-found', 'Partido no encontrado.')
+    const match = matchSnap.data()
+
+    if (match.status !== 'finished') {
+      throw new HttpsError('failed-precondition', 'El partido no está finalizado.')
+    }
+    if (match[cfg.closedField] !== true) {
+      throw new HttpsError('failed-precondition', 'La votación ya está abierta.')
+    }
+
+    const batch = db.batch()
+    batch.update(matchRef, {
+      [cfg.userIdField]: null,
+      [cfg.nameField]: null,
+      [cfg.closedField]: false,
+      votingReopenedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+    const statsSnap = await matchRef.collection('playerStats').where(cfg.statsField, '==', true).get()
+    statsSnap.docs.forEach((d) => batch.update(d.ref, { [cfg.statsField]: false }))
+    await batch.commit()
+
+    logger.info(`reopen${kind}Voting: ${matchId} reabierta por ${request.auth?.uid}`)
+    return { success: true }
+  })
+}
+
+// Reabrir: admin global u owner/admin del GRUPO. A diferencia de
+// canCallerScheduleMatchNotifications, el creador del partido a secas no
+// alcanza — se pidió explícitamente que sea cosa de los admins del grupo.
+async function assertCanReopenVoting(auth, matchId) {
+  if (auth?.token?.admin === true) return
+  const uid = auth?.uid
+  if (uid) {
+    const db = admin.firestore()
+    const matchSnap = await db.collection('matches').doc(matchId).get()
+    const groupId = matchSnap.exists ? matchSnap.data().groupId : null
+    if (groupId) {
+      const memberSnap = await db.collection('groups').doc(groupId).collection('members').doc(uid).get()
+      if (memberSnap.exists && ['owner', 'admin'].includes(memberSnap.data().role)) return
+    }
+  }
+  throw new HttpsError('permission-denied', 'Solo un admin del grupo puede reabrir la votación.')
+}
+
+exports.reopenMvpVoting = makeReopenVotingCallable('mvp')
+exports.reopenMurallaVoting = makeReopenVotingCallable('muralla')
+
 // ── 8. Trigger: notificar cuando se abre un partido
 exports.onMatchOpened = onDocumentUpdated(
   { region: LOCATION, document: 'matches/{matchId}' },
@@ -1486,7 +1616,7 @@ exports.onPlayerStatsWritten = onDocumentWritten(
       const beforeHasTeamResult = !!(before?.userId && before?.team && before?.result)
 
       if (afterHasTeamResult || beforeHasTeamResult) {
-        await updateChemistryForPlayerStat(event.params.matchId, userId, before, after)
+        await syncMatchPairs(event.params.matchId)
       }
 
       // ── Rachas: solo con el PRIMER resultado cargado (mismo gate que el
@@ -1503,83 +1633,94 @@ exports.onPlayerStatsWritten = onDocumentWritten(
   },
 )
 
-// ── Helper: actualizar química/rivalidad por pares tras un write en playerStats
-// Lee los demás playerStats del mismo partido y, para cada otro jugador cuyo
-// team+result cambió de relación respecto a `userId` (compañero si comparten
-// team, rival si no), incrementa por diferencia (before → after) los
-// contadores simétricos en users/{userId}/chemistry|rivalry/{other} Y
-// users/{other}/chemistry|rivalry/{userId}. La rivalidad se guarda desde la
-// perspectiva de CADA UNO (si A ganó y B perdió, wins de A y losses de B, no
-// al revés). No hay orden garantizado entre triggers hermanos (cada
-// playerStats dispara su propio evento), pero cada incremento es atómico y
-// todos convergen al mismo estado final — aceptable acá.
-async function updateChemistryForPlayerStat(matchId, userId, before, after) {
-  const db = admin.firestore()
-  const siblingsSnap = await db.collection('matches').doc(matchId).collection('playerStats').get()
-  const siblings = siblingsSnap.docs
-    .map((d) => d.data())
-    .filter((s) => s.userId && s.userId !== userId && s.team && s.result)
-
-  if (siblings.length === 0) return
-
-  const inc = admin.firestore.FieldValue.increment
-  const batch = db.batch()
-  let hasChanges = false
-
-  const opposite = { W: 'L', L: 'W', E: 'E' }
-
-  for (const other of siblings) {
-    const wasSameTeamBefore = !!(before?.team && before?.result && before.team === other.team)
-    const isSameTeamAfter = !!(after?.team && after?.result && after.team === other.team)
-    const wasDiffTeamBefore = !!(before?.team && before?.result && before.team !== other.team)
-    const isDiffTeamAfter = !!(after?.team && after?.result && after.team !== other.team)
-
-    // Compañeros (mismo equipo) → chemistry
-    if (wasSameTeamBefore !== isSameTeamAfter) {
-      const sign = isSameTeamAfter ? 1 : -1
-      const result = isSameTeamAfter ? after.result : before.result
-      const payload = {
-        gamesTogether: inc(sign),
-        winsTogether: inc(result === 'W' ? sign : 0),
-        drawsTogether: inc(result === 'E' ? sign : 0),
-        lossesTogether: inc(result === 'L' ? sign : 0),
-        lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }
-      const chemRefA = db.collection('users').doc(userId).collection('chemistry').doc(other.userId)
-      const chemRefB = db.collection('users').doc(other.userId).collection('chemistry').doc(userId)
-      batch.set(chemRefA, payload, { merge: true })
-      batch.set(chemRefB, payload, { merge: true })
-      hasChanges = true
-    }
-
-    // Rivales (equipo distinto) → rivalry, cada uno desde su propia perspectiva
-    if (wasDiffTeamBefore !== isDiffTeamAfter) {
-      const sign = isDiffTeamAfter ? 1 : -1
-      const resultA = isDiffTeamAfter ? after.result : before.result
-      const resultB = opposite[resultA]
-      const payloadA = {
-        gamesAgainst: inc(sign),
-        winsAgainst: inc(resultA === 'W' ? sign : 0),
-        drawsAgainst: inc(resultA === 'E' ? sign : 0),
-        lossesAgainst: inc(resultA === 'L' ? sign : 0),
-        lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }
-      const payloadB = {
-        gamesAgainst: inc(sign),
-        winsAgainst: inc(resultB === 'W' ? sign : 0),
-        drawsAgainst: inc(resultB === 'E' ? sign : 0),
-        lossesAgainst: inc(resultB === 'L' ? sign : 0),
-        lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }
-      const rivRefA = db.collection('users').doc(userId).collection('rivalry').doc(other.userId)
-      const rivRefB = db.collection('users').doc(other.userId).collection('rivalry').doc(userId)
-      batch.set(rivRefA, payloadA, { merge: true })
-      batch.set(rivRefB, payloadB, { merge: true })
-      hasChanges = true
+// ── Helper: química/rivalidad por pares, con libro de lo ya aplicado ─────────
+// Antes esto sumaba por DIFERENCIA (before → after) desde el trigger de cada
+// jugador, y escribía los DOS lados del par. El problema: "Cargar resultado"
+// guarda todas las playerStats en un solo batch, así que los 14 triggers
+// corren a la vez y cada uno ya ve a los otros 13 cargados — el par A-B lo
+// sumaba el trigger de A Y el de B. Todo contado doble (por eso aparecían 4
+// empates con alguien con quien se empató 2 veces). Además, editar el
+// marcador (W → E con el mismo equipo) no movía nada, porque solo miraba si
+// cambiaba "compañero o rival".
+//
+// Ahora cada partido guarda en `matches/{id}/chemLedger/state` qué aporte de
+// ese partido ya está sumado para cada par ordenado ("uid|otro" → "CW" =
+// compañeros y ganó, "RE" = rivales y empató, ...). Cualquier write en
+// playerStats recalcula el aporte que DEBERÍA haber a partir del estado actual
+// del partido, lo compara con el libro y aplica solo la diferencia — en una
+// transacción, así los 14 triggers concurrentes se ponen en fila: el primero
+// aplica todo y los demás encuentran el libro al día y no escriben nada.
+// Nunca lo lee el cliente (no hay regla que lo abra).
+function pairContributions(stats) {
+  const players = stats.filter((s) => s.userId && s.team && s.result)
+  const pairs = {}
+  for (const a of players) {
+    for (const b of players) {
+      if (a.userId === b.userId) continue
+      pairs[`${a.userId}|${b.userId}`] = `${a.team === b.team ? 'C' : 'R'}${a.result}`
     }
   }
+  return pairs
+}
 
-  if (hasChanges) await batch.commit()
+// Suma (sign = 1) o resta (sign = -1) un aporte "CW"/"RE"/... sobre los
+// contadores acumulados de un doc chemistry o rivalry.
+function addContribution(counters, code, sign) {
+  const together = code[0] === 'C'
+  const result = code[1]
+  const games = together ? 'gamesTogether' : 'gamesAgainst'
+  const field = {
+    W: together ? 'winsTogether' : 'winsAgainst',
+    E: together ? 'drawsTogether' : 'drawsAgainst',
+    L: together ? 'lossesTogether' : 'lossesAgainst',
+  }[result]
+  counters[games] = (counters[games] ?? 0) + sign
+  if (field) counters[field] = (counters[field] ?? 0) + sign
+}
+
+async function syncMatchPairs(matchId) {
+  const db = admin.firestore()
+  const matchRef = db.collection('matches').doc(matchId)
+  const ledgerRef = matchRef.collection('chemLedger').doc('state')
+
+  await db.runTransaction(async (tx) => {
+    const [ledgerSnap, statsSnap] = await Promise.all([
+      tx.get(ledgerRef),
+      tx.get(matchRef.collection('playerStats')),
+    ])
+    const applied = ledgerSnap.exists ? (ledgerSnap.data().pairs ?? {}) : {}
+    const desired = pairContributions(statsSnap.docs.map((d) => d.data()))
+
+    // Diferencias agrupadas por doc destino (users/{uid}/chemistry|rivalry/{otro}).
+    const deltas = new Map()
+    const keys = new Set([...Object.keys(applied), ...Object.keys(desired)])
+    for (const key of keys) {
+      if (applied[key] === desired[key]) continue
+      const [uid, other] = key.split('|')
+      const bump = (code, sign) => {
+        const col = code[0] === 'C' ? 'chemistry' : 'rivalry'
+        const path = `${uid}/${col}/${other}`
+        const counters = deltas.get(path) ?? {}
+        addContribution(counters, code, sign)
+        deltas.set(path, counters)
+      }
+      if (applied[key]) bump(applied[key], -1)
+      if (desired[key]) bump(desired[key], 1)
+    }
+
+    if (deltas.size === 0) return
+
+    const inc = admin.firestore.FieldValue.increment
+    for (const [path, counters] of deltas.entries()) {
+      const [uid, col, other] = path.split('/')
+      const payload = { lastPlayedAt: admin.firestore.FieldValue.serverTimestamp() }
+      for (const [field, value] of Object.entries(counters)) {
+        if (value !== 0) payload[field] = inc(value)
+      }
+      tx.set(db.collection('users').doc(uid).collection(col).doc(other), payload, { merge: true })
+    }
+    tx.set(ledgerRef, { pairs: desired, updatedAt: admin.firestore.FieldValue.serverTimestamp() })
+  })
 }
 
 // ── Helper: recalcular rachas de un jugador con su primer resultado cargado ─
@@ -1800,73 +1941,90 @@ exports.recalcAllStats = onCall(
     }
     if (ops > 0) await batch.commit()
 
-    // 3. Backfill de química por pares: agrupar playerStats por partido y,
-    //    para cada par con mismo team+result en el mismo matchId, acumular
-    //    contadores simétricos. Se sobrescribe TODA la subcolección chemistry
-    //    de cada usuario tocado (borrar + reescribir), igual criterio que
-    //    stats/statsByGroup arriba.
-    const byMatch = new Map()
+    // 3. Química Y rivalidad por pares, reconstruidas desde cero con el mismo
+    //    criterio que syncMatchPairs (pairContributions). Se borran las
+    //    subcolecciones chemistry/rivalry de TODOS los usuarios (así no quedan
+    //    pares viejos inflados por el conteo doble de antes) y se siembra el
+    //    libro `chemLedger/state` de cada partido: sin libro, la próxima
+    //    edición de un partido viejo volvería a sumar todo su aporte encima.
+    const statsByMatch = new Map()
     statsSnap.docs.forEach((d) => {
-      const s = d.data()
-      if (!s.userId || !s.team || !s.result) return
       const matchId = d.ref.parent.parent.id
-      if (!byMatch.has(matchId)) byMatch.set(matchId, [])
-      byMatch.get(matchId).push({ userId: s.userId, team: s.team, result: s.result })
+      if (!statsByMatch.has(matchId)) statsByMatch.set(matchId, [])
+      statsByMatch.get(matchId).push(d.data())
     })
 
-    const zeroChem = () => ({ gamesTogether: 0, winsTogether: 0, drawsTogether: 0, lossesTogether: 0 })
-    const chemByUser = new Map()
-    const addPair = (uid, otherUid, result) => {
-      if (!chemByUser.has(uid)) chemByUser.set(uid, new Map())
-      const m = chemByUser.get(uid)
-      const c = m.get(otherUid) ?? zeroChem()
-      c.gamesTogether += 1
-      if (result === 'W') c.winsTogether += 1
-      if (result === 'E') c.drawsTogether += 1
-      if (result === 'L') c.lossesTogether += 1
-      m.set(otherUid, c)
+    const totals = new Map() // "uid/col/other" → contadores
+    const ledgers = new Map() // matchId → pairs
+    for (const [matchId, stats] of statsByMatch.entries()) {
+      const pairs = pairContributions(stats)
+      ledgers.set(matchId, pairs)
+      for (const [key, code] of Object.entries(pairs)) {
+        const [uid, other] = key.split('|')
+        const path = `${uid}/${code[0] === 'C' ? 'chemistry' : 'rivalry'}/${other}`
+        const counters = totals.get(path) ?? {}
+        addContribution(counters, code, 1)
+        totals.set(path, counters)
+      }
     }
 
-    for (const players of byMatch.values()) {
-      for (let i = 0; i < players.length; i++) {
-        for (let j = i + 1; j < players.length; j++) {
-          const a = players[i]
-          const b = players[j]
-          if (a.team !== b.team) continue
-          addPair(a.userId, b.userId, a.result)
-          addPair(b.userId, a.userId, b.result)
+    let pairBatch = db.batch()
+    let pairOps = 0
+    const flush = async () => {
+      if (pairOps >= 400) {
+        await pairBatch.commit()
+        pairBatch = db.batch()
+        pairOps = 0
+      }
+    }
+
+    for (const userDoc of usersSnap.docs) {
+      for (const col of ['chemistry', 'rivalry']) {
+        const existing = await userDoc.ref.collection(col).get()
+        for (const d of existing.docs) {
+          pairBatch.delete(d.ref)
+          pairOps += 1
+          await flush()
         }
       }
     }
-
-    let chemBatch = db.batch()
-    let chemOps = 0
-    for (const [uid, pairs] of chemByUser.entries()) {
-      const chemCol = db.collection('users').doc(uid).collection('chemistry')
-      const existingSnap = await chemCol.get()
-      existingSnap.docs.forEach((d) => {
-        chemBatch.delete(d.ref)
-        chemOps += 1
-      })
-      for (const [otherUid, c] of pairs.entries()) {
-        chemBatch.set(chemCol.doc(otherUid), {
-          ...c,
-          lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
-        })
-        chemOps += 1
-      }
-      if (chemOps >= 400) {
-        await chemBatch.commit()
-        chemBatch = db.batch()
-        chemOps = 0
-      }
+    // Los borrados se confirman ANTES de escribir: un set y un delete sobre el
+    // mismo doc en el mismo batch no está permitido.
+    if (pairOps > 0) {
+      await pairBatch.commit()
+      pairBatch = db.batch()
+      pairOps = 0
     }
-    if (chemOps > 0) await chemBatch.commit()
+
+    const zeroPair = (col) => col === 'chemistry'
+      ? { gamesTogether: 0, winsTogether: 0, drawsTogether: 0, lossesTogether: 0 }
+      : { gamesAgainst: 0, winsAgainst: 0, drawsAgainst: 0, lossesAgainst: 0 }
+    const pairUsers = new Set()
+    for (const [path, counters] of totals.entries()) {
+      const [uid, col, other] = path.split('/')
+      pairUsers.add(uid)
+      pairBatch.set(db.collection('users').doc(uid).collection(col).doc(other), {
+        ...zeroPair(col),
+        ...counters,
+        lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      pairOps += 1
+      await flush()
+    }
+    for (const [matchId, pairs] of ledgers.entries()) {
+      pairBatch.set(db.collection('matches').doc(matchId).collection('chemLedger').doc('state'), {
+        pairs,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      pairOps += 1
+      await flush()
+    }
+    if (pairOps > 0) await pairBatch.commit()
 
     logger.info(
-      `recalcAllStats: ${statsSnap.size} playerStats → ${usersSnap.size} usuarios actualizados, química recalculada para ${chemByUser.size} usuarios`,
+      `recalcAllStats: ${statsSnap.size} playerStats → ${usersSnap.size} usuarios actualizados, química/rivalidad recalculada para ${pairUsers.size} usuarios`,
     )
-    return { success: true, playerStats: statsSnap.size, users: usersSnap.size, chemistryUsers: chemByUser.size }
+    return { success: true, playerStats: statsSnap.size, users: usersSnap.size, chemistryUsers: pairUsers.size }
   },
 )
 
@@ -1884,6 +2042,30 @@ function formatNameList(names) {
 //  3. Si un suplente pasó a titular, le manda una notificación FCM personal.
 //  4. Avisa al grupo que alguien se bajó (siempre; el texto cambia según si
 //     entró un suplente, quedó lugar, o no).
+// ── 12a. Trigger: al borrar un partido, borrar sus filas de `dropouts` ───────
+// "Borrar partido" (useMatch.deleteMatch) borra primero las inscripciones y
+// después el partido, así que onRegistrationDeleted puede llegar a correr con
+// el partido todavía en pie y anotar a todos como "se bajaron". Un partido
+// borrado (lista duplicada, no juntó gente) no es una baja de nadie: acá se
+// limpia. Si el trigger de la inscripción corre DESPUÉS, ya no encuentra el
+// partido y no escribe nada — cualquiera sea el orden, no queda basura.
+exports.onMatchDeletedCleanDropouts = onDocumentDeleted(
+  { region: LOCATION, document: 'matches/{matchId}' },
+  async (event) => {
+    try {
+      const db = admin.firestore()
+      const snap = await db.collection('dropouts').where('matchId', '==', event.params.matchId).get()
+      if (snap.empty) return
+      const batch = db.batch()
+      snap.docs.forEach((d) => batch.delete(d.ref))
+      await batch.commit()
+      logger.info(`onMatchDeletedCleanDropouts: ${event.params.matchId} → ${snap.size} bajas borradas`)
+    } catch (error) {
+      logger.error('onMatchDeletedCleanDropouts: error', error)
+    }
+  },
+)
+
 exports.onRegistrationDeleted = onDocumentDeleted(
   { region: LOCATION, document: 'matches/{matchId}/registrations/{regId}' },
   async (event) => {
@@ -1919,6 +2101,23 @@ exports.onRegistrationDeleted = onDocumentDeleted(
         const regsSnap = await tx.get(
           matchRef.collection('registrations').orderBy('position', 'asc'),
         )
+
+        // ¿Fue un reemplazo (replaceRegistration)? Ahí la inscripción nueva ya
+        // ocupa el lugar de la borrada: no hubo baja para avisarle a nadie, y
+        // el registro de bajas ya lo asentó la propia callable como 'replaced'.
+        const wasReplaced = regsSnap.docs.some(
+          (d) => d.data().replacedRegistrationId === event.params.regId,
+        )
+
+        // Registro de bajas (panel de admin). Solo gente con cuenta: al
+        // invitado sin cuenta no hay a quién atribuírsela. Partidos terminados
+        // ya salieron arriba (limpiar la lista después de jugar no es bajarse).
+        if (!wasReplaced && leaverUserId) {
+          tx.set(
+            db.collection('dropouts').doc(`${matchId}_${event.params.regId}`),
+            buildDropoutDoc({ kind: 'left', matchId, match, reg: deletedReg }),
+          )
+        }
 
         const promotedUsers = []
         const promotedNames = []
@@ -1970,10 +2169,15 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           // (maxPlayers null) nunca se afirma "hay lugar": no hay cupo.
           spotOpen: maxPlayers != null && regsSnap.size < maxPlayers,
           registeredUserIds,
+          wasReplaced,
         }
       })
 
       if (!info) return
+      if (info.wasReplaced) {
+        logger.info(`onRegistrationDeleted: ${matchId} reemplazo de ${leaverName}, sin avisos`)
+        return
+      }
       const { matchTitle, groupId, promoted, promotedNames, createdBy, status, spotOpen, registeredUserIds } = info
 
       // 1) Cada suplente que pasó a titular: aviso PERSONAL de que ya está adentro.
@@ -2051,6 +2255,176 @@ exports.onRegistrationDeleted = onDocumentDeleted(
     }
   },
 )
+
+// ── 12b. Callable: reemplazar a un anotado por otro miembro del grupo ────────
+// "Se anotó Gonza, no vino y jugó Nahuel en su lugar." Sin esto la lista
+// quedaba con quien no jugó: Nahuel no aparecía para votar MVP/Muralla (las
+// reglas exigen una inscripción de titular), no le sumaba el partido, y a
+// Gonza sí.
+//
+// Es una Cloud Function y no un borrar + anotar desde el cliente porque son
+// varias piezas que tienen que moverse JUNTAS y sin efectos colaterales:
+//   · la inscripción nueva hereda el LUGAR de la vieja (posición, titular o
+//     suplente, equipo) — anotarlo de cero lo mandaba al fondo de la lista;
+//   · `currentPlayers` no se toca (sale uno, entra otro);
+//   · si el partido ya terminó, las playerStats del que no vino pasan al que
+//     jugó (goles, equipo y resultado), y los acumuladores se corrigen solos
+//     por diferencia en onPlayerStatsWritten;
+//   · no sale ningún aviso de "se bajó X, ¡hay lugar!": onRegistrationDeleted
+//     reconoce el reemplazo por `replacedRegistrationId` y no notifica.
+// Además queda asentado en `dropouts` como 'replaced'.
+//
+// Permiso: el mismo que reenviar el aviso de la lista — OG u owner/admin del
+// grupo, quien creó el partido, o admin global.
+exports.replaceRegistration = onCall(
+  { region: LOCATION, invoker: 'public' },
+  async (request) => {
+    const { matchId, registrationId, newUserId } = request.data ?? {}
+    if (!matchId || !registrationId || !newUserId) {
+      throw new HttpsError('invalid-argument', 'Faltan datos para el reemplazo.')
+    }
+
+    const db = admin.firestore()
+    const matchRef = db.collection('matches').doc(matchId)
+    const oldRegRef = matchRef.collection('registrations').doc(registrationId)
+    const newRegRef = matchRef.collection('registrations').doc(newUserId)
+
+    const result = await db.runTransaction(async (tx) => {
+      const [matchSnap, oldRegSnap, newRegSnap, newUserSnap] = await Promise.all([
+        tx.get(matchRef),
+        tx.get(oldRegRef),
+        tx.get(newRegRef),
+        tx.get(db.collection('users').doc(newUserId)),
+      ])
+      if (!matchSnap.exists) throw new HttpsError('not-found', 'El partido no existe.')
+      if (!oldRegSnap.exists) throw new HttpsError('not-found', 'Esa inscripción ya no está en la lista.')
+      const match = matchSnap.data()
+      const oldReg = oldRegSnap.data()
+
+      await assertCanResendMatchListNotification(
+        request.auth, match, tx, 'No tenés permiso para cambiar la lista de este partido.',
+      )
+
+      if (oldReg.userId === newUserId) {
+        throw new HttpsError('invalid-argument', 'Es la misma persona.')
+      }
+      if (newRegSnap.exists) {
+        throw new HttpsError('already-exists', 'Esa persona ya está anotada en este partido.')
+      }
+      if (!newUserSnap.exists) throw new HttpsError('not-found', 'No encontramos a esa persona.')
+
+      if (match.groupId) {
+        const memberSnap = await tx.get(
+          db.collection('groups').doc(match.groupId).collection('members').doc(newUserId),
+        )
+        if (!memberSnap.exists) {
+          throw new HttpsError('failed-precondition', 'Esa persona no es del grupo del partido.')
+        }
+      }
+
+      const finished = match.status === 'finished'
+      const oldStatsRef = oldReg.userId ? matchRef.collection('playerStats').doc(oldReg.userId) : null
+      const newStatsRef = matchRef.collection('playerStats').doc(newUserId)
+      const [oldStatsSnap, newStatsSnap] = finished && oldStatsRef
+        ? await Promise.all([tx.get(oldStatsRef), tx.get(newStatsRef)])
+        : [null, null]
+
+      const callerUid = request.auth.uid
+      const callerSnap = await tx.get(db.collection('users').doc(callerUid))
+      const caller = callerSnap.exists ? callerSnap.data() : {}
+      const newUser = newUserSnap.data()
+      const newName = newUser.nickname || newUser.displayName || 'Jugador'
+
+      // ── Escrituras (todas las lecturas ya se hicieron) ─────────────────
+      tx.set(newRegRef, {
+        userId: newUserId,
+        displayName: newName,
+        photoURL: newUser.photoURL ?? null,
+        isGuest: false,
+        guestName: null,
+        addedBy: callerUid,
+        addedByName: caller.nickname || caller.displayName || null,
+        registeredAt: oldReg.registeredAt ?? admin.firestore.FieldValue.serverTimestamp(),
+        position: oldReg.position ?? null,
+        isOnWaitlist: oldReg.isOnWaitlist === true,
+        team: oldReg.team ?? null,
+        replacedRegistrationId: registrationId,
+        replacedUserId: oldReg.userId ?? null,
+        replacedName: oldReg.displayName || oldReg.guestName || null,
+        replacedAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      tx.delete(oldRegRef)
+
+      // Partido ya jugado: lo que se cargó a nombre del que no vino pasa al
+      // que jugó. MVP/Muralla no se heredan — se los votaron a otra persona.
+      if (oldStatsSnap?.exists && !newStatsSnap?.exists) {
+        const st = oldStatsSnap.data()
+        tx.set(newStatsRef, {
+          ...st,
+          userId: newUserId,
+          displayName: newName,
+          mvp: false,
+          muralla: false,
+          savedAt: admin.firestore.FieldValue.serverTimestamp(),
+        })
+        tx.delete(oldStatsRef)
+      }
+      const matchPatch = {}
+      if (oldReg.userId && match.mvpUserId === oldReg.userId) {
+        matchPatch.mvpUserId = null
+        matchPatch.mvpName = null
+      }
+      if (oldReg.userId && match.murallaUserId === oldReg.userId) {
+        matchPatch.murallaUserId = null
+        matchPatch.murallaName = null
+      }
+      if (Object.keys(matchPatch).length > 0) {
+        tx.update(matchRef, { ...matchPatch, updatedAt: admin.firestore.FieldValue.serverTimestamp() })
+      }
+
+      // El que no vino queda en el registro de bajas (solo si tiene cuenta).
+      if (oldReg.userId) {
+        tx.set(
+          db.collection('dropouts').doc(`${matchId}_${registrationId}`),
+          buildDropoutDoc({ kind: 'replaced', matchId, match, reg: oldReg, replacedBy: newName }),
+        )
+      }
+
+      return { oldName: oldReg.displayName || oldReg.guestName || 'Alguien', newName }
+    })
+
+    logger.info(`replaceRegistration: ${matchId} ${result.oldName} → ${result.newName} (por ${request.auth?.uid})`)
+    return { success: true, ...result }
+  },
+)
+
+// ── Helper: fila del registro de bajas (`dropouts`) ──────────────────────────
+// Una baja es "se anotó y después no estuvo". `hoursBeforeMatch` es lo que
+// separa avisar el lunes para el sábado (normal) de borrarse una hora antes
+// (lo que de verdad complica); negativo = después del horario del partido.
+// Contarlas a todas por igual castigaría al que avisa con tiempo y empujaría
+// a la gente a no anotarse temprano — por eso se guarda la anticipación y no
+// solo el hecho, y el panel las separa.
+function buildDropoutDoc({ kind, matchId, match, reg, replacedBy = null }) {
+  const matchMs = match.date?.toMillis?.() ?? null
+  const hoursBeforeMatch = matchMs != null
+    ? Math.round(((matchMs - Date.now()) / 3600000) * 10) / 10
+    : null
+  return {
+    kind, // 'left' (se bajó o lo bajaron) | 'replaced' (otro jugó en su lugar)
+    userId: reg.userId,
+    displayName: reg.displayName || null,
+    matchId,
+    matchTitle: match.title ?? null,
+    matchDate: match.date ?? null,
+    groupId: match.groupId ?? null,
+    wasStarter: reg.isOnWaitlist !== true,
+    registeredAt: reg.registeredAt ?? null,
+    hoursBeforeMatch,
+    replacedBy,
+    droppedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }
+}
 
 // ── 13. Trigger: recalcular el promedio de estrellas de la descripción ───────
 // Se dispara al crear/editar/borrar users/{userId}/descriptionRatings/{raterId}.
