@@ -153,6 +153,20 @@
       ]
     },
     {
+      "collectionGroup": "dropouts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "groupId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "droppedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "playerStats",
       "queryScope": "COLLECTION_GROUP",
       "fields": [

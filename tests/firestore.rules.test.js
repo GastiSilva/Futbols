@@ -21,7 +21,7 @@ import {
 } from '@firebase/rules-unit-testing'
 import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, collection, collectionGroup, getDocs, addDoc,
-  query, where, limit, deleteField, runTransaction, serverTimestamp,
+  query, where, limit, orderBy, deleteField, runTransaction, serverTimestamp,
 } from 'firebase/firestore'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -102,7 +102,10 @@ beforeEach(async () => {
       name: 'Grupo B', createdBy: MALLORY, inviteCode: 'BBBB2222', memberCount: 1,
     })
 
-    await setDoc(doc(db, 'dropouts', 'd1'), { userId: BOB, matchId: MATCH_A, kind: 'left', hoursBeforeMatch: 2 })
+    await setDoc(doc(db, 'dropouts', 'd1'), {
+      userId: BOB, matchId: MATCH_A, kind: 'left', hoursBeforeMatch: 2,
+      groupId: GROUP_A, droppedAt: PAST,
+    })
     // Sanción pendiente de Bob en el grupo A (la escribe la CF refreshSanction)
     await setDoc(doc(db, 'sanctions', `${GROUP_A}_${BOB}`), { userId: BOB, groupId: GROUP_A, pending: true })
     await setDoc(doc(db, 'groups', GROUP_A, 'members', ALICE), { userId: ALICE, role: 'owner', og: true })
@@ -694,6 +697,27 @@ describe('Registro de bajas (dropouts)', () => {
 
   test('el owner de un grupo tampoco puede listarlas', async () => {
     await assertFails(getDocs(collection(ctx(ALICE), 'dropouts')))
+  })
+
+  // Filtro por grupo del panel (DropoutsReport): la query lleva el where de
+  // groupId, y el permiso sigue siendo solo del admin global — filtrar por el
+  // propio grupo NO habilita a un owner a leer las bajas.
+  test('un admin global puede filtrarlas por grupo', async () => {
+    await assertSucceeds(getDocs(query(
+      collection(ctx(ADMIN, { admin: true }), 'dropouts'),
+      where('groupId', '==', GROUP_A),
+      where('droppedAt', '>=', new Date(0)),
+      orderBy('droppedAt', 'desc'),
+      limit(1000),
+    )))
+  })
+
+  test('el owner de un grupo NO puede filtrarlas por SU grupo', async () => {
+    await assertFails(getDocs(query(
+      collection(ctx(ALICE), 'dropouts'),
+      where('groupId', '==', GROUP_A),
+      limit(1000),
+    )))
   })
 
   test('nadie puede borrar una baja, ni el jugador ni un admin', async () => {

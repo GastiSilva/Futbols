@@ -6,32 +6,63 @@
 // su lugar). Acá solo se leen y se agrupan por jugador para el panel de admin.
 // ─────────────────────────────────────────────────────────────────────────────
 import { ref } from 'vue'
-import { collection, getDocs, limit, orderBy, query, Timestamp, where } from 'firebase/firestore'
+import {
+  collection, documentId, getDocs, limit, orderBy, query, Timestamp, where,
+} from 'firebase/firestore'
 import { db } from 'src/services/firebase'
+import { errorCode } from 'src/utils/errors'
 
 // Bajarse con menos de esto antes del partido es lo que de verdad complica:
 // ya no hay tiempo de conseguir a otro. Avisar con días no cuenta como tarde.
 export const LATE_DROPOUT_HOURS = 24
 const MAX_ROWS = 1000
+// Tope del operador `in` de Firestore: los nombres de grupo se piden en tandas.
+const IN_BATCH = 30
 
 export function useDropouts() {
   const loading = ref(false)
   const error = ref(null)
 
-  async function fetchDropouts(days) {
+  function runQuery(since, groupId) {
+    // El filtro por grupo va en la QUERY, no en memoria: así el tope de
+    // MAX_ROWS se aplica al grupo elegido y no a la colección entera. Con el
+    // filtro en memoria, un período con muchas bajas se cortaba en las 1000
+    // más recientes de TODOS los grupos y el panel mostraba un grupo
+    // incompleto sin avisar. Requiere el índice groupId + droppedAt.
+    return getDocs(
+      query(
+        collection(db, 'dropouts'),
+        ...(groupId ? [where('groupId', '==', groupId)] : []),
+        where('droppedAt', '>=', since),
+        orderBy('droppedAt', 'desc'),
+        limit(MAX_ROWS),
+      ),
+    ).then((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+  }
+
+  /**
+   * Bajas de los últimos `days` días, opcionalmente de un solo grupo.
+   * @param {number} days
+   * @param {string|null} groupId  null = todos los grupos
+   */
+  async function fetchDropouts(days, groupId = null) {
     loading.value = true
     error.value = null
     try {
       const since = Timestamp.fromMillis(Date.now() - days * 24 * 60 * 60 * 1000)
-      const snap = await getDocs(
-        query(
-          collection(db, 'dropouts'),
-          where('droppedAt', '>=', since),
-          orderBy('droppedAt', 'desc'),
-          limit(MAX_ROWS),
-        ),
-      )
-      return snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      try {
+        return await runQuery(since, groupId)
+      } catch (err) {
+        // El índice compuesto tarda unos minutos en construirse después de
+        // desplegarlo, y hasta entonces la query por grupo falla entera. En esa
+        // ventana se cae al filtro en memoria: el panel sigue andando (con el
+        // tope aplicado a toda la colección) en vez de mostrar un error.
+        if (groupId && errorCode(err) === 'failed-precondition') {
+          const all = await runQuery(since, null)
+          return all.filter((r) => r.groupId === groupId)
+        }
+        throw err
+      }
     } catch (err) {
       error.value = err.message
       throw err
@@ -40,7 +71,31 @@ export function useDropouts() {
     }
   }
 
-  return { loading, error, fetchDropouts }
+  /**
+   * Nombres de los grupos que aparecen en las bajas, para el selector. Se
+   * piden solo los ids presentes (no la colección entera): son un puñado y
+   * así el panel no se trae cientos de grupos sin bajas.
+   * @param {string[]} groupIds
+   * @returns {Promise<Record<string, string>>} id → nombre
+   */
+  async function fetchGroupNames(groupIds) {
+    const ids = [...new Set(groupIds.filter(Boolean))]
+    if (ids.length === 0) return {}
+    // Cada id pedido entra en el resultado, aunque el grupo esté borrado (ahí
+    // queda en null). Si no, el id faltante se volvería a pedir en cada
+    // recarga y el grupo no aparecería en el selector pese a tener bajas.
+    const names = Object.fromEntries(ids.map((id) => [id, null]))
+    for (let i = 0; i < ids.length; i += IN_BATCH) {
+      const batch = ids.slice(i, i + IN_BATCH)
+      const snap = await getDocs(
+        query(collection(db, 'groups'), where(documentId(), 'in', batch)),
+      )
+      snap.docs.forEach((d) => { names[d.id] = d.data().name ?? null })
+    }
+    return names
+  }
+
+  return { loading, error, fetchDropouts, fetchGroupNames }
 }
 
 // Agrupa por jugador. "Tarde" = titular que se bajó con menos de
