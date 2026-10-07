@@ -505,7 +505,12 @@ service cloud.firestore {
         (
           (isAdmin() || isMemberOfMatchGroup(matchId))
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['scoreA', 'scoreB', 'status', 'finishedAt', 'updatedAt'])
+               .hasOnly(['scoreA', 'scoreB', 'status', 'finishedAt', 'updatedAt', 'guestStats'])
+          // guestStats: goles/asistencias de invitados sin cuenta, a nombre del
+          // PARTIDO (no de un perfil). Es solo una lista de display: no alimenta
+          // ningún acumulador. Se acota el tamaño para que no sea un cajón sin fondo.
+          && request.resource.data.get('guestStats', []) is list
+          && request.resource.data.get('guestStats', []).size() <= 30
           && request.resource.data.scoreA is int && request.resource.data.scoreA >= 0
           && request.resource.data.scoreB is int && request.resource.data.scoreB >= 0
           // Cargar un resultado SOLO puede dejar el partido en 'finished'. Antes
@@ -612,8 +617,13 @@ service cloud.firestore {
         //      acceso anticipado (OG / owner / admin del grupo) o es el creador,
         //      y SOLO puede anotarse a sí mismo o a otro miembro que TAMBIÉN
         //      tenga acceso anticipado. Invitados no.
+        //
+        // `penalized`/`penalizedAt` (sanción por bajas) los pone SOLO la Cloud
+        // Function onRegistrationCreated: ninguna rama de alta puede traerlos.
         allow create: if
           (isAuthenticated() || isAnonGuest())
+          && !('penalized' in request.resource.data)
+          && !('penalizedAt' in request.resource.data)
           && (
             // (0) creador del partido → él mismo, sin restricción de horario
             (
@@ -716,9 +726,16 @@ service cloud.firestore {
         // el equipo (A/B) de CUALQUIER inscripto — necesario para armar
         // equipos balanceados antes de jugar (useTeamBalancer) — pero SOLO
         // puede tocar el campo `team`, nada más.
+        // Nadie (ni el dueño) puede tocar `penalized`/`penalizedAt`: quien está
+        // en sanción no puede apagársela a mano. Un admin global sí, como
+        // escape de emergencia.
         allow update: if
           isAdmin()
-          || isOwner(userId)
+          || (
+            isOwner(userId)
+            && !request.resource.data.diff(resource.data).affectedKeys()
+                 .hasAny(['penalized', 'penalizedAt'])
+          )
           || (
             hasEarlyAccessInMatchGroup(matchId)
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['team'])
@@ -943,8 +960,12 @@ service cloud.firestore {
                      || matchData(matchId).get('mvpVotingClosed', false) == true
                    );
 
-        allow list: if isAuthenticated()
-                    && matchData(matchId).get('mvpVotingClosed', false) == true;
+        // El admin global lista siempre: `deleteMatch` recorre esta colección
+        // para limpiarla, y sin esta rama "Borrar partido" fallaba con
+        // permission-denied hasta para el dueño del sistema.
+        allow list: if isAdmin()
+                    || (isAuthenticated()
+                        && matchData(matchId).get('mvpVotingClosed', false) == true);
 
         allow create, update: if
           (isAdmin() || isMemberOfMatchGroup(matchId) || isGroupless(matchId))
@@ -980,8 +1001,10 @@ service cloud.firestore {
                      || matchData(matchId).get('murallaVotingClosed', false) == true
                    );
 
-        allow list: if isAuthenticated()
-                    && matchData(matchId).get('murallaVotingClosed', false) == true;
+        // Mismo motivo que en mvpVotes: el admin global lista siempre.
+        allow list: if isAdmin()
+                    || (isAuthenticated()
+                        && matchData(matchId).get('murallaVotingClosed', false) == true);
 
         allow create, update: if
           (isAdmin() || isMemberOfMatchGroup(matchId) || isGroupless(matchId))
@@ -1161,6 +1184,21 @@ service cloud.firestore {
     match /dropouts/{dropoutId} {
       allow read: if isAdmin();
       allow write: if false;
+    }
+
+    // Sanciones por bajas: `sanctions/{groupId}_{uid}`. Las escribe SOLO el
+    // backend (refreshSanction / onRegistrationCreated). El dueño puede LEER la
+    // suya —la app le muestra el "¿seguro?" antes de anotarse—, nadie más (ni
+    // los compañeros: es un dato de conducta, no un marcador público). Un admin
+    // global también lo lee. `get` y no `list`: se consulta por id exacto.
+    // La condición va sobre el ID (termina en "_{mi uid}") y no sobre
+    // `resource.data`: si el doc no existe —el caso normal, casi nadie tiene
+    // sanción— `resource` es null y la regla fallaría con permission-denied en
+    // vez de devolver "no existe".
+    match /sanctions/{sanctionId} {
+      allow get: if isAuthenticated()
+        && (sanctionId.matches('.+_' + request.auth.uid) || isAdmin());
+      allow list, write: if false;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

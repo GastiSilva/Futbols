@@ -6,9 +6,13 @@ import { getToken, onMessage } from 'firebase/messaging'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, setDoc, serverTimestamp, arrayUnion } from 'firebase/firestore'
 import { auth, db } from 'src/services/firebase'
+import { syncServerClock } from 'src/utils/serverClock'
 
 export default boot(({ app }) => {
   app.config.globalProperties.$firebase = firebaseApp
+  // Mide cuánto difiere el reloj del celular del de los servidores, para que
+  // la apertura de listas use la misma hora que las reglas (serverClock.js).
+  syncServerClock()
   initFCMInBackground()
 })
 

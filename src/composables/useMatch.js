@@ -22,6 +22,7 @@ import {
 import { httpsCallable } from 'firebase/functions'
 import { db, functions } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
+import { serverNow } from 'src/utils/serverClock'
 
 // Tope de resultados de cualquier query a `matches`. Las reglas EXIGEN un
 // `limit` explícito y no mayor a este valor (ver `allow list` en
@@ -100,7 +101,7 @@ export function getEffectiveStatus(match) {
   if ((match.currentPlayers ?? 0) >= (match.maxPlayers ?? Infinity)) return 'full'
   if (match.status === 'scheduled') {
     const openAtMillis = match.openAt?.toMillis?.() ?? 0
-    if (openAtMillis && Date.now() >= openAtMillis) return 'open'
+    if (openAtMillis && serverNow() >= openAtMillis) return 'open'
   }
   return match.status
 }
@@ -574,12 +575,16 @@ export function useMatch() {
   // finishedAt se fija SOLO la primera vez que el partido pasa a 'finished'
   // (re-guardar un resultado ya cargado no debe correr el reloj de las 36hs
   // del auto-cierre) — por eso el caller debe indicar si ya estaba finalizado.
-  async function saveMatchResult(matchId, { scoreA, scoreB }, { alreadyFinished = false } = {}) {
+  // guestStats: [{ regId, name, team, goals, assists }] — lo que hicieron los
+  // invitados sin cuenta. Vive en el partido (no en playerStats) para que los
+  // goles cuenten en el "quién hizo los goles" sin crear perfiles ni stats.
+  async function saveMatchResult(matchId, { scoreA, scoreB, guestStats = [] }, { alreadyFinished = false } = {}) {
     loading.value = true
     try {
       await updateDoc(doc(db, 'matches', matchId), {
         scoreA,
         scoreB,
+        guestStats,
         status: MATCH_STATUS.FINISHED,
         ...(alreadyFinished ? {} : { finishedAt: serverTimestamp() }),
         updatedAt: serverTimestamp(),
@@ -663,9 +668,18 @@ export function useMatch() {
     loading.value = true
     error.value = null
     try {
-      for (const sub of ['registrations', 'playerStats', 'mvpVotes']) {
-        const snap = await getDocs(collection(db, 'matches', matchId, sub))
-        await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)))
+      // Las inscripciones SÍ son obligatorias (si no se pueden borrar, mejor
+      // abortar antes de tocar el partido). El resto es limpieza de mejor
+      // esfuerzo: las reglas solo dejan listar votos (voto secreto) y borrar
+      // votos/playerStats a un admin global, así que para un creador u OG esa
+      // limpieza da permission-denied. Eso NO puede impedirle borrar su partido.
+      for (const sub of ['registrations', 'playerStats', 'mvpVotes', 'murallaVotes']) {
+        try {
+          const snap = await getDocs(collection(db, 'matches', matchId, sub))
+          await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)))
+        } catch (err) {
+          if (sub === 'registrations' || err.code !== 'permission-denied') throw err
+        }
       }
       // applications NO se borran acá a propósito: las reglas las bloquean
       // (`allow delete: if false`, igual que joinRequests) porque quedan como

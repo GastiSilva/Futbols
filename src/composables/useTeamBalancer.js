@@ -56,7 +56,10 @@ function playerZone(player) {
 function pairChemistryScore(a, b) {
   const chem = a.chemistry?.get(b.userId)
   if (!chem || !chem.gamesTogether) return 0
-  const winRateTogether = chem.winsTogether / chem.gamesTogether
+  // El backend solo crea el campo del resultado que ocurrió: dos que sólo
+  // empataron o perdieron juntos no tienen `winsTogether`. Sin el `?? 0`
+  // salía NaN, el costo se volvía NaN y `suggestTeams` devolvía null.
+  const winRateTogether = (chem.winsTogether ?? 0) / chem.gamesTogether
   return winRateTogether * (Math.min(chem.gamesTogether, CHEMISTRY_GAMES_CAP) / CHEMISTRY_GAMES_CAP)
 }
 
@@ -154,13 +157,15 @@ export function suggestTeams(players, iterations = DEFAULT_ITERATIONS) {
   }
 
   const teamSize = Math.floor(players.length / 2)
-  let best = null
-  let bestCost = Infinity
+  // Arranca con la primera partición (no con null): si algún dato raro vuelve
+  // el costo NaN, el caller igual recibe equipos en vez de romper al
+  // desestructurar.
+  let best = greedyPartition(players, teamSize)
+  let bestCost = cost(best.teamA, best.teamB)
+  if (Number.isNaN(bestCost)) bestCost = Infinity
 
-  for (let iter = 0; iter < iterations; iter++) {
-    const { teamA, teamB } = iter === 0
-      ? greedyPartition(players, teamSize)
-      : randomPartition(players, teamSize)
+  for (let iter = 1; iter < iterations; iter++) {
+    const { teamA, teamB } = randomPartition(players, teamSize)
 
     const c = cost(teamA, teamB)
     if (c < bestCost) {

@@ -238,6 +238,7 @@ import { db, functions } from 'src/services/firebase'
 import { useMatch } from 'src/composables/useMatch'
 import { useAuthStore } from 'src/stores/auth.store'
 import DropoutsReport from 'src/components/DropoutsReport.vue'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const authStore = useAuthStore()
@@ -316,7 +317,7 @@ function handleRecalcStats() {
         timeout: 6000,
       })
     } catch (err) {
-      $q.notify({ type: 'negative', message: `Error al recalcular: ${err.message}` })
+      $q.notify({ type: 'negative', message: `Error al recalcular: ${errorMessage(err)}` })
     } finally {
       recalculating.value = false
     }
@@ -342,7 +343,7 @@ async function setRole(u, newRole) {
   } catch (err) {
     $q.notify({
       type: 'negative',
-      message: `❌ Error: ${err.message}`,
+      message: `❌ Error: ${errorMessage(err)}`,
       position: 'top',
     })
   } finally {

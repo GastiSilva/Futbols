@@ -48,15 +48,26 @@ import { httpsCallable } from 'firebase/functions'
 import { db, functions } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
 import { getEffectiveStatus } from 'src/composables/useMatch'
+import { serverNow } from 'src/utils/serverClock'
+import { errorMessage } from 'src/utils/errors'
 
 // ── Errores tipados para feedback de UI ───────────────────────────────────────
 export const REGISTRATION_ERRORS = {
-  MATCH_NOT_FOUND: 'El partido no existe.',
+  MATCH_NOT_FOUND: 'El partido no existe (puede que lo hayan borrado).',
   ALREADY_REGISTERED: 'Ya estás anotado en este partido.',
-  MATCH_NOT_OPEN: 'La inscripción aún no está habilitada.',
+  MATCH_NOT_OPEN: 'La lista todavía no abrió.',
   MATCH_CLOSED: 'El partido ya no admite inscripciones.',
   QUOTA_EXCEEDED: 'Se han llenado todos los cupos disponibles.',
-  TRANSACTION_FAILED: 'Error de concurrencia. Por favor intenta de nuevo.',
+  // Solo para el código `aborted`: Firestore ya reintentó 5 veces solo y
+  // siguió chocando con otras altas simultáneas. Antes este texto se mostraba
+  // ante CUALQUIER error desconocido y escondía la causa real.
+  TRANSACTION_FAILED: 'Se estaba anotando mucha gente a la vez y no pudimos guardar tu lugar. Probá de nuevo.',
+  // permission-denied apenas pasado el horario de apertura: el reloj del
+  // celular va adelantado respecto del servidor (ver src/utils/serverClock.js).
+  SERVER_NOT_OPEN_YET:
+    'La lista está abriendo justo ahora y el servidor todavía no la dio por abierta. Probá de nuevo en unos segundos.',
+  NO_PERMISSION:
+    'El servidor no te dejó anotarte: puede que ya no seas miembro del grupo o que la lista no esté abierta para vos. Refrescá la página y probá de nuevo.',
   EARLY_NO_GUESTS: 'Los invitados solo pueden anotarse cuando la lista abre para todos.',
   EARLY_TARGET_NOT_ALLOWED:
     'Esa persona no tiene acceso anticipado — podés anotarla cuando abra la lista.',
@@ -175,6 +186,10 @@ export function useRegistration() {
           ? (regs.find((r) => r.id === uid) ?? null)
           : (regs.find((r) => r.userId === uid) ?? null)
       }
+    }, (err) => {
+      // Sin este handler, un rechazo de las reglas dejaba la lista vacía en
+      // silencio, sin rastro en la consola.
+      error.value = errorMessage(err, { context: `registrations:${matchId}` })
     })
 
     // Si hay callback, guarda la suscripción para poder desuscribirse después
@@ -226,6 +241,10 @@ export function useRegistration() {
           : doc(collection(db, 'matches', matchId, 'registrations')))
       : doc(db, 'matches', matchId, 'registrations', entry.targetUserId)
 
+    // Umbral de apertura que aplicó el cliente; si las reglas rechazan apenas
+    // después, el motivo casi seguro es un desfasaje de reloj (ver el catch).
+    let openThreshold = null
+
     try {
       const result = await runTransaction(db, async (transaction) => {
         // ── 1. LECTURAS (siempre primero en una transacción de Firestore) ──
@@ -246,8 +265,12 @@ export function useRegistration() {
         //    se puede entrar 30 min antes.
         //  - En esa ventana solo se puede anotar a gente que TAMBIÉN tenga
         //    acceso anticipado: nada de invitados ni miembros comunes.
-        const now = Date.now()
+        // Hora del SERVIDOR, no la del celular: las reglas comparan contra
+        // request.time, y con el celular adelantado el cliente dejaba pasar
+        // altas que las reglas después rechazaban.
+        const now = serverNow()
         const openAtMillis = match.openAt?.toMillis() ?? 0
+        openThreshold = openAtMillis
         const isSelf = !entry.isGuest && entry.targetUserId === user.uid
         const isCreator = match.createdBy === user.uid
         const creatorSelf = isCreator && isSelf
@@ -290,6 +313,7 @@ export function useRegistration() {
           const hasEarlyAccess = authStore.isOgInGroup(match.groupId) || isCreator
           const earlyMs = earlyAccessMsFor(match)
           const threshold = hasEarlyAccess ? openAtMillis - earlyMs : openAtMillis
+          openThreshold = threshold
           if (now < threshold) {
             throw new Error(REGISTRATION_ERRORS.MATCH_NOT_OPEN)
           }
@@ -373,10 +397,27 @@ export function useRegistration() {
 
       return result
     } catch (err) {
-      // Si el error ya es uno de los nuestros, lo relanzamos tal cual
+      // Errores nuestros (validaciones de arriba): se muestran tal cual.
+      // El resto se traduce por código — antes TODO lo desconocido se tapaba
+      // con "Error de concurrencia", incluido el rechazo de las reglas, y no
+      // había forma de saber qué había pasado.
       const isKnownError = Object.values(REGISTRATION_ERRORS).includes(err.message)
-      error.value = isKnownError ? err.message : REGISTRATION_ERRORS.TRANSACTION_FAILED
-      throw new Error(error.value)
+      const justOpened =
+        openThreshold != null && serverNow() - openThreshold < 2 * 60 * 1000
+      error.value = isKnownError
+        ? err.message
+        : errorMessage(err, {
+            context: 'registerEntry',
+            overrides: {
+              aborted: REGISTRATION_ERRORS.TRANSACTION_FAILED,
+              'permission-denied': justOpened
+                ? REGISTRATION_ERRORS.SERVER_NOT_OPEN_YET
+                : REGISTRATION_ERRORS.NO_PERMISSION,
+            },
+          })
+      const wrapped = new Error(error.value)
+      wrapped.code = err.code // se conserva para quien quiera distinguir casos
+      throw wrapped
     } finally {
       loading.value = false
     }
@@ -590,7 +631,7 @@ export function useRegistration() {
     if (userRegistration.value) return false
 
     const { allowed, threshold } = registrationAccessFor(match, authStore)
-    return allowed && Date.now() >= threshold
+    return allowed && serverNow() >= threshold
   }
 
   /**
@@ -602,7 +643,7 @@ export function useRegistration() {
     // Sin derecho al partido (no sos del grupo, o sos invitado de otro link):
     // no hay countdown que mostrar y la lista nunca se le abre.
     if (!allowed) return Infinity
-    return Math.max(0, threshold - Date.now())
+    return Math.max(0, threshold - serverNow())
   }
 
   /**
@@ -628,7 +669,7 @@ export function useRegistration() {
     if (!openAt) return false
     const earlyMs = earlyAccessMsFor(match)
     if (earlyMs === 0) return false  // apertura inmediata: no existe la ventana
-    const now = Date.now()
+    const now = serverNow()
     return now >= openAt - earlyMs && now < openAt
   }
 

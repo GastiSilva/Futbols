@@ -111,6 +111,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useGroups } from 'src/composables/useGroups'
 import { useQuasar } from 'quasar'
+import { errorMessage } from 'src/utils/errors'
 
 const route = useRoute()
 const router = useRouter()
@@ -145,7 +146,7 @@ async function handleRequestJoin(group) {
     requestedIds.value = new Set([...requestedIds.value, group.id])
     $q.notify({ type: 'positive', message: `Solicitud enviada a "${group.name}"` })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     requestingId.value = null
   }
@@ -162,7 +163,7 @@ async function handleJoinByLink() {
     }
     router.push({ name: 'group-detail', params: { id: groupId } })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     joiningByLink.value = false
   }

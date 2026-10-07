@@ -55,6 +55,7 @@
 import { ref } from 'vue'
 import { useQuasar } from 'quasar'
 import { useReports, REPORT_REASONS, MAX_REPORT_DETAILS } from 'src/composables/useReports'
+import { errorMessage } from 'src/utils/errors'
 
 const props = defineProps({
   userId: { type: String, required: true },
@@ -84,7 +85,7 @@ async function handleSubmit() {
       message: 'Reporte enviado. Gracias por avisar.',
     })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 </script>

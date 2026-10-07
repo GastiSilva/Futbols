@@ -507,6 +507,7 @@ import MundialCoinFlipDialog from 'src/components/MundialCoinFlipDialog.vue'
 import { positionLabel, normalizePositions, MAX_FAVORITE_POSITIONS } from 'src/utils/positions'
 import { TEAM_OPTIONS as ALL_TEAM_OPTIONS, LEAGUE_BADGES, findTeam } from 'src/utils/teams'
 import { withNotificationDefaults } from 'src/utils/notifications'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const { user, updateUserProfile, uploadProfilePhoto } = useAuth()
@@ -523,7 +524,7 @@ async function handlePhotoSelected(file) {
     await uploadProfilePhoto(file)
     $q.notify({ type: 'positive', icon: 'photo_camera', message: 'Foto actualizada' })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     uploadingPhoto.value = false
     photoFile.value = null
@@ -635,7 +636,7 @@ async function handleActivateMundial() {
     await refreshMundial()
     $q.notify({ type: 'positive', icon: 'emoji_events', message: '¡Tu Mundial arrancó!' })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     mundialLoading.value = false
   }
@@ -728,7 +729,7 @@ async function handleSave() {
     }
     $q.notify({ type: 'positive', icon: 'check_circle', message: 'Perfil actualizado.' })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     saving.value = false
   }

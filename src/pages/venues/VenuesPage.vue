@@ -199,6 +199,7 @@ import { useQuasar } from 'quasar'
 import { useVenues } from 'src/composables/useVenues'
 import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const authStore = useAuthStore()
@@ -320,7 +321,7 @@ async function handleSave() {
     }
     showDialog.value = false
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 
@@ -336,7 +337,7 @@ function confirmDelete(venue) {
       await deleteVenue(venue.id)
       $q.notify({ type: 'info', message: 'Sede eliminada.' })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   })
 }

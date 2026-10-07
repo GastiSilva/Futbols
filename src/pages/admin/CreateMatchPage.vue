@@ -257,6 +257,8 @@ import { useVenues } from 'src/composables/useVenues'
 import { useAuthStore } from 'src/stores/auth.store'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from 'src/services/firebase'
+import { serverNow } from 'src/utils/serverClock'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const router = useRouter()
@@ -387,8 +389,10 @@ async function handleSubmit() {
     // "Abrir ahora": openAt es este mismo instante. Se calcula acá (una sola
     // vez) para que el partido y la notificación programada usen exactamente
     // el mismo valor — la CF abre el partido de inmediato porque openAt ya pasó.
+    // Con la hora del SERVIDOR: con el celular del creador adelantado, openAt
+    // quedaba en el futuro para las reglas y nadie podía anotarse por unos minutos.
     if (openNow.value) {
-      form.value.openAt = toDatetimeLocal(new Date())
+      form.value.openAt = toDatetimeLocal(new Date(serverNow()))
       form.value.notifyAt = ''
     }
 
@@ -444,7 +448,7 @@ async function handleSubmit() {
         : { name: 'admin-dashboard' },
     )
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 </script>

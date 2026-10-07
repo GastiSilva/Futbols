@@ -90,6 +90,7 @@ import { ref, computed, nextTick, watch } from 'vue'
 import { useQuasar, date as qdate } from 'quasar'
 import { useApplications, MAX_CHAT_MESSAGE_LENGTH } from 'src/composables/useApplications'
 import { useAuthStore } from 'src/stores/auth.store'
+import { errorMessage } from 'src/utils/errors'
 
 const props = defineProps({
   matchId: { type: String, required: true },
@@ -150,7 +151,7 @@ async function handleSend() {
     await sendMessage(props.matchId, props.applicantId, text)
     draft.value = ''
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     sending.value = false
   }

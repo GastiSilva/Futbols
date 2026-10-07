@@ -21,7 +21,7 @@ import {
 } from '@firebase/rules-unit-testing'
 import {
   doc, getDoc, setDoc, updateDoc, deleteDoc, collection, collectionGroup, getDocs, addDoc,
-  query, where, limit,
+  query, where, limit, deleteField, runTransaction, serverTimestamp,
 } from 'firebase/firestore'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -41,6 +41,7 @@ const MATCH_A = 'matchA'   // partido del grupo A
 const PUBLIC_MATCH = 'matchPublico'  // partido del grupo A, publicado (isPublic)
 const FINISHED_MATCH = 'matchTerminado'  // partido del grupo A ya jugado (votaciones abiertas)
 const CARLOS = 'carlos'    // suplente del partido terminado (no llegó a jugar)
+const DIEGO = 'diego'      // miembro común del grupo A, todavía NO anotado en MATCH_A
 
 // Fechas relativas: la lista ya está abierta
 const PAST = new Date(Date.now() - 60 * 60 * 1000)
@@ -102,8 +103,11 @@ beforeEach(async () => {
     })
 
     await setDoc(doc(db, 'dropouts', 'd1'), { userId: BOB, matchId: MATCH_A, kind: 'left', hoursBeforeMatch: 2 })
+    // Sanción pendiente de Bob en el grupo A (la escribe la CF refreshSanction)
+    await setDoc(doc(db, 'sanctions', `${GROUP_A}_${BOB}`), { userId: BOB, groupId: GROUP_A, pending: true })
     await setDoc(doc(db, 'groups', GROUP_A, 'members', ALICE), { userId: ALICE, role: 'owner', og: true })
     await setDoc(doc(db, 'groups', GROUP_A, 'members', BOB), { userId: BOB, role: 'member', og: false })
+    await setDoc(doc(db, 'groups', GROUP_A, 'members', DIEGO), { userId: DIEGO, role: 'member', og: false })
     await setDoc(doc(db, 'groups', GROUP_B, 'members', MALLORY), { userId: MALLORY, role: 'owner', og: true })
 
     // Partido del grupo A, con la lista YA abierta
@@ -157,6 +161,19 @@ beforeEach(async () => {
       displayName: 'Invitado', position: 1, isOnWaitlist: false,
     })
 
+    // Datos ajenos colgando de MATCH_A para probar el borrado COMPLETO del
+    // partido (deleteMatch): una inscripción de Bob, su playerStats y un voto
+    // de cada votación. Sin esto el test de borrado solo tocaba el doc del
+    // partido, y la regresión de las subcolecciones pasó sin que nadie la viera.
+    await setDoc(doc(db, 'matches', MATCH_A, 'registrations', BOB), {
+      userId: BOB, displayName: 'Bob', addedBy: BOB, position: 2, isOnWaitlist: false,
+    })
+    await setDoc(doc(db, 'matches', MATCH_A, 'playerStats', BOB), {
+      userId: BOB, goals: 1, assists: 0, team: 'A', groupId: GROUP_A,
+    })
+    await setDoc(doc(db, 'matches', MATCH_A, 'mvpVotes', BOB), { votedForUserId: ALICE })
+    await setDoc(doc(db, 'matches', MATCH_A, 'murallaVotes', BOB), { votedForUserId: ALICE })
+
     await setDoc(doc(db, 'users', BOB), {
       uid: BOB, displayName: 'Bob', role: 'player',
       stats: { goals: 0, assists: 0, matchesPlayed: 0 },
@@ -187,6 +204,7 @@ beforeEach(async () => {
     })
     await setDoc(doc(db, 'matches', FINISHED_MATCH, 'registrations', CARLOS), {
       userId: CARLOS, displayName: 'Carlos', isGuest: false, position: 3, isOnWaitlist: true,
+      penalized: true, // en modo sanción (lo marca la CF onRegistrationCreated)
     })
 
     // Historial cara a cara, escrito por updateChemistryForPlayerStat (admin SDK).
@@ -196,6 +214,64 @@ beforeEach(async () => {
     await setDoc(doc(db, 'users', BOB, 'chemistry', ALICE), {
       gamesTogether: 4, winsTogether: 3, drawsTogether: 0, lossesTogether: 1,
     })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Anotarse COMO LA APP: misma transacción que useRegistration.registerEntry
+// (lee partido + inscripción + miembro, después mueve el contador y crea la
+// inscripción). Probar cada escritura por separado no alcanza: si cualquiera de
+// las dos la rechaza, falla la transacción entera y el jugador no se anota.
+async function anotarseComoLaApp(db, uid, matchId, { targetUserId = uid, isGuest = false } = {}) {
+  const matchRef = doc(db, 'matches', matchId)
+  const regRef = isGuest
+    ? doc(collection(db, 'matches', matchId, 'registrations'))
+    : doc(db, 'matches', matchId, 'registrations', targetUserId)
+  return runTransaction(db, async (tx) => {
+    const matchSnap = await tx.get(matchRef)
+    if (!isGuest) await tx.get(regRef)
+    const match = matchSnap.data()
+    if (match.groupId) await tx.get(doc(db, 'groups', match.groupId, 'members', uid))
+    if (!isGuest && targetUserId !== uid && match.groupId) {
+      await tx.get(doc(db, 'groups', match.groupId, 'members', targetUserId))
+    }
+    const newPosition = (match.currentPlayers ?? 0) + 1
+    tx.update(matchRef, { currentPlayers: newPosition, updatedAt: serverTimestamp() })
+    tx.set(regRef, {
+      userId: isGuest ? null : targetUserId,
+      displayName: isGuest ? 'Invitado' : targetUserId,
+      photoURL: null,
+      isGuest,
+      guestName: isGuest ? 'Invitado' : null,
+      addedBy: uid,
+      addedByName: uid,
+      registeredAt: serverTimestamp(),
+      position: newPosition,
+      isOnWaitlist: false,
+      team: null,
+    })
+  })
+}
+
+describe('Anotarse a un partido (transacción completa, como la app)', () => {
+  test('un miembro común se anota solo', async () => {
+    await assertSucceeds(anotarseComoLaApp(ctx(DIEGO), DIEGO, MATCH_A))
+  })
+
+  test('el creador se anota solo', async () => {
+    await assertSucceeds(anotarseComoLaApp(ctx(ALICE), ALICE, MATCH_A))
+  })
+
+  test('un miembro anota a otro miembro', async () => {
+    await assertSucceeds(anotarseComoLaApp(ctx(BOB), BOB, MATCH_A, { targetUserId: DIEGO }))
+  })
+
+  test('un miembro anota a un invitado sin cuenta', async () => {
+    await assertSucceeds(anotarseComoLaApp(ctx(BOB), BOB, MATCH_A, { isGuest: true }))
+  })
+
+  test('alguien de otro grupo NO se puede anotar', async () => {
+    await assertFails(anotarseComoLaApp(ctx(MALLORY), MALLORY, MATCH_A))
   })
 })
 
@@ -632,6 +708,56 @@ describe('Registro de bajas (dropouts)', () => {
   })
 })
 
+describe('Sanciones por bajas (sanctions + penalized)', () => {
+  test('el jugador puede leer SU sanción', async () => {
+    await assertSucceeds(getDoc(doc(ctx(BOB), 'sanctions', `${GROUP_A}_${BOB}`)))
+  })
+
+  test('leer la sanción de un compañero no se puede', async () => {
+    await assertFails(getDoc(doc(ctx(ALICE), 'sanctions', `${GROUP_A}_${BOB}`)))
+  })
+
+  test('consultar una sanción que no existe devuelve "no existe", no permission-denied', async () => {
+    await assertSucceeds(getDoc(doc(ctx(ALICE), 'sanctions', `${GROUP_A}_${ALICE}`)))
+  })
+
+  test('nadie escribe sanciones desde el cliente, ni el dueño ni un admin', async () => {
+    await assertFails(setDoc(doc(ctx(BOB), 'sanctions', `${GROUP_A}_${BOB}`), { userId: BOB, pending: false }))
+    await assertFails(deleteDoc(doc(ctx(BOB), 'sanctions', `${GROUP_A}_${BOB}`)))
+    await assertFails(setDoc(doc(ctx(ADMIN, { admin: true }), 'sanctions', `${GROUP_A}_${BOB}`), { pending: false }))
+  })
+
+  test('no se pueden listar las sanciones', async () => {
+    await assertFails(getDocs(collection(ctx(ADMIN, { admin: true }), 'sanctions')))
+  })
+
+  test('anotarse normal (sin penalized) sigue funcionando', async () => {
+    await assertSucceeds(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'registrations', BOB), {
+      userId: BOB, displayName: 'Bob', isGuest: false, addedBy: BOB, position: 2, isOnWaitlist: false, team: null,
+    }))
+  })
+
+  test('el cliente no puede anotarse a sí (ni a otro) con penalized', async () => {
+    await assertFails(setDoc(doc(ctx(BOB), 'matches', MATCH_A, 'registrations', BOB), {
+      userId: BOB, displayName: 'Bob', isGuest: false, addedBy: BOB, position: 2, isOnWaitlist: false, team: null,
+      penalized: true,
+    }))
+  })
+
+  test('el sancionado no puede apagarse el penalized de su inscripción', async () => {
+    const reg = doc(ctx(CARLOS), 'matches', FINISHED_MATCH, 'registrations', CARLOS)
+    await assertFails(updateDoc(reg, { penalized: false }))
+    await assertFails(updateDoc(reg, { penalized: deleteField() }))
+  })
+
+  test('el resto de los campos de la propia inscripción siguen editables', async () => {
+    await assertSucceeds(updateDoc(
+      doc(ctx(CARLOS), 'matches', FINISHED_MATCH, 'registrations', CARLOS),
+      { displayName: 'Carlitos' },
+    ))
+  })
+})
+
 describe('Calificar la descripción: solo entre compañeros de grupo', () => {
   test('un compañero del mismo grupo puede calificar', async () => {
     await assertSucceeds(
@@ -697,6 +823,49 @@ describe('Partidos: quién puede borrarlos', () => {
   })
 })
 
+// Réplica exacta del recorrido de `deleteMatch` (useMatch.js): para cada
+// subcolección LISTA los docs y los borra uno por uno, y recién después borra
+// el partido. Si cambia deleteMatch, cambiá esto también.
+//
+// Existe porque el voto secreto (que niega el `list` de mvpVotes/murallaVotes
+// mientras la votación está abierta) rompió "Borrar partido" hasta para el
+// admin global, y ningún test lo vio: solo se probaba borrar el doc suelto.
+async function borrarPartidoComoLaApp(db, matchId) {
+  for (const sub of ['registrations', 'playerStats', 'mvpVotes', 'murallaVotes']) {
+    try {
+      const snap = await getDocs(collection(db, 'matches', matchId, sub))
+      await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)))
+    } catch (err) {
+      if (sub === 'registrations' || err.code !== 'permission-denied') throw err
+    }
+  }
+  await deleteDoc(doc(db, 'matches', matchId))
+}
+
+describe('Partidos: "Borrar partido" completo (con inscripciones, stats y votos)', () => {
+  test('un admin global puede borrar un partido con TODO adentro', async () => {
+    await assertSucceeds(borrarPartidoComoLaApp(ctx(ADMIN, { admin: true }), MATCH_A))
+  })
+
+  // El caso para el que existe el permiso del creador: "saqué la lista dos
+  // veces sin querer". PUBLIC_MATCH no tiene subcolecciones propias.
+  test('el creador puede borrar su partido sin anotados ajenos', async () => {
+    await assertSucceeds(borrarPartidoComoLaApp(ctx(ALICE), PUBLIC_MATCH))
+  })
+
+  // Limitación conocida (viene de julio, no es una regresión): las reglas solo
+  // dejan borrar una inscripción al dueño, a quien la anotó o a un admin
+  // global, así que un creador NO admin no puede vaciar una lista con gente
+  // ajena. Si alguna vez se decide ampliarlo, este test es el que hay que girar.
+  test('el creador NO admin no puede vaciar inscripciones de otros', async () => {
+    await assertFails(borrarPartidoComoLaApp(ctx(ALICE), MATCH_A))
+  })
+
+  test('un miembro común NO puede borrar el partido', async () => {
+    await assertFails(borrarPartidoComoLaApp(ctx(BOB), MATCH_A))
+  })
+})
+
 describe('Partidos: no cerrar la lista por la rama de resultado', () => {
   test('un miembro NO puede mandar status closed disfrazado de resultado', async () => {
     await assertFails(updateDoc(doc(ctx(BOB), 'matches', MATCH_A), {
@@ -707,6 +876,23 @@ describe('Partidos: no cerrar la lista por la rama de resultado', () => {
   test('un miembro SÍ puede cargar un resultado (status finished)', async () => {
     await assertSucceeds(updateDoc(doc(ctx(BOB), 'matches', MATCH_A), {
       scoreA: 3, scoreB: 1, status: 'finished',
+    }))
+  })
+
+  test('un miembro puede cargar el resultado con goles de invitados (guestStats)', async () => {
+    await assertSucceeds(updateDoc(doc(ctx(BOB), 'matches', MATCH_A), {
+      scoreA: 9, scoreB: 7, status: 'finished',
+      guestStats: [{ regId: 'reg1', name: 'Mateo', team: 'A', goals: 2, assists: 0 }],
+    }))
+  })
+
+  test('guestStats tiene que ser una lista y no pasar de 30 filas', async () => {
+    await assertFails(updateDoc(doc(ctx(BOB), 'matches', MATCH_A), {
+      scoreA: 1, scoreB: 0, status: 'finished', guestStats: 'cualquier cosa',
+    }))
+    const demasiados = Array.from({ length: 31 }, (_, i) => ({ regId: `r${i}`, name: 'x', team: 'A', goals: 1, assists: 0 }))
+    await assertFails(updateDoc(doc(ctx(BOB), 'matches', MATCH_A), {
+      scoreA: 1, scoreB: 0, status: 'finished', guestStats: demasiados,
     }))
   })
 })

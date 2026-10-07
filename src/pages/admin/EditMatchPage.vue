@@ -265,6 +265,7 @@ import { useVenues } from 'src/composables/useVenues'
 import { useAuthStore } from 'src/stores/auth.store'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from 'src/services/firebase'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const route = useRoute()
@@ -451,7 +452,7 @@ async function handleSubmit() {
     $q.notify({ type: 'positive', message: '¡Partido actualizado!', icon: 'check_circle' })
     router.push(authStore.isAdmin ? { name: 'admin-dashboard' } : { name: 'player-dashboard' })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     saving.value = false
   }

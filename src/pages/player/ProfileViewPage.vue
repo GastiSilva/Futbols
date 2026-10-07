@@ -223,6 +223,7 @@ import { describeVersus } from 'src/utils/versus'
 import ReportUserDialog from 'src/components/ReportUserDialog.vue'
 import BadgeShelf from 'src/components/BadgeShelf.vue'
 import { useBadges } from 'src/composables/useBadges'
+import { errorMessage } from 'src/utils/errors'
 
 const route = useRoute()
 const router = useRouter()
@@ -394,7 +395,7 @@ async function loadProfile(uid) {
     )
     groupNames.value = Object.fromEntries(entries)
   } catch (err) {
-    loadError.value = err.message
+    loadError.value = errorMessage(err)
   }
 }
 
@@ -405,7 +406,7 @@ async function handleRate(stars) {
     $q.notify({ type: 'positive', icon: 'star', message: 'Calificación guardada.', timeout: 1500 })
   } catch (err) {
     myRating.value = prev
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 

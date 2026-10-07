@@ -57,6 +57,7 @@
 import { ref, computed, watch } from 'vue'
 import { useMundial } from 'src/composables/useMundial'
 import { PHASE_LABELS } from 'src/composables/useMundial'
+import { errorMessage as toUserMessage } from 'src/utils/errors'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
@@ -116,7 +117,7 @@ async function startFlip() {
     }, remaining)
   } catch (err) {
     phase.value = 'error'
-    errorMessage.value = err.message || 'No se pudo resolver el sorteo.'
+    errorMessage.value = toUserMessage(err, { fallback: 'No se pudo resolver el sorteo.' })
   }
 }
 

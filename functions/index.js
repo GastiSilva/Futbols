@@ -10,6 +10,11 @@ const {
 const logger = require('firebase-functions/logger')
 const admin = require('firebase-admin')
 const { computeMundialTransition, resolvePendingCoinFlip } = require('./mundial-rules')
+const {
+  SANCTION_WINDOW_MS,
+  evaluateSanction,
+  sortWithPenalties,
+} = require('./sanctions')
 
 // Inicialización top-level requerida por firebase-admin v13+
 admin.initializeApp()
@@ -2101,6 +2106,11 @@ exports.onRegistrationDeleted = onDocumentDeleted(
         const regsSnap = await tx.get(
           matchRef.collection('registrations').orderBy('position', 'asc'),
         )
+        // Con sanciones, los que están "en modo sanción" van detrás de los demás:
+        // si un suplente tiene que entrar, entra primero el que NO está sancionado.
+        const orderedRegs = sortWithPenalties(
+          regsSnap.docs.map((d) => ({ ref: d.ref, reg: d.data(), ...d.data() })),
+        )
 
         // ¿Fue un reemplazo (replaceRegistration)? Ahí la inscripción nueva ya
         // ocupa el lugar de la borrada: no hubo baja para avisarle a nadie, y
@@ -2112,7 +2122,8 @@ exports.onRegistrationDeleted = onDocumentDeleted(
         // Registro de bajas (panel de admin). Solo gente con cuenta: al
         // invitado sin cuenta no hay a quién atribuírsela. Partidos terminados
         // ya salieron arriba (limpiar la lista después de jugar no es bajarse).
-        if (!wasReplaced && leaverUserId) {
+        const dropoutWritten = !wasReplaced && !!leaverUserId
+        if (dropoutWritten) {
           tx.set(
             db.collection('dropouts').doc(`${matchId}_${event.params.regId}`),
             buildDropoutDoc({ kind: 'left', matchId, match, reg: deletedReg }),
@@ -2123,13 +2134,12 @@ exports.onRegistrationDeleted = onDocumentDeleted(
         const promotedNames = []
         const registeredUserIds = []
         let pos = 0
-        regsSnap.docs.forEach((docSnap) => {
+        orderedRegs.forEach(({ ref, reg }) => {
           pos += 1
-          const reg = docSnap.data()
           const isOnWaitlist = maxPlayers != null && pos > maxPlayers
 
           if (reg.position !== pos || reg.isOnWaitlist !== isOnWaitlist) {
-            tx.update(docSnap.ref, { position: pos, isOnWaitlist })
+            tx.update(ref, { position: pos, isOnWaitlist })
           }
           if (reg.userId) registeredUserIds.push(reg.userId)
 
@@ -2170,6 +2180,7 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           spotOpen: maxPlayers != null && regsSnap.size < maxPlayers,
           registeredUserIds,
           wasReplaced,
+          dropoutWritten,
         }
       })
 
@@ -2177,6 +2188,16 @@ exports.onRegistrationDeleted = onDocumentDeleted(
       if (info.wasReplaced) {
         logger.info(`onRegistrationDeleted: ${matchId} reemplazo de ${leaverName}, sin avisos`)
         return
+      }
+
+      // ¿Esta baja lo deja en sanción? Un fallo acá no puede frenar los avisos
+      // de abajo (a la gente le importa más enterarse de que hay lugar).
+      if (info.dropoutWritten && info.groupId) {
+        try {
+          await refreshSanction({ userId: leaverUserId, groupId: info.groupId })
+        } catch (err) {
+          logger.error(`onRegistrationDeleted: refreshSanction falló (${leaverUserId})`, err)
+        }
       }
       const { matchTitle, groupId, promoted, promotedNames, createdBy, status, spotOpen, registeredUserIds } = info
 
@@ -2390,11 +2411,26 @@ exports.replaceRegistration = onCall(
         )
       }
 
-      return { oldName: oldReg.displayName || oldReg.guestName || 'Alguien', newName }
+      return {
+        oldName: oldReg.displayName || oldReg.guestName || 'Alguien',
+        newName,
+        oldUserId: oldReg.userId ?? null,
+        groupId: match.groupId ?? null,
+        wasStarter: oldReg.isOnWaitlist !== true,
+      }
     })
 
     logger.info(`replaceRegistration: ${matchId} ${result.oldName} → ${result.newName} (por ${request.auth?.uid})`)
-    return { success: true, ...result }
+
+    // "No vino" cuenta como baja tardía: puede dejar al ausente en sanción.
+    if (result.oldUserId && result.groupId && result.wasStarter) {
+      try {
+        await refreshSanction({ userId: result.oldUserId, groupId: result.groupId })
+      } catch (err) {
+        logger.error(`replaceRegistration: refreshSanction falló (${result.oldUserId})`, err)
+      }
+    }
+    return { success: true, oldName: result.oldName, newName: result.newName }
   },
 )
 
@@ -2425,6 +2461,184 @@ function buildDropoutDoc({ kind, matchId, match, reg, replacedBy = null }) {
     droppedAt: admin.firestore.FieldValue.serverTimestamp(),
   }
 }
+
+// ── Sanciones por bajas ──────────────────────────────────────────────────────
+// Las reglas viven en ./sanctions.js (puras). Acá está la parte con Firestore:
+//
+//  · `refreshSanction` corre DESPUÉS de asentar una baja en `dropouts`. Si el
+//    jugador ya cruzó el umbral, deja `sanctions/{groupId}_{uid}.pending = true`
+//    (vence a los 2 meses) y le avisa. NO toca ninguna lista: la sanción se
+//    aplica recién cuando se vuelve a anotar.
+//  · `onRegistrationCreated` (abajo) aplica la sanción pendiente: marca la
+//    inscripción como `penalized`, consume la sanción (reinicia el conteo) y, si
+//    la lista está llena, deja al sancionado detrás de los que no lo están.
+//
+// `sanctions` y `penalized` los escribe SOLO el backend (las reglas lo niegan al
+// cliente): si el jugador pudiera apagarse su propia sanción, no serviría.
+async function refreshSanction({ userId, groupId }) {
+  const db = admin.firestore()
+  const nowMs = Date.now()
+  const sanctRef = db.collection('sanctions').doc(`${groupId}_${userId}`)
+
+  const [sanctSnap, dropSnap] = await Promise.all([
+    sanctRef.get(),
+    db.collection('dropouts').where('userId', '==', userId).get(),
+  ])
+  const prev = sanctSnap.exists ? sanctSnap.data() : {}
+  const countedFromMs = prev.countedFrom?.toMillis?.() ?? 0
+
+  const rows = dropSnap.docs
+    .map((d) => d.data())
+    .filter((r) => r.groupId === groupId)
+    .map((r) => ({
+      kind: r.kind,
+      hoursBeforeMatch: r.hoursBeforeMatch,
+      wasStarter: r.wasStarter,
+      droppedAtMs: r.droppedAt?.toMillis?.() ?? 0,
+    }))
+
+  const result = evaluateSanction(rows, nowMs, countedFromMs)
+  if (!result.triggers) return result
+
+  // Ya estaba pendiente (y vigente): no se re-avisa ni se estira el vencimiento.
+  const stillPending = prev.pending === true && (prev.expiresAt?.toMillis?.() ?? 0) > nowMs
+  if (stillPending) return result
+
+  await sanctRef.set(
+    {
+      userId,
+      groupId,
+      pending: true,
+      reason: result.reason,
+      bajas: result.bajas,
+      tardes: result.tardes,
+      triggeredAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromMillis(nowMs + SANCTION_WINDOW_MS),
+    },
+    { merge: true },
+  )
+
+  const groupSnap = await db.collection('groups').doc(groupId).get()
+  const groupName = groupSnap.exists ? groupSnap.data().name || 'tu grupo' : 'tu grupo'
+  const resumen = result.reason === 'tardes'
+    ? `${result.tardes} bajas de último momento`
+    : result.reason === 'mixta'
+      ? `${result.bajas} bajas, una de último momento`
+      : `${result.bajas} bajas`
+  await sendFCMToUser(
+    userId,
+    '🟨 Tarjeta amarilla',
+    `Van ${resumen} en 2 meses en ${groupName}. Tu próxima anotación va con prioridad baja: ` +
+      'si se llena la lista y se suma un suplente, te quedás afuera. Dejar colgados a los pibes no va.',
+    { groupId, type: 'sanction_warning' },
+  )
+  logger.info(`refreshSanction: ${userId} en ${groupId} → sanción pendiente (${result.reason}, ${result.bajas} bajas, ${result.tardes} tardes)`)
+  return result
+}
+
+// ── 12c. Trigger: al anotarse alguien, aplicar la sanción y acomodar la lista ──
+// Idempotente (los triggers de Firestore se entregan "al menos una vez"): el
+// estado que manda es el de la inscripción tal como está ahora, no el del evento.
+exports.onRegistrationCreated = onDocumentCreated(
+  { region: LOCATION, document: 'matches/{matchId}/registrations/{regId}' },
+  async (event) => {
+    try {
+      const { matchId, regId } = event.params
+      const db = admin.firestore()
+      const matchRef = db.collection('matches').doc(matchId)
+
+      const bumped = await db.runTransaction(async (tx) => {
+        const matchSnap = await tx.get(matchRef)
+        if (!matchSnap.exists) return []
+        const match = matchSnap.data()
+
+        // Formato libre: no hay suplentes, así que una sanción no tendría efecto
+        // (y no se debe "gastar" sin que haya servido de algo).
+        const maxPlayers = match.maxPlayers ?? null
+        if (maxPlayers == null) return []
+
+        const regsSnap = await tx.get(matchRef.collection('registrations'))
+        const current = regsSnap.docs.find((d) => d.id === regId)
+        if (!current) return [] // se bajó antes de que corriera el trigger
+        const reg = current.data()
+
+        // ¿Corresponde sancionarla? Solo gente con cuenta (los invitados no
+        // tienen historial), en partidos de grupo, y nunca un reemplazo: ahí
+        // entra alguien en el lugar de otro, no se "anota" por su cuenta.
+        const groupId = match.groupId ?? null
+        const eligible = !!groupId && !!reg.userId && reg.isGuest !== true && !reg.replacedRegistrationId
+        let penalizeNow = false
+        let sanctRef = null
+        if (eligible && reg.penalized !== true) {
+          sanctRef = db.collection('sanctions').doc(`${groupId}_${reg.userId}`)
+          const s = (await tx.get(sanctRef)).data()
+          penalizeNow = !!s && s.pending === true && (s.expiresAt?.toMillis?.() ?? 0) > Date.now()
+        }
+
+        const entries = regsSnap.docs.map((d) => {
+          const data = d.data()
+          return {
+            ref: d.ref,
+            reg: data,
+            penalized: d.id === regId ? (penalizeNow || data.penalized === true) : data.penalized === true,
+            position: data.position,
+          }
+        })
+        if (!entries.some((e) => e.penalized)) return [] // nada que acomodar
+
+        const patches = new Map()
+        if (penalizeNow) {
+          patches.set(current.ref, {
+            penalized: true,
+            penalizedAt: admin.firestore.FieldValue.serverTimestamp(),
+          })
+          // Cumplió: el conteo de bajas arranca de cero desde ahora.
+          tx.set(
+            sanctRef,
+            {
+              pending: false,
+              countedFrom: admin.firestore.Timestamp.now(),
+              servedMatchId: matchId,
+              servedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          )
+        }
+
+        // Con lugar de sobra todos entran igual: no se mueve a nadie. Recién al
+        // pasarse del cupo, los sancionados quedan detrás de los demás.
+        const overflow = regsSnap.size > maxPlayers
+        const bumpedUsers = []
+        if (overflow) {
+          sortWithPenalties(entries).forEach((e, i) => {
+            const pos = i + 1
+            const isOnWaitlist = pos > maxPlayers
+            if (e.reg.position !== pos || e.reg.isOnWaitlist !== isOnWaitlist) {
+              patches.set(e.ref, { ...(patches.get(e.ref) ?? {}), position: pos, isOnWaitlist })
+            }
+            if (e.penalized && e.reg.isOnWaitlist !== true && isOnWaitlist && e.reg.userId) {
+              bumpedUsers.push(e.reg.userId)
+            }
+          })
+        }
+
+        patches.forEach((patch, ref) => tx.update(ref, patch))
+        return bumpedUsers
+      })
+
+      for (const userId of bumped) {
+        await sendFCMToUser(
+          userId,
+          '🟨 Quedaste de suplente',
+          'Se sumó otro jugador y, por tus bajas recientes, pasaste a la lista de suplentes.',
+          { matchId, type: 'sanction_bumped' },
+        )
+      }
+    } catch (error) {
+      logger.error(`onRegistrationCreated: error en ${event.params.matchId}`, error)
+    }
+  },
+)
 
 // ── 13. Trigger: recalcular el promedio de estrellas de la descripción ───────
 // Se dispara al crear/editar/borrar users/{userId}/descriptionRatings/{raterId}.

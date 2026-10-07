@@ -262,6 +262,7 @@ const MatchSchema = {
   mvpUserId:      'string | null', // MVP del partido, fijado por closeMvpVoting
                                    // según el resultado de la votación (mvpVotes)
   mvpName:        'string | null',
+  guestStats:     'array<{ regId, name, team: "A"|"B"|null, goals, assists }>',  // goles de invitados sin cuenta: solo display, no alimenta acumuladores
   mvpVotingClosed: 'boolean',      // true una vez que se cerró la votación de MVP
                                    // (manualmente, o automático a las 36hs junto con
                                    // resultLocked) — solo lo escribe closeMvpVoting

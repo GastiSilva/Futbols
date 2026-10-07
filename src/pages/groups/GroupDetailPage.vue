@@ -377,6 +377,7 @@ import { useGroups } from 'src/composables/useGroups'
 import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useAuthStore } from 'src/stores/auth.store'
 import { useQuasar } from 'quasar'
+import { errorMessage } from 'src/utils/errors'
 
 const route = useRoute()
 const router = useRouter()
@@ -509,7 +510,7 @@ async function handleAccept(req) {
     if (group.value) group.value.memberCount++
     $q.notify({ type: 'positive', message: `${req.displayName} aceptado en el grupo` })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     processingId.value = null
   }
@@ -523,7 +524,7 @@ async function handleReject(req) {
     joinRequests.value = joinRequests.value.filter(r => r.id !== req.id)
     $q.notify({ type: 'info', message: `Solicitud de ${req.displayName} rechazada` })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     processingId.value = null
   }
@@ -543,7 +544,7 @@ function handleLeave() {
       $q.notify({ type: 'positive', message: 'Saliste del grupo correctamente' })
       router.push({ name: 'groups' })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   })
 }
@@ -570,7 +571,7 @@ function handleRemove(member) {
         timeout: 7000,
       })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   })
 }
@@ -583,7 +584,7 @@ async function handlePromote(member) {
     if (idx !== -1) members.value[idx] = { ...members.value[idx], role: 'admin' }
     $q.notify({ type: 'positive', message: `${member.displayName} es ahora administrador` })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 
@@ -601,7 +602,7 @@ async function handleToggleOG(member) {
         : `${member.displayName} ya no es OG`,
     })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 
@@ -618,7 +619,7 @@ function handleRegenerateCode() {
       if (group.value) group.value.inviteCode = newCode
       $q.notify({ type: 'positive', message: 'Código de invitación regenerado' })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   })
 }
@@ -652,7 +653,7 @@ async function handleSavePhoto() {
     showPhotoDialog.value = false
     $q.notify({ type: 'positive', message: 'Foto del grupo actualizada' })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     savingPhoto.value = false
   }

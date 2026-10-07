@@ -173,6 +173,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useGroups } from 'src/composables/useGroups'
 import { useQuasar } from 'quasar'
 import { useAuthStore } from 'src/stores/auth.store'
+import { errorMessage } from 'src/utils/errors'
 
 const router = useRouter()
 const route = useRoute()
@@ -207,7 +208,7 @@ watch(
         loadError.value = null
         groups.value = await getMyGroups()
       } catch (err) {
-        loadError.value = err.message ?? 'Error al cargar los grupos.'
+        loadError.value = errorMessage(err, { fallback: 'Error al cargar los grupos.' })
         console.error("Error cargando grupos:", err)
       }
     } else {
@@ -240,7 +241,7 @@ async function handleCreate() {
     $q.notify({ type: 'positive', message: 'Grupo creado correctamente' })
     router.push({ name: 'group-detail', params: { id: groupId } })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     creating.value = false
   }

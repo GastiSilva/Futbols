@@ -102,6 +102,7 @@ import { useQuasar } from 'quasar'
 import { useMvpVoting } from 'src/composables/useMvpVoting'
 import { useAuthStore } from 'src/stores/auth.store'
 import { buildPodium, PODIUM_MEDALS } from 'src/utils/podium'
+import { errorMessage } from 'src/utils/errors'
 
 const props = defineProps({
   match: { type: Object, required: true },
@@ -177,7 +178,7 @@ async function handleVote(votedForUserId) {
     await castVote(props.matchId, votedForUserId)
   } catch (err) {
     myMvpVote.value = prev
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 
@@ -192,7 +193,7 @@ async function handleCloseVoting() {
       message: result.winnerName ? `MVP: ${result.winnerName}` : 'Votación cerrada — empate, sin MVP',
     })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     votingLoading.value = false
   }
@@ -210,7 +211,7 @@ function handleReopenVoting() {
       await reopenMvpVoting(props.matchId)
       $q.notify({ type: 'positive', icon: 'lock_open', message: 'Votación de MVP reabierta.' })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     } finally {
       votingLoading.value = false
     }

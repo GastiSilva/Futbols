@@ -294,6 +294,7 @@ import PublicMatchCard from 'src/components/PublicMatchCard.vue'
 import ApplicationChat from 'src/components/ApplicationChat.vue'
 import MyApplicationsCard from 'src/components/MyApplicationsCard.vue'
 import { PROVINCIAS } from 'src/utils/provincias'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const authStore = useAuthStore()
@@ -440,7 +441,7 @@ async function handlePublish() {
       message: 'Publicado. Ya puede postularse gente de otros grupos.',
     })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     publishing.value = false
   }
@@ -486,7 +487,7 @@ async function handleApply() {
       message: 'Te postulaste. Te avisamos cuando el organizador responda.',
     })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     applying.value = null
   }
@@ -498,7 +499,7 @@ async function handleWithdraw(matchId) {
     await withdrawApplication(matchId)
     $q.notify({ type: 'info', message: 'Retiraste tu postulación.' })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     applying.value = null
   }

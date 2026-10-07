@@ -42,6 +42,7 @@ import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 import { useAuthStore } from 'src/stores/auth.store'
 import { NOTIFICATION_OPTIONS, withNotificationDefaults } from 'src/utils/notifications'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const { updateNotificationPref } = useAuth()
@@ -62,7 +63,7 @@ async function handleToggle(category, value) {
     await updateNotificationPref(category, value)
   } catch (err) {
     prefs.value = { ...prefs.value, [category]: previous }
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     saving.value = false
   }

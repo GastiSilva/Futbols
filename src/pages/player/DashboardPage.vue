@@ -657,6 +657,7 @@ import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 import { useRegistration } from 'src/composables/useRegistration'
+import { useSanction } from 'src/composables/useSanction'
 import { useMatch, getEffectiveStatus, manualReminderStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
@@ -665,6 +666,8 @@ import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import WelcomeHome from 'src/components/WelcomeHome.vue'
 import MyApplicationsCard from 'src/components/MyApplicationsCard.vue'
 import { PUBLIC_MATCHES_ENABLED } from 'src/utils/features'
+import { serverNow } from 'src/utils/serverClock'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const publicMatchesEnabled = PUBLIC_MATCHES_ENABLED
@@ -978,9 +981,14 @@ function getUserRegistrationForMatch(matchId) {
 }
 
 // ── Acciones ────────────────────────────────────────────────────────────────
+const { confirmJoinIfSanctioned } = useSanction()
+
 async function handleJoin(matchId) {
   const match = upcomingMatches.value.find((m) => m.id === matchId)
   if (!match) return
+
+  // Con una sanción pendiente en el grupo, se avisa antes (no se bloquea).
+  if (!(await confirmJoinIfSanctioned(match.groupId))) return
 
   try {
     const result = await joinMatch(matchId)
@@ -993,7 +1001,7 @@ async function handleJoin(matchId) {
       timeout: 4500,
     })
   } catch (err) {
-    $q.notify({ type: 'negative', icon: 'error', message: err.message })
+    $q.notify({ type: 'negative', icon: 'error', message: errorMessage(err) })
   }
 }
 
@@ -1012,7 +1020,7 @@ function handleLeave(matchId) {
       await leaveMatch(matchId)
       $q.notify({ type: 'info', message: 'Inscripción cancelada correctamente' })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   })
 }
@@ -1036,7 +1044,7 @@ function canAddOthers(match) {
   // Un invitado del link solo puede anotarse a sí mismo
   if (authStore.isGuest) return false
 
-  const now = Date.now()
+  const now = serverNow()
   const openAt = match.openAt?.toMillis?.() ?? 0
   if (now >= openAt) return true
 
@@ -1124,7 +1132,7 @@ async function handleAddPerson() {
         : '¡Persona anotada!',
     })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 
@@ -1188,7 +1196,7 @@ async function handleResendReminder(match) {
     await resendListNotification(match.id)
     $q.notify({ type: 'positive', icon: 'campaign', message: 'Aviso reenviado al grupo.' })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     resendingMatchId.value = null
   }
@@ -1217,7 +1225,7 @@ function handleRemoveReg(reg) {
       await removeRegistration(matchId, reg.id)
       $q.notify({ type: 'info', message: `${reg.displayName} fue sacado de la lista` })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   })
 }
@@ -1242,7 +1250,7 @@ function handleDeleteMatch(match) {
       if (selectedMatchId.value === match.id) selectedMatchId.value = null
       $q.notify({ type: 'info', message: 'Partido borrado' })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   })
 }

@@ -71,6 +71,7 @@
 import { computed, ref, watch } from 'vue'
 import { date, useQuasar } from 'quasar'
 import { useDropouts, summarizeDropouts, LATE_DROPOUT_HOURS } from 'src/composables/useDropouts'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const { loading, fetchDropouts } = useDropouts()
@@ -86,7 +87,7 @@ watch(
       rows.value = await fetchDropouts(d)
     } catch (err) {
       rows.value = []
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   },
   { immediate: true },

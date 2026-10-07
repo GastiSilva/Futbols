@@ -52,19 +52,22 @@
               </div>
               <div class="text-caption text-grey-6 q-mb-md">
                 Los equipos ya se definieron antes de jugar (o podés ajustarlos acá si hizo falta un cambio de último momento).
+                Los goles de los invitados cuentan para el partido, pero no suman a ningún perfil.
               </div>
 
               <div
                 v-for="player in playerRows"
-                :key="player.userId"
+                :key="player.key"
                 class="row items-center q-col-gutter-sm q-mb-sm"
               >
                 <!-- Avatar + nombre -->
                 <div class="col-12 col-sm-4 row items-center no-wrap">
-                  <q-avatar size="32px" class="q-mr-sm">
-                    <img :src="player.photoURL" :alt="player.displayName" />
+                  <q-avatar size="32px" class="q-mr-sm" :color="player.isGuest ? 'grey-4' : undefined">
+                    <q-icon v-if="player.isGuest" name="person" color="grey-7" />
+                    <img v-else :src="player.photoURL" :alt="player.displayName" />
                   </q-avatar>
                   <span class="text-body2 ellipsis">{{ player.displayName }}</span>
+                  <q-badge v-if="player.isGuest" color="grey-5" label="Invitado" class="q-ml-sm" />
                 </div>
 
                 <!-- Equipo (opcional: los equipos se definen fuera de la app) -->
@@ -131,6 +134,7 @@ import { useMatch } from 'src/composables/useMatch'
 import { usePlayerStats } from 'src/composables/usePlayerStats'
 import { collection, getDocs } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
+import { errorMessage } from 'src/utils/errors'
 
 const route = useRoute()
 const router = useRouter()
@@ -155,13 +159,17 @@ onMounted(async () => {
     if (match.value.scoreA != null) scoreA.value = match.value.scoreA
     if (match.value.scoreB != null) scoreB.value = match.value.scoreB
 
-    // Carga la lista de inscriptos (titulares con cuenta) para las stats.
-    // Los invitados sin cuenta (userId null) no acumulan stats → se excluyen.
+    // Carga la lista de inscriptos titulares. Los invitados sin cuenta (userId
+    // null) entran también: sus goles se guardan en el partido (guestStats), no
+    // en un perfil — así el desglose de goleadores suma lo que dice el marcador.
     const snap = await getDocs(collection(db, 'matches', matchId, 'registrations'))
     playerRows.value = snap.docs
-      .filter((d) => !d.data().isOnWaitlist && d.data().userId)
+      .filter((d) => !d.data().isOnWaitlist && (d.data().userId || d.data().isGuest))
       .map((d) => ({
-        userId: d.data().userId,
+        key: d.id,
+        regId: d.id,
+        isGuest: !d.data().userId,
+        userId: d.data().userId ?? null,
         displayName: d.data().displayName,
         photoURL: d.data().photoURL,
         team: d.data().team ?? null,
@@ -171,15 +179,14 @@ onMounted(async () => {
 
     // Si ya había stats cargadas, pre-rellena para poder corregir sin duplicar
     const statsSnap = await getDocs(collection(db, 'matches', matchId, 'playerStats'))
-    if (!statsSnap.empty) {
-      const byId = new Map(statsSnap.docs.map((d) => [d.id, d.data()]))
-      playerRows.value = playerRows.value.map((p) => {
-        const prev = byId.get(p.userId)
-        return prev
-          ? { ...p, goals: prev.goals ?? 0, assists: prev.assists ?? 0, team: prev.team ?? p.team }
-          : p
-      })
-    }
+    const byId = new Map(statsSnap.docs.map((d) => [d.id, d.data()]))
+    const guestById = new Map((match.value.guestStats ?? []).map((g) => [g.regId, g]))
+    playerRows.value = playerRows.value.map((p) => {
+      const prev = p.isGuest ? guestById.get(p.regId) : byId.get(p.userId)
+      return prev
+        ? { ...p, goals: prev.goals ?? 0, assists: prev.assists ?? 0, team: prev.team ?? p.team }
+        : p
+    })
   } finally {
     loadingMatch.value = false
   }
@@ -188,9 +195,19 @@ onMounted(async () => {
 async function handleSave() {
   saving.value = true
   try {
+    const guestStats = playerRows.value
+      .filter((p) => p.isGuest && ((p.goals || 0) > 0 || (p.assists || 0) > 0))
+      .map((p) => ({
+        regId: p.regId,
+        name: p.displayName,
+        team: p.team ?? null,
+        goals: p.goals || 0,
+        assists: p.assists || 0,
+      }))
+
     await saveMatchResult(
       matchId,
-      { scoreA: scoreA.value, scoreB: scoreB.value },
+      { scoreA: scoreA.value, scoreB: scoreB.value, guestStats },
       { alreadyFinished: match.value.status === 'finished' },
     )
 
@@ -204,7 +221,7 @@ async function handleSave() {
     $q.notify({ type: 'positive', message: 'Resultado guardado correctamente.' })
     router.push({ name: 'match-detail', params: { id: matchId } })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     saving.value = false
   }

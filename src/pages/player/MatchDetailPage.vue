@@ -678,6 +678,9 @@
             <q-item-section v-if="reg.isGuest" side>
               <q-badge color="grey-5" label="Invitado" />
             </q-item-section>
+            <q-item-section v-if="reg.penalized" side>
+              <q-badge color="amber-8" text-color="white" label="Sanción" />
+            </q-item-section>
             <q-item-section v-if="canReplaceRegs" side>
               <q-btn flat round dense size="sm" icon="swap_horiz" color="grey-6" @click.stop="openReplace(reg)">
                 <q-tooltip>Reemplazar (jugó otro en su lugar)</q-tooltip>
@@ -703,6 +706,9 @@
               <q-item-section>{{ reg.displayName }}</q-item-section>
               <q-item-section v-if="reg.isGuest" side>
                 <q-badge color="grey-5" label="Invitado" />
+              </q-item-section>
+              <q-item-section v-if="reg.penalized" side>
+                <q-badge color="amber-8" text-color="white" label="Sanción" />
               </q-item-section>
               <q-item-section v-if="canReplaceRegs" side>
                 <q-btn flat round dense size="sm" icon="swap_horiz" color="grey-6" @click.stop="openReplace(reg)">
@@ -746,22 +752,22 @@
               <div class="col-6">
                 <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">Equipo A</div>
                 <div v-if="scorersA.length === 0" class="text-caption text-grey-5">—</div>
-                <div v-for="s in scorersA" :key="s.userId" class="text-body2">
-                  ⚽ {{ s.displayName }}<span v-if="s.goals > 1" class="text-weight-bold"> ×{{ s.goals }}</span>
+                <div v-for="s in scorersA" :key="s.key" class="text-body2">
+                  ⚽ {{ s.displayName }}<span v-if="s.isGuest" class="text-grey-6"> (inv.)</span><span v-if="s.goals > 1" class="text-weight-bold"> ×{{ s.goals }}</span>
                 </div>
               </div>
               <div class="col-6">
                 <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">Equipo B</div>
                 <div v-if="scorersB.length === 0" class="text-caption text-grey-5">—</div>
-                <div v-for="s in scorersB" :key="s.userId" class="text-body2">
-                  ⚽ {{ s.displayName }}<span v-if="s.goals > 1" class="text-weight-bold"> ×{{ s.goals }}</span>
+                <div v-for="s in scorersB" :key="s.key" class="text-body2">
+                  ⚽ {{ s.displayName }}<span v-if="s.isGuest" class="text-grey-6"> (inv.)</span><span v-if="s.goals > 1" class="text-weight-bold"> ×{{ s.goals }}</span>
                 </div>
               </div>
             </div>
             <div v-if="scorersNoTeam.length > 0" class="text-left q-mt-sm">
               <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">Sin equipo asignado</div>
-              <div v-for="s in scorersNoTeam" :key="s.userId" class="text-body2">
-                ⚽ {{ s.displayName }}<span v-if="s.goals > 1" class="text-weight-bold"> ×{{ s.goals }}</span>
+              <div v-for="s in scorersNoTeam" :key="s.key" class="text-body2">
+                ⚽ {{ s.displayName }}<span v-if="s.isGuest" class="text-grey-6"> (inv.)</span><span v-if="s.goals > 1" class="text-weight-bold"> ×{{ s.goals }}</span>
               </div>
             </div>
           </template>
@@ -920,6 +926,7 @@ import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { usePlayerStats } from 'src/composables/usePlayerStats'
 import { useRegistration } from 'src/composables/useRegistration'
+import { useSanction } from 'src/composables/useSanction'
 import { useApplications, MAX_CHAT_MESSAGE_LENGTH } from 'src/composables/useApplications'
 import { useWeather } from 'src/composables/useWeather'
 import { useVenues } from 'src/composables/useVenues'
@@ -936,6 +943,7 @@ import MatchMurallaVoting from 'src/components/MatchMurallaVoting.vue'
 import ApplicationChat from 'src/components/ApplicationChat.vue'
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore'
 import { db } from 'src/services/firebase'
+import { errorMessage } from 'src/utils/errors'
 
 const $q = useQuasar()
 const route = useRoute()
@@ -1020,7 +1028,7 @@ onMounted(async () => {
     } catch (err) {
       // Que falle sumarlo al grupo no debe romper la pantalla: igual puede
       // ver el partido, y el motivo real aparece en el aviso.
-      $q.notify({ type: 'warning', message: `No pudimos sumarte al grupo: ${err.message}` })
+      $q.notify({ type: 'warning', message: `No pudimos sumarte al grupo: ${errorMessage(err)}` })
     }
   }
 })
@@ -1125,7 +1133,7 @@ async function openReplace(reg) {
   try {
     replaceMembers.value = await getGroupMembers(match.value.groupId)
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     loadingReplaceMembers.value = false
   }
@@ -1144,7 +1152,7 @@ async function handleReplace() {
       playerStats.value = await fetchPlayerStats(route.params.id)
     }
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     replacing.value = false
   }
@@ -1240,7 +1248,7 @@ async function handleSuggestTeams() {
       ...teamB.map((p) => ({ ...p, team: 'B' })),
     ]
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     suggestingTeams.value = false
   }
@@ -1323,7 +1331,7 @@ async function handleAcceptTeams() {
     teamPreview.value = null
     $q.notify({ type: 'positive', icon: 'groups', message: 'Equipos asignados.' })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     acceptingTeams.value = false
   }
@@ -1363,7 +1371,12 @@ async function goToRegister() {
   router.push('/login')
 }
 
+const { confirmJoinIfSanctioned } = useSanction()
+
 async function handleJoin() {
+  // Con una sanción pendiente en el grupo, se avisa antes (no se bloquea).
+  if (!(await confirmJoinIfSanctioned(match.value?.groupId))) return
+
   try {
     const result = await joinMatch(route.params.id)
     $q.notify({
@@ -1375,7 +1388,7 @@ async function handleJoin() {
       timeout: 4500,
     })
   } catch (err) {
-    $q.notify({ type: 'negative', icon: 'error', message: err.message })
+    $q.notify({ type: 'negative', icon: 'error', message: errorMessage(err) })
   }
 }
 
@@ -1391,7 +1404,7 @@ function handleLeave() {
       await leaveMatch(route.params.id)
       $q.notify({ type: 'info', message: 'Inscripción cancelada correctamente' })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     }
   })
 }
@@ -1443,8 +1456,19 @@ watch(
   { immediate: true },
 )
 
+// Los invitados sin cuenta viven en match.guestStats (no tienen playerStats):
+// se mezclan acá solo para mostrar, así el desglose suma lo que dice el marcador.
 const scorers = computed(() =>
-  playerStats.value
+  [
+    ...playerStats.value.map((p) => ({ ...p, key: p.id })),
+    ...(match.value?.guestStats ?? []).map((g) => ({
+      key: `guest-${g.regId}`,
+      displayName: g.name,
+      team: g.team,
+      goals: g.goals,
+      isGuest: true,
+    })),
+  ]
     .filter((p) => (p.goals ?? 0) > 0)
     .sort((a, b) => (b.goals ?? 0) - (a.goals ?? 0)),
 )
@@ -1507,7 +1531,7 @@ async function handleFinishMatch() {
       await finishMatch(match.value.id)
       $q.notify({ type: 'positive', icon: 'sports_score', message: 'Partido finalizado. Ya podés cargar las estadísticas.' })
     } catch (err) {
-      $q.notify({ type: 'negative', message: err.message })
+      $q.notify({ type: 'negative', message: errorMessage(err) })
     } finally {
       finishing.value = false
     }
@@ -1524,7 +1548,7 @@ async function handleToggleVenueReserved(reserved) {
   try {
     await toggleVenueReserved(route.params.id, reserved)
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     togglingVenue.value = false
   }
@@ -1554,7 +1578,7 @@ async function handleTogglePublic(isPublic) {
       message: 'El partido dejó de estar publicado.',
     })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     togglingPublic.value = false
   }
@@ -1601,7 +1625,7 @@ async function handleResolve(app, accept) {
       message: `${app.applicantName} se suma al partido.`,
     })
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     resolving.value = null
   }
@@ -1632,7 +1656,7 @@ async function confirmReject() {
     $q.notify({ type: 'info', icon: 'cancel', message: `Rechazaste a ${app.applicantName}.` })
     rejectDialog.value = false
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   } finally {
     resolving.value = null
   }
@@ -1646,7 +1670,7 @@ async function handleVote(applicantId, vote) {
       [applicantId]: await fetchVoteTally(route.params.id, applicantId),
     }
   } catch (err) {
-    $q.notify({ type: 'negative', message: err.message })
+    $q.notify({ type: 'negative', message: errorMessage(err) })
   }
 }
 
