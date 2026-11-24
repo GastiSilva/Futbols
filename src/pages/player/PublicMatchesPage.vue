@@ -388,7 +388,7 @@ const publishableMatches = computed(() => {
       if (m.isPublic) return false
       if ((m.date?.toMillis?.() ?? 0) < now) return false
       const st = getEffectiveStatus(m)
-      if (st === 'finished' || st === 'closed') return false
+      if (st === 'finished' || st === 'closed' || st === 'played') return false
       // Mismo criterio que las reglas para escribir isPublic
       if (authStore.isAdmin) return true
       if (m.createdBy === uid) return true

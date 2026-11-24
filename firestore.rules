@@ -72,6 +72,22 @@ service cloud.firestore {
         && memberHasEarlyAccess(matchData(matchId).get('groupId', null), request.auth.uid);
     }
 
+    // ¿Todavía NO llegó la hora de empezar a jugar?
+    //
+    // La hora del partido congela la lista: desde ese instante nadie se anota
+    // ni anota a nadie — tampoco el creador (que por lo demás se anota desde
+    // el momento cero) ni el invitado anónimo del link. Antes se podía seguir
+    // sumando gente al día siguiente de jugado, y esa lista es la que después
+    // alimenta el reparto de equipos, las estadísticas y el MVP.
+    //
+    // Un partido sin `date` no se bloquea: el campo puede venir null y no hay
+    // horario contra el cual decidir. Las dos lecturas de matchData() son el
+    // MISMO get() — las reglas cachean el documento dentro de la evaluación.
+    function matchNotStartedYet(matchId) {
+      return matchData(matchId).get('date', null) == null
+        || request.time < matchData(matchId).get('date', null);
+    }
+
     // ¿El caller es quien creó el partido? (se puede anotar desde el momento cero)
     function isMatchCreator(matchId) {
       return isAuthenticated()
@@ -511,8 +527,15 @@ service cloud.firestore {
           // ningún acumulador. Se acota el tamaño para que no sea un cajón sin fondo.
           && request.resource.data.get('guestStats', []) is list
           && request.resource.data.get('guestStats', []).size() <= 30
-          && request.resource.data.scoreA is int && request.resource.data.scoreA >= 0
-          && request.resource.data.scoreB is int && request.resource.data.scoreB >= 0
+          // El marcador puede quedar VACÍO: "Finalizar partido" da por
+          // terminado el partido sin cargar el resultado (se carga después,
+          // en PostMatchPage). Antes esta rama exigía int, así que finalizar
+          // tenía que escribir un 0-0 que después nadie distinguía de un
+          // empate real. null = todavía no lo cargó nadie.
+          && (request.resource.data.scoreA == null
+              || (request.resource.data.scoreA is int && request.resource.data.scoreA >= 0))
+          && (request.resource.data.scoreB == null
+              || (request.resource.data.scoreB is int && request.resource.data.scoreB >= 0))
           // Cargar un resultado SOLO puede dejar el partido en 'finished'. Antes
           // se aceptaba cualquiera de los cuatro estados, así que un miembro
           // común podía mandar `status: 'closed'` por esta rama y cerrarle la
@@ -609,6 +632,10 @@ service cloud.firestore {
           || (isAuthenticated() && guestHasEntryInMatch(matchId));
 
         // ── ALTA ──────────────────────────────────────────────────────────
+        // TECHO COMÚN a las cuatro ramas: la hora del partido
+        // (matchNotStartedYet). Lo que sigue define cuándo ABRE la lista para
+        // cada uno; el cierre es siempre el mismo, el momento de jugar.
+        //
         // Tres ventanas posibles:
         //  (0) El creador del partido se anota A SÍ MISMO en cualquier momento.
         //  (1) Ventana abierta (request.time >= openAt): uno mismo, invitado
@@ -622,6 +649,10 @@ service cloud.firestore {
         // Function onRegistrationCreated: ninguna rama de alta puede traerlos.
         allow create: if
           (isAuthenticated() || isAnonGuest())
+          // La hora del partido cierra la lista para todas las ramas de abajo,
+          // incluida la del creador (que no tiene restricción de horario de
+          // APERTURA, pero sí este tope).
+          && matchNotStartedYet(matchId)
           && !('penalized' in request.resource.data)
           && !('penalizedAt' in request.resource.data)
           && (

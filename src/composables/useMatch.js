@@ -83,12 +83,70 @@ export const MATCH_STATUS = {
 }
 
 /**
+ * ¿Ya llegó la hora de empezar a jugar?
+ *
+ * Es el instante que parte en dos la vida de un partido: hasta ahí la lista
+ * se mueve (uno se anota, anota a un amigo, se baja); a partir de ahí la
+ * lista queda CONGELADA y lo único que falta es finalizarlo y cargar el
+ * resultado. Antes este momento no existía para la app: se podía seguir
+ * sumando gente horas después de jugado, lo que ensucia la lista con la que
+ * después se reparten equipos, estadísticas y MVP.
+ *
+ * Se mide con la hora del SERVIDOR (serverNow), igual que la apertura de la
+ * lista: las reglas comparan contra `request.time`, y con el celular
+ * adelantado el cliente y el servidor no coincidirían.
+ */
+export function hasKickedOff(match) {
+  const dateMillis = match?.date?.toMillis?.() ?? 0
+  return dateMillis > 0 && serverNow() >= dateMillis
+}
+
+/**
+ * ¿Se puede dar por terminado el partido ya mismo?
+ *
+ * Desde el pitazo inicial. Antes de esa hora no hay nada que dar por
+ * terminado: una lista que no se va a jugar se BORRA, no se finaliza.
+ *
+ * Excepción: un partido SIN fecha cargada. El campo es opcional al crearlo
+ * ("podés completarlo después"), y sin fecha no hay pitazo que esperar — si
+ * se exigiera igual, ese partido quedaría imposible de cerrar para siempre.
+ */
+/**
+ * Cuánto tiempo después de su horario un partido sin finalizar se sigue
+ * mostrando en "Partidos".
+ *
+ * El partido se queda hasta que alguien lo finaliza — esa es la idea — pero
+ * sin un tope los que nadie cerró nunca se acumulan arriba de todo (se
+ * ordena por fecha ascendente, así que los viejos encabezan la lista) y le
+ * tapan a todo el grupo los partidos que vienen. A los 30 días ya no lo va a
+ * finalizar nadie: deja de aparecer acá, y se sigue llegando a él por el
+ * grupo como a cualquier otro.
+ */
+export const STALE_MATCH_MS = 30 * 24 * 60 * 60 * 1000
+
+export function isStaleMatch(match) {
+  const dateMillis = match?.date?.toMillis?.() ?? 0
+  return dateMillis > 0 && serverNow() - dateMillis > STALE_MATCH_MS
+}
+
+export function isFinishable(match) {
+  if (!match || match.status === 'finished') return false
+  const hasDate = (match.date?.toMillis?.() ?? 0) > 0
+  return !hasDate || hasKickedOff(match)
+}
+
+/**
  * Calcula el estado efectivo de un partido en el cliente.
  * No escribe en Firestore — solo para display y lógica UI.
  *
  * Reglas:
  *  - 'finished' siempre es autoritativo
- *  - 'closed'   siempre es autoritativo
+ *  - Si ya pasó la hora del partido → 'played' (estado SOLO de UI, igual que
+ *    'full': nunca se guarda en Firestore). Significa "ya se jugó, falta que
+ *    alguien lo finalice". Va ANTES que 'closed' y que 'full' porque es el
+ *    más fuerte de los tres: no importa si la lista se cerró a mano o se
+ *    llenó, si el partido ya empezó lo único pendiente es finalizarlo.
+ *  - 'closed'   cerrado a mano, siempre es autoritativo
  *  - Si currentPlayers >= maxPlayers → 'full' (cupo lleno, pero se admite
  *    anotarse como SUPLENTE en la lista de espera)
  *  - Si 'scheduled' pero openAt ya pasó → 'open'
@@ -97,6 +155,7 @@ export const MATCH_STATUS = {
 export function getEffectiveStatus(match) {
   if (!match) return null
   if (match.status === 'finished') return 'finished'
+  if (hasKickedOff(match)) return 'played'
   if (match.status === 'closed') return 'closed'
   if ((match.currentPlayers ?? 0) >= (match.maxPlayers ?? Infinity)) return 'full'
   if (match.status === 'scheduled') {
@@ -153,13 +212,23 @@ export function useMatch() {
       // que sin esto vería todos los partidos globales, que no le sirven.
       matches.value = authStore.isGuest
         ? all.filter((m) => m.id === authStore.guestMatchId)
-        : all.sort((a, b) => (a.date?.toMillis?.() ?? 0) - (b.date?.toMillis?.() ?? 0))
+        : all
+            // Partidos que nadie finalizó hace más de un mes: el corte evita
+            // que se apilen arriba de todo y tapen lo que viene (ver
+            // STALE_MATCH_MS). Siguen estando en su grupo.
+            .filter((m) => !isStaleMatch(m))
+            .sort((a, b) => (a.date?.toMillis?.() ?? 0) - (b.date?.toMillis?.() ?? 0))
     }
 
     function listen(key, constraints) {
       const q = query(
         collection(db, 'matches'),
-        where('status', 'in', [MATCH_STATUS.SCHEDULED, MATCH_STATUS.OPEN]),
+        // CLOSED entra a propósito: un partido con la lista cerrada a mano
+        // seguía existiendo pero DESAPARECÍA de "Partidos", y la única forma
+        // de llegar a él para finalizarlo era Grupos → el grupo → el partido.
+        // Un partido se va de esta pantalla cuando alguien lo FINALIZA, no
+        // cuando se cierra la lista ni cuando pasa su horario.
+        where('status', 'in', [MATCH_STATUS.SCHEDULED, MATCH_STATUS.OPEN, MATCH_STATUS.CLOSED]),
         ...constraints,
         orderBy('date', 'asc'),
         limit(MATCH_QUERY_LIMIT),
@@ -609,11 +678,16 @@ export function useMatch() {
   const nextMatch = computed(() => matches.value[0] ?? null)
 
   // ── Escucha en tiempo real los partidos de un grupo ───────────────────────
+  // Orden DESCENDENTE: con la lista paginada, lo que tiene que estar en la
+  // página 1 es lo que viene y lo que se acaba de jugar — no el primer
+  // partido que jugó el grupo hace dos años. Y si el grupo tiene más de
+  // MATCH_QUERY_LIMIT partidos, el tope recorta por el lado viejo, que es el
+  // que no se mira.
   function subscribeToGroupMatches(groupId) {
     const q = query(
       collection(db, 'matches'),
       where('groupId', '==', groupId),
-      orderBy('date', 'asc'),
+      orderBy('date', 'desc'),
       limit(MATCH_QUERY_LIMIT),
     )
     unsubscribe = onSnapshot(
@@ -640,13 +714,22 @@ export function useMatch() {
   // apenas se juega (misma rama de reglas que cargar el resultado, que exige
   // status == 'finished'). No toca el marcador: eso se carga después en
   // PostMatchPage, y el partido queda listo para recibirlo.
+  // ⚠️ El marcador queda en NULL, no en 0-0. Escribir ceros era una mentira
+  // con consecuencias: el partido figuraba "0 — 0" como resultado final, la
+  // lista de terminados lo mostraba con marcador en vez del cartel "Sin
+  // cargar", y PostMatchPage —que pre-rellena el formulario con lo que ya
+  // está guardado— abría con 0 y 0. Si quien cargaba las estadísticas no
+  // tocaba el marcador, se guardaba un empate que nunca existió y cada
+  // jugador con equipo se llevaba un 'E' al acumulador (stats.draws).
+  // null significa exactamente lo que pasó: el partido terminó y el
+  // resultado todavía no lo cargó nadie.
   async function finishMatch(matchId) {
     loading.value = true
     error.value = null
     try {
       await updateDoc(doc(db, 'matches', matchId), {
-        scoreA: 0,
-        scoreB: 0,
+        scoreA: null,
+        scoreB: null,
         status: MATCH_STATUS.FINISHED,
         finishedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),

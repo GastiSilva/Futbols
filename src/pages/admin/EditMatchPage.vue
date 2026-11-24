@@ -421,7 +421,15 @@ async function handleSubmit() {
       ciudad: selectedVenue?.ciudad ?? null,
     })
 
-    // Si se modificó openAt, reprogramar notificaciones
+    // Si se modificó openAt, reprogramar notificaciones.
+    //
+    // Si esto falla, el partido queda con el horario NUEVO pero la cola
+    // avisando a la hora vieja — y antes el único rastro era un console.warn
+    // que nadie mira: la pantalla decía "¡Partido actualizado!" y listo. Por
+    // eso ahora se avisa en pantalla: los datos sí se guardaron (por eso es
+    // 'warning' y no 'negative'), pero el aviso quedó desacomodado y hay que
+    // saberlo.
+    let notifFailed = false
     if (form.value.openAt) {
       try {
         const scheduleOpen = httpsCallable(functions, 'scheduleMatchOpenNotification')
@@ -431,6 +439,7 @@ async function handleSubmit() {
           matchTitle: form.value.title,
         })
       } catch (notifErr) {
+        notifFailed = true
         console.warn('[Notif] No se pudo reprogramar notificación:', notifErr.message)
       }
 
@@ -444,12 +453,22 @@ async function handleSubmit() {
             matchTitle: form.value.title,
           })
         } catch (notifErr) {
+          notifFailed = true
           console.warn('[Notif] No se pudo reprogramar recordatorio:', notifErr.message)
         }
       }
     }
 
-    $q.notify({ type: 'positive', message: '¡Partido actualizado!', icon: 'check_circle' })
+    if (notifFailed) {
+      $q.notify({
+        type: 'warning',
+        icon: 'notifications_off',
+        timeout: 8000,
+        message: 'Se guardaron los cambios, pero no se pudo reprogramar el aviso de apertura. Avisale al dueño del grupo.',
+      })
+    } else {
+      $q.notify({ type: 'positive', message: '¡Partido actualizado!', icon: 'check_circle' })
+    }
     router.push(authStore.isAdmin ? { name: 'admin-dashboard' } : { name: 'player-dashboard' })
   } catch (err) {
     $q.notify({ type: 'negative', message: errorMessage(err) })

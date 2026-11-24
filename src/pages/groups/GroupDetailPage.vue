@@ -318,10 +318,15 @@
         />
       </div>
 
-      <!-- ── Partidos del grupo (visibles para todos; crear: solo owner/admin) ── -->
+      <!-- ── Partidos del grupo ──────────────────────────────────────────
+           Los ve cualquier miembro, y cualquier miembro puede crear uno
+           (armar la lista es tarea común, no de gestión). Lo que distingue a
+           un OG/owner/admin es poder EDITAR y BORRAR los partidos de otros,
+           armar equipos y reenviar el aviso. -->
       <div class="row items-center justify-between q-mt-xl q-mb-sm">
         <div class="text-subtitle1 text-weight-bold">
           <q-icon name="sports_soccer" class="q-mr-xs text-green-9" />Partidos
+          <span v-if="matches.length > 0" class="text-caption text-grey-6 q-ml-xs">({{ matches.length }})</span>
         </div>
         <q-btn
           v-if="canCreateMatch"
@@ -343,7 +348,7 @@
 
       <q-list v-else bordered separator class="rounded-borders">
         <q-item
-          v-for="match in matches"
+          v-for="match in pagedMatches"
           :key="match.id"
           clickable
           :to="{ name: 'match-detail', params: { id: match.id } }"
@@ -365,6 +370,17 @@
           </q-item-section>
         </q-item>
       </q-list>
+
+      <div v-if="matchPageCount > 1" class="row justify-center q-mt-sm">
+        <q-pagination
+          v-model="matchPage"
+          :max="matchPageCount"
+          max-pages="6"
+          direction-links
+          boundary-links
+          color="green-9"
+        />
+      </div>
 
     </template>
   </q-page>
@@ -412,6 +428,21 @@ const pagedMembers = computed(() =>
 )
 watch(members, () => {
   if (memberPage.value > memberPageCount.value) memberPage.value = memberPageCount.value
+})
+
+// Partidos del grupo: mismo patrón que los miembros. La lista llega ordenada
+// de MÁS NUEVO a más viejo (subscribeToGroupMatches), así que la página 1 es
+// lo que viene y lo que se acaba de jugar — en un grupo con dos años de
+// historia, la lista entera de corrido era un scroll infinito donde el
+// partido del sábado quedaba sepultado.
+const MATCHES_PER_PAGE = 10
+const matchPage = ref(1)
+const matchPageCount = computed(() => Math.max(1, Math.ceil(matches.value.length / MATCHES_PER_PAGE)))
+const pagedMatches = computed(() =>
+  matches.value.slice((matchPage.value - 1) * MATCHES_PER_PAGE, matchPage.value * MATCHES_PER_PAGE),
+)
+watch(matches, () => {
+  if (matchPage.value > matchPageCount.value) matchPage.value = matchPageCount.value
 })
 const joinRequests = ref([])
 const myRole = ref(null)
@@ -673,6 +704,9 @@ function matchStatusLabel(status) {
     open: 'Abierto',
     full: 'Completo',
     closed: 'Cerrado',
+    // Ya pasó la hora y nadie lo finalizó (estado solo de UI, ver
+    // getEffectiveStatus): el chip nombra lo que falta hacer.
+    played: 'Falta finalizar',
     finished: 'Finalizado',
   }[status] ?? status
 }
@@ -683,6 +717,7 @@ function matchStatusColor(status) {
     open: 'green-8',
     full: 'orange-7',
     closed: 'red-7',
+    played: 'amber-9',
     finished: 'grey-6',
   }[status] ?? 'grey-5'
 }

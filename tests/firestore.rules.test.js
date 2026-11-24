@@ -42,6 +42,7 @@ const PUBLIC_MATCH = 'matchPublico'  // partido del grupo A, publicado (isPublic
 const FINISHED_MATCH = 'matchTerminado'  // partido del grupo A ya jugado (votaciones abiertas)
 const CARLOS = 'carlos'    // suplente del partido terminado (no llegó a jugar)
 const DIEGO = 'diego'      // miembro común del grupo A, todavía NO anotado en MATCH_A
+const STARTED_MATCH = 'matchEmpezado'  // partido del grupo A cuya hora YA pasó
 
 // Fechas relativas: la lista ya está abierta
 const PAST = new Date(Date.now() - 60 * 60 * 1000)
@@ -123,6 +124,20 @@ beforeEach(async () => {
       maxPlayers: 10,
       openAt: PAST,
       date: FUTURE,
+      instantOpen: false,
+    })
+
+    // Partido del grupo A cuya HORA YA PASÓ (pero sin finalizar): la lista
+    // queda congelada aunque el status siga siendo 'open' y sobre lugar.
+    await setDoc(doc(db, 'matches', STARTED_MATCH), {
+      title: 'Partido que ya empezó',
+      groupId: GROUP_A,
+      createdBy: ALICE,
+      status: 'open',
+      currentPlayers: 0,
+      maxPlayers: 10,
+      openAt: PAST,
+      date: PAST,
       instantOpen: false,
     })
 
@@ -275,6 +290,66 @@ describe('Anotarse a un partido (transacción completa, como la app)', () => {
 
   test('alguien de otro grupo NO se puede anotar', async () => {
     await assertFails(anotarseComoLaApp(ctx(MALLORY), MALLORY, MATCH_A))
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// La HORA del partido congela la lista. Hasta acá, un partido seguía
+// admitiendo inscripciones al día siguiente de jugado: la lista con la que
+// después se reparten equipos, estadísticas y MVP terminaba con gente que no
+// estuvo en la cancha. El tope vale para TODAS las ramas del alta, incluida
+// la del creador (que no tiene restricción de horario de apertura).
+describe('Partido ya empezado: la lista queda cerrada', () => {
+  test('un miembro común NO se puede anotar', async () => {
+    await assertFails(anotarseComoLaApp(ctx(DIEGO), DIEGO, STARTED_MATCH))
+  })
+
+  test('el CREADOR tampoco se puede anotar', async () => {
+    await assertFails(anotarseComoLaApp(ctx(ALICE), ALICE, STARTED_MATCH))
+  })
+
+  test('tampoco se puede anotar a otro miembro', async () => {
+    await assertFails(
+      anotarseComoLaApp(ctx(BOB), BOB, STARTED_MATCH, { targetUserId: DIEGO }),
+    )
+  })
+
+  test('tampoco se puede anotar a un invitado sin cuenta', async () => {
+    await assertFails(anotarseComoLaApp(ctx(BOB), BOB, STARTED_MATCH, { isGuest: true }))
+  })
+
+  // "Finalizar partido" da por terminado el partido SIN marcador: el
+  // resultado se carga después. Escribir un 0-0 para zafar de la regla era
+  // una mentira que después nadie distinguía de un empate real.
+  test('un miembro SÍ puede finalizarlo con el marcador VACÍO', async () => {
+    await assertSucceeds(
+      updateDoc(doc(ctx(BOB), 'matches', STARTED_MATCH), {
+        scoreA: null, scoreB: null, status: 'finished', finishedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('y después puede cargarle el resultado de verdad', async () => {
+    await assertSucceeds(
+      updateDoc(doc(ctx(BOB), 'matches', STARTED_MATCH), {
+        scoreA: 4, scoreB: 2, status: 'finished', updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('un marcador que no es ni número ni vacío se rechaza', async () => {
+    await assertFails(
+      updateDoc(doc(ctx(BOB), 'matches', STARTED_MATCH), {
+        scoreA: 'tres', scoreB: 2, status: 'finished', updatedAt: serverTimestamp(),
+      }),
+    )
+  })
+
+  test('bajarse SÍ se puede (no vino: la baja queda registrada)', async () => {
+    await assertSucceeds(
+      deleteDoc(doc(ctx(BOB), 'matches', MATCH_A, 'registrations', BOB)),
+    )
   })
 })
 

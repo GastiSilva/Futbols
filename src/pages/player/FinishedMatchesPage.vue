@@ -68,7 +68,7 @@
           <q-icon name="history" size="48px" class="text-grey-5 q-mb-sm" />
           <div class="text-body2 text-grey-7">
             {{ finishedMatches.length === 0
-              ? 'Todavía no jugaste ningún partido.'
+              ? 'Todavía no hay partidos terminados en tus grupos.'
               : 'No hay partidos terminados en ese rango de fechas.' }}
           </div>
         </q-card>
@@ -82,12 +82,19 @@
           flat
           bordered
           class="q-mb-sm finished-card cursor-pointer"
+          :class="{ 'absent-card': didNotPlay(match.id) }"
           @click="router.push({ name: 'match-detail', params: { id: match.id } })"
         >
           <q-card-section class="row items-center no-wrap">
             <div class="col">
               <div class="text-subtitle1 text-weight-bold">{{ match.title }}</div>
               <div class="text-caption text-grey-6">{{ formatMatchDate(match.date) }}</div>
+              <!-- Los partidos del grupo en los que no estuve se muestran
+                   igual (son historia del grupo), pero dichos con todas las
+                   letras: el marcador no es mío. -->
+              <q-badge v-if="didNotPlay(match.id)" outline color="grey-6" class="q-mt-xs">
+                <q-icon name="visibility" size="12px" class="q-mr-xs" />No jugaste
+              </q-badge>
             </div>
             <div
               v-if="match.scoreA != null && match.scoreB != null"
@@ -124,6 +131,11 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: 1px;
 }
+/* Partido del grupo en el que no jugué: se ve, pero no compite visualmente
+   con los propios. */
+.absent-card {
+  background: #fafafa;
+}
 </style>
 
 <script setup>
@@ -142,19 +154,36 @@ const { finishedMatches, loading, subscribeToFinished, stopListeningFinished } =
 // Resultado (W/E/L) de CADA jugador queda en playerStats/{uid}.result — se
 // busca puntual por partido (no hay collectionGroup acá porque son pocos:
 // solo los que se muestran en pantalla, con cache para no repetir el fetch).
+//
+// Se guardan TRES cosas distintas, que antes colapsaban todas en `null`:
+//   'W' | 'E' | 'L' → jugué y este fue mi resultado
+//   'played'        → jugué, pero el resultado todavía no está calculado
+//   'absent'        → NO jugué este partido (no existe mi playerStats)
+// La diferencia importa: esta pantalla muestra TODOS los partidos terminados
+// de mis grupos, no solo los míos, y un 5-3 ajeno pintado de verde se lee
+// como una victoria propia.
 const myResults = ref(new Map())
 
 async function loadMyResult(matchId) {
   if (myResults.value.has(matchId)) return
   const uid = authStore.user?.uid
   if (!uid) return
-  myResults.value.set(matchId, null) // evita refetch mientras carga
+  myResults.value.set(matchId, 'loading') // evita refetch mientras carga
   try {
     const snap = await getDoc(doc(db, 'matches', matchId, 'playerStats', uid))
-    myResults.value.set(matchId, snap.exists() ? (snap.data().result ?? null) : null)
+    myResults.value.set(
+      matchId,
+      snap.exists() ? (snap.data().result ?? 'played') : 'absent',
+    )
   } catch {
-    myResults.value.set(matchId, null)
+    // Sin poder leerlo no se puede afirmar nada: se deja neutro, nunca
+    // 'absent' (decirle "no jugaste" a quien sí jugó es peor que no decir nada).
+    myResults.value.set(matchId, 'played')
   }
+}
+
+function didNotPlay(matchId) {
+  return myResults.value.get(matchId) === 'absent'
 }
 
 watch(
@@ -168,7 +197,10 @@ function resultColorClass(matchId) {
   if (r === 'W') return 'text-positive'
   if (r === 'L') return 'text-negative'
   if (r === 'E') return 'text-amber-8'
-  return 'text-primary' // sin resultado propio cargado: color neutro
+  // No jugué: gris apagado. Es el resultado del grupo, no el mío — el verde
+  // de 'text-primary' lo hacía pasar por propio.
+  if (r === 'absent') return 'text-grey-5'
+  return 'text-primary' // jugué, pero todavía sin resultado calculado
 }
 
 const fromDate = ref(null)

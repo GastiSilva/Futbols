@@ -47,7 +47,7 @@ import {
 import { httpsCallable } from 'firebase/functions'
 import { db, functions } from 'src/services/firebase'
 import { useAuthStore } from 'src/stores/auth.store'
-import { getEffectiveStatus } from 'src/composables/useMatch'
+import { getEffectiveStatus, hasKickedOff } from 'src/composables/useMatch'
 import { serverNow } from 'src/utils/serverClock'
 import { errorMessage } from 'src/utils/errors'
 
@@ -57,6 +57,10 @@ export const REGISTRATION_ERRORS = {
   ALREADY_REGISTERED: 'Ya estás anotado en este partido.',
   MATCH_NOT_OPEN: 'La lista todavía no abrió.',
   MATCH_CLOSED: 'El partido ya no admite inscripciones.',
+  // La lista se congela a la HORA del partido. Antes se podía seguir sumando
+  // gente al día siguiente de jugado: la lista con la que después se reparten
+  // equipos, estadísticas y MVP terminaba con nombres de gente que no jugó.
+  MATCH_ALREADY_STARTED: 'El partido ya empezó — la lista quedó cerrada.',
   QUOTA_EXCEEDED: 'Se han llenado todos los cupos disponibles.',
   // Solo para el código `aborted`: Firestore ya reintentó 5 veces solo y
   // siguió chocando con otras altas simultáneas. Antes este texto se mostraba
@@ -271,6 +275,16 @@ export function useRegistration() {
         const now = serverNow()
         const openAtMillis = match.openAt?.toMillis() ?? 0
         openThreshold = openAtMillis
+
+        // La hora del partido cierra la lista para TODOS, sin excepciones:
+        // tampoco el creador (que por lo demás se anota desde el momento
+        // cero) ni el invitado del link. Va antes que cualquier otra
+        // validación para que el mensaje que se ve sea el que explica de
+        // verdad lo que pasó. Lo mismo exige firestore.rules en el alta —
+        // esto es solo el aviso temprano.
+        if (hasKickedOff(match)) {
+          throw new Error(REGISTRATION_ERRORS.MATCH_ALREADY_STARTED)
+        }
         const isSelf = !entry.isGuest && entry.targetUserId === user.uid
         const isCreator = match.createdBy === user.uid
         const creatorSelf = isCreator && isSelf
@@ -628,6 +642,11 @@ export function useRegistration() {
     if (!match) return false
     const effectiveStatus = getEffectiveStatus(match)
     if (effectiveStatus === 'closed' || effectiveStatus === 'finished') return false
+    // 'played' = ya pasó la hora de empezar. No se chequea solo por el estado
+    // efectivo: getEffectiveStatus se evalúa cuando se la llama, así que en
+    // una vista cacheada podría venir vieja. hasKickedOff mira el reloj acá
+    // mismo, en cada render.
+    if (effectiveStatus === 'played' || hasKickedOff(match)) return false
     if (userRegistration.value) return false
 
     const { allowed, threshold } = registrationAccessFor(match, authStore)

@@ -249,6 +249,10 @@ const MatchSchema = {
   // NOTA: 'full' (cupo lleno) es un estado EFECTIVO solo de UI, calculado por
   // getEffectiveStatus() — no se guarda en Firestore. Con cupo lleno se puede
   // seguir anotando gente como SUPLENTE (isOnWaitlist).
+  // NOTA: 'played' (ya pasó `date` y nadie lo finalizó) también es solo de UI
+  // y pisa a 'closed'/'full'. Desde ese instante la lista está CONGELADA
+  // (firestore.rules: matchNotStartedYet) y lo único pendiente es finalizarlo.
+  // El partido se queda en la pantalla de Partidos hasta que alguien lo hace.
 
   scoreA:         'number | null',
   scoreB:         'number | null',

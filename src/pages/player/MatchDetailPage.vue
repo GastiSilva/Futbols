@@ -380,7 +380,17 @@
                   Lista de espera · Puesto #{{ myEntry.displayPosition - match.maxPlayers }}
                 </span>
               </div>
+              <!-- Después del pitazo inicial la lista está congelada: si no
+                   se puede sumar a nadie, tampoco se saca a nadie. El que no
+                   fue se arregla con "Reemplazar" (⇄, en su fila de la
+                   lista), que deja constancia de quién jugó en su lugar en
+                   vez de borrar el dato. Y bajarse acá a esa altura te comía
+                   una baja tardía sin decírtelo.
+                   El Dashboard ya se comportaba así — este botón era el único
+                   lugar donde todavía se podía, que es justamente el tipo de
+                   diferencia que hay que explicar a mano. -->
               <q-btn
+                v-if="eStatus !== 'played'"
                 flat
                 dense
                 color="negative"
@@ -390,6 +400,9 @@
                 :loading="regLoading"
                 @click="handleLeave"
               />
+              <div v-else class="text-caption text-grey-6 text-center">
+                El partido ya empezó — la lista quedó cerrada.
+              </div>
             </div>
           </template>
 
@@ -439,6 +452,25 @@
             <q-icon name="lock" size="22px" />
             <span class="text-body2">Inscripción cerrada</span>
           </div>
+
+          <!-- Compartir SOLO el link, sin la lista de nombres: el mensaje que
+               se le manda a una persona para que se sume. Vive acá y no en el
+               encabezado de "Anotados" porque esa tarjeta no existe mientras
+               no haya nadie anotado — justo cuando más falta hace. El
+               invitado anónimo no lo ve (su link no sirve para sumar a nadie
+               a un grupo del que él mismo no forma parte) y un partido ya
+               jugado tampoco: no hay a qué anotarse. -->
+          <q-btn
+            v-if="!authStore.isGuest && eStatus !== 'played'"
+            flat
+            dense
+            no-caps
+            color="green-9"
+            icon="link"
+            label="Compartir link para anotarse"
+            class="full-width q-mt-md"
+            @click="shareInvite"
+          />
         </q-card-section>
       </q-card>
 
@@ -720,12 +752,35 @@
         </template>
       </q-card>
 
-      <!-- Resultado (si finalizado) -->
-      <q-card v-if="match.status === 'finished' && match.scoreA != null" flat bordered class="q-mb-md bg-green-1">
+      <!-- Resultado (si finalizado).
+           La tarjeta se dibuja apenas el partido está finalizado, aunque
+           todavía no haya marcador: adentro viven las votaciones de MVP y
+           Muralla, y votar no depende de que alguien haya cargado el
+           resultado. Antes la condición exigía `scoreA != null` — con el
+           marcador vacío desaparecía la tarjeta entera y con ella la
+           votación. -->
+      <q-card v-if="match.status === 'finished'" flat bordered class="q-mb-md bg-green-1">
         <q-card-section class="text-center">
           <div class="text-overline text-grey-6">Resultado final</div>
-          <div class="text-h3 text-weight-bold text-green-9">
+          <div v-if="match.scoreA != null" class="text-h3 text-weight-bold text-green-9">
             {{ match.scoreA }} — {{ match.scoreB }}
+          </div>
+          <div v-else class="q-py-xs">
+            <div class="text-h6 text-weight-bold text-grey-6">Sin cargar</div>
+            <div class="text-caption text-grey-6">
+              El partido ya terminó, falta el marcador.
+            </div>
+            <q-btn
+              v-if="canLoadResult"
+              unelevated
+              no-caps
+              dense
+              color="orange-7"
+              icon="scoreboard"
+              label="Cargar resultado"
+              class="pill-btn q-mt-sm"
+              :to="{ name: 'post-match', params: { id: match.id } }"
+            />
           </div>
 
           <MatchMvpVoting
@@ -922,7 +977,7 @@
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { date, useQuasar } from 'quasar'
-import { useMatch, getEffectiveStatus } from 'src/composables/useMatch'
+import { useMatch, getEffectiveStatus, hasKickedOff, isFinishable } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { usePlayerStats } from 'src/composables/usePlayerStats'
 import { useRegistration } from 'src/composables/useRegistration'
@@ -934,7 +989,7 @@ import { useTeamBalancer } from 'src/composables/useTeamBalancer'
 import { useAuth } from 'src/composables/useAuth'
 import { useAuthStore } from 'src/stores/auth.store'
 import { useMatchInvite, setPendingInvite } from 'src/composables/useMatchInvite'
-import { buildListText, shareListText } from 'src/utils/shareList'
+import { buildListText, buildInviteText, shareListText } from 'src/utils/shareList'
 import { parseTeamsText } from 'src/utils/parseTeamsText'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import { PUBLIC_MATCHES_ENABLED } from 'src/utils/features'
@@ -1170,7 +1225,10 @@ const canManageTeams = computed(() => {
   // jugar (la lista ya está cerrada pero el partido no se jugó todavía).
   // Terminado, ya se sabe quién jugó en cada equipo — sugerir algo ahí no
   // tiene sentido.
-  const listaCerradaSinJugar = st === 'closed' || st === 'full'
+  // 'played' entra: muchos grupos reparten los equipos en la cancha y los
+  // anotan después, al cargar las estadísticas. Dejarlo afuera le sacaría el
+  // armado de equipos a quien lo cerró a mano y encima pasó la hora.
+  const listaCerradaSinJugar = st === 'closed' || st === 'full' || st === 'played'
   if (!listaCerradaSinJugar) return false
   return authStore.isAdmin || authStore.isOgInGroup(match.value.groupId)
 })
@@ -1355,6 +1413,17 @@ function shareList() {
   return shareListText(text, $q.notify)
 }
 
+// ── Compartir SOLO el link ───────────────────────────────────────────────────
+// Sin un solo nombre: es el mensaje que se le manda a UNA persona para que se
+// sume, no el estado de la lista para el grupo.
+function shareInvite() {
+  const text = buildInviteText({
+    match: match.value,
+    when: [matchDate.value, matchTime.value].filter(Boolean).join(' - '),
+  })
+  return shareListText(text, $q.notify, 'El link')
+}
+
 // El invitado pasa a tener cuenta. Se deja la invitación pendiente para que,
 // al terminar de registrarse, el guard lo traiga de vuelta a ESTE partido y le
 // sume el grupo — el circuito completo, sin que tenga que buscar nada.
@@ -1505,16 +1574,18 @@ const canReopenVoting = computed(
 
 const canLoadResult = computed(() => {
   const st = getEffectiveStatus(match.value)
-  const done = st === 'closed' || st === 'finished' || st === 'full'
+  const done = st === 'closed' || st === 'finished' || st === 'full' || st === 'played'
   return done && (authStore.isAdmin || !!myGroupRole.value)
 })
 
-// Finalizar a mano: mientras el partido NO esté finalizado todavía. Cubre el
-// caso de "ya jugamos, queremos cargar las stats ahora" sin esperar a que el
-// scheduler lo cierre por horario.
+// Finalizar a mano: desde la HORA del partido y hasta que alguien lo
+// finalice. El botón aparece justo cuando el partido deja de estar por jugarse
+// — antes de esa hora no hay nada que dar por terminado (para una lista que no
+// va a jugarse está "Borrar partido") y el botón solo competiría con
+// "Anotarme". Mismo permiso que cargar el resultado, que es lo que viene
+// después: admin global o miembro del grupo del partido.
 const canFinishMatch = computed(() => {
-  if (!match.value) return false
-  if (getEffectiveStatus(match.value) === 'finished') return false
+  if (!isFinishable(match.value)) return false
   return authStore.isAdmin || !!myGroupRole.value
 })
 
@@ -1686,14 +1757,20 @@ const STATUS_MAP = {
   open:      { label: 'Abierto',    color: 'green-7' },
   full:      { label: 'Completo',   color: 'orange-7' },
   closed:    { label: 'Cerrado',    color: 'red-7' },
+  // Ya pasó la hora y nadie lo finalizó: el chip nombra lo que FALTA hacer,
+  // no el estado en que quedó.
+  played:    { label: 'Falta finalizar', color: 'amber-9' },
   finished:  { label: 'Finalizado', color: 'grey-6' },
 }
 const statusLabel = computed(() => STATUS_MAP[getEffectiveStatus(match.value)]?.label ?? match.value?.status ?? '')
 const statusColor = computed(() => STATUS_MAP[getEffectiveStatus(match.value)]?.color ?? 'grey')
 
-// Link "Agregar a Google Calendar" — solo para partidos que aún no finalizaron.
+// Link "Agregar a Google Calendar" — solo para partidos que todavía no se
+// jugaron. Agendar un partido de ayer no le sirve a nadie.
 const calendarUrl = computed(() =>
-  match.value && match.value.status !== 'finished' ? buildGoogleCalendarUrl(match.value) : null,
+  match.value && match.value.status !== 'finished' && !hasKickedOff(match.value)
+    ? buildGoogleCalendarUrl(match.value)
+    : null,
 )
 </script>
 

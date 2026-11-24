@@ -383,12 +383,12 @@ function formatDate(ts) {
 }
 
 function statusLabel(s) {
-  const map = { scheduled: 'Programado', open: 'Abierto', full: 'Completo', closed: 'Cerrado', finished: 'Finalizado' }
+  const map = { scheduled: 'Programado', open: 'Abierto', full: 'Completo', closed: 'Cerrado', played: 'Falta finalizar', finished: 'Finalizado' }
   return map[s] ?? s
 }
 
 function statusColor(s) {
-  const map = { scheduled: 'blue-grey-6', open: 'green-7', full: 'orange-7', closed: 'red-7', finished: 'grey-6' }
+  const map = { scheduled: 'blue-grey-6', open: 'green-7', full: 'orange-7', closed: 'red-7', played: 'amber-9', finished: 'grey-6' }
   return map[s] ?? 'grey'
 }
 </script>

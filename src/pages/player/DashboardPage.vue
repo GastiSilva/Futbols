@@ -58,8 +58,10 @@
     <!-- ── Lista de próximos partidos ────────────────────────────────────── -->
     <template v-else>
 
+      <!-- Ya no son solo los "próximos": los ya jugados se quedan acá hasta
+           que alguien los finaliza, y son justamente los que piden acción. -->
       <div class="text-overline text-green-9 text-weight-bold q-mb-sm dash-overline">
-        PRÓXIMOS PARTIDOS ({{ upcomingMatches.length }})
+        MIS PARTIDOS ({{ upcomingMatches.length }})
       </div>
 
       <!-- ── Cards comprimidas de partidos ────────────────────────────────── -->
@@ -151,7 +153,7 @@
                     <q-icon name="map" size="xs" class="q-mr-xs" />Ver en Google Maps
                   </a>
                   <a
-                    v-if="match.status !== 'finished' && buildGoogleCalendarUrl(match)"
+                    v-if="match.status !== 'finished' && match.status !== 'played' && buildGoogleCalendarUrl(match)"
                     :href="buildGoogleCalendarUrl(match)"
                     target="_blank"
                     rel="noopener"
@@ -184,8 +186,36 @@
 
             <!-- ── Zona de acción principal ────────────────────────────────── -->
 
+            <!-- ⓪ Ya se jugó y nadie lo finalizó: es LO ÚNICO que falta, así
+                 que se come la zona de acción entera. Va antes que "ya estás
+                 anotado" a propósito — después del partido, que uno figure
+                 como titular #7 ya no es una novedad ni una acción. -->
+            <template v-if="match.status === 'played'">
+              <div class="column items-center q-gutter-sm">
+                <q-icon name="sports_score" color="amber-9" size="48px" />
+                <div class="text-subtitle1 text-weight-bold text-center">Este partido ya se jugó</div>
+                <div class="text-caption text-grey-6 text-center">
+                  Finalizalo para cargar el resultado y las estadísticas.
+                </div>
+                <q-btn
+                  v-if="canFinishMatch(match)"
+                  unelevated
+                  color="teal-7"
+                  class="full-width pill-btn q-mt-sm"
+                  size="lg"
+                  icon="sports_score"
+                  label="Finalizar partido"
+                  :loading="finishingMatchId === match.id"
+                  @click="handleFinishMatch(match)"
+                />
+                <div v-else class="text-caption text-grey-5 text-center">
+                  Lo tiene que finalizar alguien del grupo.
+                </div>
+              </div>
+            </template>
+
             <!-- ① Ya anotado -->
-            <template v-if="getUserRegistrationForMatch(match.id)">
+            <template v-else-if="getUserRegistrationForMatch(match.id)">
               <div class="column items-center q-gutter-sm">
                 <q-icon
                   :name="getUserRegistrationForMatch(match.id).waitlisted ? 'hourglass_empty' : 'check_circle'"
@@ -289,6 +319,23 @@
                 :to="{ name: 'post-match', params: { id: match.id } }"
               />
             </div>
+
+            <!-- Compartir SOLO el link, sin la lista de nombres: el mensaje
+                 que se le manda a una persona para que se sume. El invitado
+                 anónimo no lo ve (su link no sirve para sumar a nadie a un
+                 grupo del que él mismo no forma parte), y un partido ya
+                 jugado tampoco: no hay a qué anotarse. -->
+            <q-btn
+              v-if="!authStore.isGuest && match.status !== 'played'"
+              flat
+              dense
+              no-caps
+              color="green-9"
+              icon="link"
+              label="Compartir link para anotarse"
+              class="full-width q-mt-md"
+              @click="shareInvite(match)"
+            />
 
             <!-- ── Acciones de gestión: editar datos / calcular equipos ──────── -->
             <!-- OG/owner/admin del grupo, quien creó el partido, o admin global -->
@@ -658,10 +705,10 @@ import { useQuasar } from 'quasar'
 import { useAuth } from 'src/composables/useAuth'
 import { useRegistration } from 'src/composables/useRegistration'
 import { useSanction } from 'src/composables/useSanction'
-import { useMatch, getEffectiveStatus, manualReminderStatus } from 'src/composables/useMatch'
+import { useMatch, getEffectiveStatus, hasKickedOff, isFinishable, manualReminderStatus } from 'src/composables/useMatch'
 import { useGroups } from 'src/composables/useGroups'
 import { useAuthStore } from 'src/stores/auth.store'
-import { buildListText, shareListText } from 'src/utils/shareList'
+import { buildListText, buildInviteText, shareListText } from 'src/utils/shareList'
 import { buildGoogleCalendarUrl } from 'src/utils/calendar'
 import WelcomeHome from 'src/components/WelcomeHome.vue'
 import MyApplicationsCard from 'src/components/MyApplicationsCard.vue'
@@ -703,13 +750,26 @@ const {
   subscribeToFinished,
   stopListeningFinished,
   deleteMatch,
+  finishMatch,
   resendListNotification,
 } = useMatch()
 const { getGroupMembers } = useGroups()
 const authStore = useAuthStore()
 
+// ── Latido de reloj ──────────────────────────────────────────────────────────
+// `getEffectiveStatus` depende de la hora (la lista abre sola a su horario, y
+// el partido pasa a 'played' cuando llega el momento de jugar), pero una
+// computed no se recalcula porque pase el tiempo: solo si cambia algo
+// reactivo. Sin este latido, alguien con la app abierta a las 19:59 seguía
+// viendo "ANOTARME" a las 20:05, hasta que llegara un snapshot de Firestore.
+// Cada 30s alcanza: el umbral es la hora del partido, no un cronómetro.
+const nowTick = ref(Date.now())
+let nowTickTimer = null
+
 // ── Matches próximos ─────────────────────────────────────────────────────────
-const upcomingMatches = computed(() =>
+const upcomingMatches = computed(() => {
+  void nowTick.value // dependencia explícita del latido (ver arriba)
+  return (
   matches.value
     ?.filter((m) => getEffectiveStatus(m) !== 'finished')
     .map((m) => ({
@@ -731,8 +791,9 @@ const upcomingMatches = computed(() =>
     manualReminderLastAt: m.manualReminderLastAt ?? null,
     manualReminderDay: m.manualReminderDay ?? null,
     manualReminderCount: m.manualReminderCount ?? 0,
-  })) ?? [],
-)
+  })) ?? []
+  )
+})
 
 // ── Bienvenida del recién llegado ────────────────────────────────────────────
 // `matches` arranca en [] y se llena por onSnapshot, así que "vacío" y
@@ -790,6 +851,19 @@ function shareList() {
     includeInviteLink: !authStore.isGuest,
   })
   return shareListText(text, $q.notify)
+}
+
+// ── Compartir SOLO el link ───────────────────────────────────────────────────
+// Otra conversación que "Compartir lista": esto se le manda a una persona
+// suelta para que se sume, y ahí los nombres de los que ya están anotados no
+// le dicen nada a quien recibe el mensaje. Recibe el partido por parámetro
+// (no usa selectedMatch) porque se dispara desde la tarjeta de CADA partido.
+function shareInvite(match) {
+  const text = buildInviteText({
+    match,
+    when: [formatMatchDate(match.date), formatMatchTime(match.date)].filter(Boolean).join(' - '),
+  })
+  return shareListText(text, $q.notify, 'El link')
 }
 
 // Hora en la que ESTE usuario puntual va a poder ver la lista de anotados
@@ -872,12 +946,16 @@ function formatMatchTime(dateTimestamp) {
 }
 
 // ── Status helpers ──────────────────────────────────────────────────────────
+// 'played' = ya pasó la hora y nadie lo finalizó todavía. Es el único estado
+// de esta pantalla que pide una ACCIÓN de quien lo mira, así que va en ámbar
+// y dice qué falta hacer, no en qué estado está.
 function getStatusColor(status) {
   return {
     scheduled: 'blue-grey-6',
     open: 'green-9',
     full: 'orange-7',
     closed: 'red-7',
+    played: 'amber-9',
     finished: 'grey-6',
   }[status] ?? 'grey-6'
 }
@@ -888,6 +966,7 @@ function getStatusLabel(status) {
     open: 'Abierto',
     full: 'Completo',
     closed: 'Cerrado',
+    played: 'Falta finalizar',
     finished: 'Finalizado',
   }[status] ?? status
 }
@@ -898,6 +977,7 @@ function getStatusIcon(status) {
     open: 'radio_button_checked',
     full: 'hourglass_top',
     closed: 'lock',
+    played: 'sports_score',
     finished: 'done_all',
   }[status] ?? 'help'
 }
@@ -1041,6 +1121,9 @@ const loadingMembers = ref(false)
 function canAddOthers(match) {
   if (!match) return false
   if (match.status === 'closed' || match.status === 'finished') return false
+  // Ya se jugó: la lista está congelada. Anotar a alguien después del partido
+  // mete en la lista a gente que no estuvo en la cancha.
+  if (match.status === 'played' || hasKickedOff(match)) return false
   // Un invitado del link solo puede anotarse a sí mismo
   if (authStore.isGuest) return false
 
@@ -1157,12 +1240,75 @@ function canManageMatch(match) {
   return !!match.groupId && authStore.isOgInGroup(match.groupId)
 }
 
+// ── Finalizar el partido desde la pantalla de Partidos ───────────────────────
+// Antes "Finalizar partido" vivía SOLO en el detalle del partido, y para
+// llegar había que ir Grupos → el grupo → el partido: tres pantallas para la
+// acción que cierra el ciclo de cada fin de semana. Ahora el partido se queda
+// acá hasta que alguien la toca.
+//
+// Se habilita con el PITAZO INICIAL (hasKickedOff): antes de esa hora
+// finalizar un partido que no se jugó no significa nada —para eso está
+// "Borrar partido"—, y el botón solo competiría con "Anotarme".
+//
+// Permiso espejado de firestore.rules (rama "cargar el resultado"): admin
+// global o miembro del grupo del partido. Los partidos sin grupo quedan
+// afuera a propósito: esa rama de las reglas solo deja pasar al admin, así
+// que mostrar el botón sería ofrecer algo que el servidor rechaza.
+function canFinishMatch(match) {
+  if (!match || authStore.isGuest) return false
+  if (!isFinishable(match)) return false
+  return isAdmin.value || (!!match.groupId && authStore.isMemberOfGroup(match.groupId))
+}
+
+const finishingMatchId = ref(null)
+
+function handleFinishMatch(match) {
+  $q.dialog({
+    title: 'Finalizar partido',
+    message: `¿Dar por terminado "${match.title}"? Después vas a poder cargar el resultado y las estadísticas.`,
+    cancel: { flat: true, noCaps: true, label: 'Cancelar', color: 'grey-7' },
+    ok: { unelevated: true, noCaps: true, label: 'Finalizar', color: 'teal-7' },
+  }).onOk(async () => {
+    finishingMatchId.value = match.id
+    try {
+      await finishMatch(match.id)
+      // Al finalizarlo, el partido sale de esta lista (pasa a "Partidos
+      // terminados"). Sin este atajo en el propio aviso, el que acaba de
+      // tocar el botón se queda mirando una tarjeta que desapareció y tiene
+      // que salir a buscar dónde se cargan las estadísticas.
+      $q.notify({
+        type: 'positive',
+        icon: 'sports_score',
+        message: 'Partido finalizado.',
+        timeout: 8000,
+        actions: [
+          {
+            label: 'Cargar resultado',
+            color: 'white',
+            noCaps: true,
+            handler: () => router.push({ name: 'post-match', params: { id: match.id } }),
+          },
+        ],
+      })
+    } catch (err) {
+      $q.notify({ type: 'negative', message: errorMessage(err) })
+    } finally {
+      finishingMatchId.value = null
+    }
+  })
+}
+
 // Calcular/sugerir equipos: mismo criterio que canManageTeams en
 // MatchDetailPage — solo desde que la lista está cerrada (ya se sabe quién
 // juega) y solo OG/owner/admin del grupo, o admin global.
 function canManageTeamsFor(match) {
   if (!match) return false
-  const listaCerrada = match.status === 'closed' || match.status === 'full' || match.status === 'finished'
+  // 'played' entra: la lista ya está congelada y puede faltar repartir los
+  // equipos para cargar las estadísticas (armarlos en la cancha y anotarlos
+  // después es lo más común).
+  const listaCerrada =
+    match.status === 'closed' || match.status === 'full' ||
+    match.status === 'played' || match.status === 'finished'
   if (!listaCerrada) return false
   return isAdmin.value || (!!match.groupId && authStore.isOgInGroup(match.groupId))
 }
@@ -1172,6 +1318,10 @@ function canManageTeamsFor(match) {
 // (assertCanResendMatchListNotification). Solo con la lista abierta.
 function canResendReminderFor(match) {
   if (!match?.groupId || match.rawStatus !== 'open') return false
+  // Ya se jugó: el status GUARDADO sigue en 'open', pero la lista está
+  // congelada. Mandar "¡la lista sigue abierta!" por un partido de ayer es un
+  // push al grupo entero para una acción que el servidor ya rechaza.
+  if (match.status === 'played' || hasKickedOff(match)) return false
   if (isAdmin.value) return true
   if (match.createdBy === user.value?.uid) return true
   return authStore.isOgInGroup(match.groupId)
@@ -1259,6 +1409,9 @@ function handleDeleteMatch(match) {
 onMounted(() => {
   subscribeToMatchesUpcoming()
   if (!authStore.isGuest) subscribeToFinished()
+  nowTickTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 30000)
   // Ventana de gracia: si en 1.2s no llegó ningún partido, damos la lista por
   // vacía de verdad y mostramos la bienvenida.
   settleTimer = setTimeout(() => {
@@ -1318,6 +1471,7 @@ watch(
 
 onUnmounted(() => {
   if (settleTimer) clearTimeout(settleTimer)
+  if (nowTickTimer) clearInterval(nowTickTimer)
   countdownTimers.forEach((timer) => clearInterval(timer))
   countdownTimers.clear()
   stopListening()

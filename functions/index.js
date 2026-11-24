@@ -302,6 +302,14 @@ exports.resendMatchListNotification = onCall(
       if (match.status !== 'open') {
         throw new HttpsError('failed-precondition', 'Solo se puede reenviar mientras la lista está abierta.')
       }
+      // La hora del partido congela la lista (ver matchNotStartedYet en
+      // firestore.rules): el status guardado sigue siendo 'open', pero nadie
+      // puede anotarse ya. Sin esto, el botón mandaba "¡la lista sigue
+      // abierta, anotate!" a todo el grupo por un partido ya jugado.
+      const matchDate = match.date ? match.date.toMillis() : 0
+      if (matchDate && Date.now() >= matchDate) {
+        throw new HttpsError('failed-precondition', 'El partido ya empezó — la lista está cerrada.')
+      }
 
       const now = new Date()
       const todayKey = argDateKey(now)
@@ -827,6 +835,100 @@ async function runPostMatchReminder() {
   }
 }
 
+// ── 5b-bis. Scheduled: recordar que falta FINALIZAR el partido ──────────────
+//
+// Por qué existe: el recordatorio de "cargá las estadísticas"
+// (runPostMatchReminder) se dispara 3hs después de `finishedAt` — o sea,
+// después de que alguien finalizó el partido. Si nadie lo finaliza, ese aviso
+// no sale NUNCA, y el partido se queda para siempre sin resultado, sin
+// votación de MVP y sin estadísticas. La app no le pedía a nadie que lo
+// finalizara: había que acordarse solo.
+//
+// A quién le llega: a los que PUEDEN finalizarlo y ADEMÁS estuvieron en la
+// cancha — el creador del partido y los OG/owner/admin del grupo, pero solo
+// si figuran como TITULARES en la lista. Al que no fue, preguntarle "¿cómo
+// salió?" no tiene sentido: no lo sabe. ⚠️ Consecuencia buscada: si ningún
+// OG ni el creador jugaron ese partido, no sale ningún aviso.
+//
+// Centinela `finishReminderSent` en el propio partido, escrito ANTES de
+// mandar (mismo criterio que el resto de las colas): si el envío falla a la
+// mitad, el tick siguiente no vuelve a avisarle a quien ya se enteró.
+//
+// La query es por RANGO DE FECHA a secas, sin filtrar status en Firestore: la
+// ventana son 20 minutos de partidos (un puñado de documentos), el filtro de
+// estado sale gratis en memoria, y así no hace falta desplegar ningún índice
+// compuesto nuevo.
+async function runFinishMatchReminder() {
+  const db = admin.firestore()
+  const now = Date.now()
+  const windowStart = admin.firestore.Timestamp.fromDate(new Date(now - 3.33 * 60 * 60 * 1000))
+  const windowEnd = admin.firestore.Timestamp.fromDate(new Date(now - 3 * 60 * 60 * 1000))
+
+  const snap = await db
+    .collection('matches')
+    .where('date', '>=', windowStart)
+    .where('date', '<=', windowEnd)
+    .get()
+
+  if (snap.empty) return
+
+  for (const docSnap of snap.docs) {
+    const match = docSnap.data()
+    const matchId = docSnap.id
+
+    if (match.status === 'finished') continue   // ya lo finalizaron: nada que pedir
+    if (match.finishReminderSent) continue
+
+    const groupId = match.groupId ?? null
+
+    // Titulares con cuenta: los que estuvieron en la cancha.
+    const regsSnap = await docSnap.ref.collection('registrations').get()
+    const starterIds = regsSnap.docs
+      .map((d) => d.data())
+      .filter((r) => r.userId && r.isOnWaitlist !== true)
+      .map((r) => r.userId)
+
+    // De esos, los que pueden finalizarlo: el creador, o quien tiene mando en
+    // el grupo (og / owner / admin) — el mismo conjunto que
+    // memberHasEarlyAccess en firestore.rules.
+    const targets = []
+    for (const userId of starterIds) {
+      if (userId === match.createdBy) {
+        targets.push(userId)
+        continue
+      }
+      if (!groupId) continue
+      const memberSnap = await db
+        .collection('groups').doc(groupId)
+        .collection('members').doc(userId)
+        .get()
+      if (!memberSnap.exists) continue
+      const member = memberSnap.data()
+      if (member.og === true || ['owner', 'admin'].includes(member.role)) targets.push(userId)
+    }
+
+    await docSnap.ref.update({ finishReminderSent: true })
+
+    if (targets.length === 0) {
+      logger.info(`runFinishMatchReminder: ${matchId} sin destinatarios (ningún OG ni el creador jugaron)`)
+      continue
+    }
+
+    const title = '🏁 ¿Cómo salió?'
+    const body = `Finalizá "${match.title ?? 'el partido'}" para cargar el resultado y votar MVP.`
+    let sent = 0
+    for (const userId of targets) {
+      try {
+        await sendFCMToUser(userId, title, body, { matchId, type: 'finish_match_reminder' })
+        sent += 1
+      } catch (error) {
+        logger.error(`runFinishMatchReminder: falló el envío a ${userId} en ${matchId}`, error)
+      }
+    }
+    logger.info(`runFinishMatchReminder: ${matchId} → ${sent}/${targets.length} avisos enviados`)
+  }
+}
+
 // ── 5c. Scheduled: auto-cerrar resultado/votaciones a las 36hs ───────────────
 // Corre cada hora. Un partido 'finished' hace más de 36hs (desde finishedAt,
 // que se fija UNA sola vez) deja de ser editable por el cliente común: cierra
@@ -1212,6 +1314,7 @@ const SCHEDULED_TASKS = [
   { name: 'lowSignupAlert',     everyMinutes: 10, run: runMatchLowSignupAlert },
   { name: 'matchHypeNotify',    everyMinutes: 10, run: runMatchHypeNotify },
   { name: 'postMatchReminder',  everyMinutes: 10, run: runPostMatchReminder },
+  { name: 'finishMatchReminder', everyMinutes: 10, run: runFinishMatchReminder },
   { name: 'autoCloseMatches',   everyMinutes: 60, run: runAutoCloseMatches },
   { name: 'monthlyBadges',      monthly: { day: 1, hour: 3 }, run: runMonthlyBadges },
 ]
@@ -2098,6 +2201,23 @@ exports.onRegistrationDeleted = onDocumentDeleted(
           return null
         }
 
+        // Un partido que YA SE JUGÓ pero que nadie finalizó todavía sigue con
+        // status 'open' en Firestore, así que caía en todo el circuito de una
+        // baja normal: se le escribía una fila en `dropouts` (con la posible
+        // sanción detrás), se "promovía" a un suplente que ya no tiene nada
+        // que jugar, y se le mandaba al grupo entero "⚽ ¡Se liberó un lugar,
+        // anotáte!" por un partido de ayer — a una lista que las reglas ya no
+        // dejan tocar (ver matchNotStartedYet en firestore.rules).
+        //
+        // Sacar a alguien después del pitazo es LIMPIAR LA LISTA, no bajarse.
+        // El "no vino" tiene su propia herramienta, `replaceRegistration`, que
+        // deja constancia de quién jugó en su lugar y sí cuenta como baja.
+        const matchStartMs = match.date?.toMillis?.() ?? 0
+        if (matchStartMs && Date.now() >= matchStartMs) {
+          logger.info(`onRegistrationDeleted: match ${matchId} ya se jugó, se omite (sacaron a ${leaverName})`)
+          return null
+        }
+
         // Formato libre (maxPlayers null) = sin límite: NUNCA hay suplentes.
         // No colapsar a 0 — `pos > 0` sería true para todos y marcaría a todo
         // el partido como lista de espera. Mismo criterio que registerEntry
@@ -2973,6 +3093,14 @@ async function withdrawOverlappingApplications(db, applicantId, acceptedMatchId,
 // depende por completo de esta llamada: si falla, el partido queda 'scheduled'
 // PARA SIEMPRE y no se envía ninguna notificación. Por eso el permiso ahora
 // coincide con el de crear: el CREADOR del partido puede programar lo suyo.
+//
+// Los OG del grupo también entran. firestore.rules ya los deja EDITAR
+// cualquier partido del grupo (hasEarlyAccessInMatchGroup, que es og ||
+// owner/admin), así que un OG podía cambiarle el horario de apertura a un
+// partido ajeno pero NO reprogramar su aviso: el partido quedaba abriendo a
+// la hora nueva y la cola avisando a la vieja. Este helper tiene que cubrir
+// exactamente a los mismos que pueden editar, o el permiso queda partido al
+// medio.
 async function canCallerScheduleMatchNotifications(uid, matchId) {
   const db = admin.firestore()
   const matchSnap = await db.collection('matches').doc(matchId).get()
@@ -2989,7 +3117,8 @@ async function canCallerScheduleMatchNotifications(uid, matchId) {
     .collection('members').doc(uid)
     .get()
   if (!memberSnap.exists) return false
-  return ['owner', 'admin'].includes(memberSnap.data().role)
+  const member = memberSnap.data()
+  return member.og === true || ['owner', 'admin'].includes(member.role)
 }
 
 // Programar notificaciones lo puede hacer un admin global o el owner/admin del

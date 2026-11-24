@@ -86,11 +86,45 @@ export function buildListText({
 }
 
 /**
+ * Invitación PELADA: los datos del partido y el link, sin un solo nombre.
+ *
+ * Es otra conversación que la lista completa. "Compartir lista" se manda al
+ * grupo para mostrar cómo viene la cosa; esto se le manda a UNA persona para
+ * que se sume ("che, ¿venís?"), y ahí los catorce nombres de los que ya están
+ * anotados no le dicen nada a quien recibe el mensaje — y de paso son datos
+ * de terceros viajando a alguien de afuera del grupo.
+ *
+ * @param {object} opts
+ * @param {object} opts.match  partido (title, location, id)
+ * @param {string} [opts.when] fecha/hora ya formateada
+ * @returns {string}
+ */
+export function buildInviteText({ match, when = '' }) {
+  if (!match) return ''
+
+  const lines = []
+  lines.push(`⚽ ${match.title}`)
+  if (match.location) lines.push(`📍 ${match.location}`)
+  if (when) lines.push(`🕒 ${when}`)
+  lines.push('')
+  lines.push('Anotate acá:')
+  // El link va SOLO en su renglón y sin nada pegado: WhatsApp deja de
+  // autolinkear una URL si tiene texto o caracteres no-ASCII al lado.
+  lines.push(buildMatchInviteLink(match.id))
+
+  return lines.join('\n')
+}
+
+/**
  * Comparte el texto por el share nativo, o lo copia al portapapeles.
  * `notify` es la instancia de Quasar ($q.notify) — se inyecta para que este
  * módulo no dependa del framework.
+ *
+ * `what` nombra lo que se compartió ("La lista", "El link") para que el aviso
+ * de "copiado al portapapeles" diga la verdad: el mismo helper manda la lista
+ * completa y la invitación pelada.
  */
-export async function shareListText(text, notify) {
+export async function shareListText(text, notify, what = 'La lista') {
   if (!text) return
 
   if (navigator.share) {
@@ -104,8 +138,8 @@ export async function shareListText(text, notify) {
 
   try {
     await navigator.clipboard.writeText(text)
-    notify?.({ type: 'positive', icon: 'content_copy', message: 'Lista copiada al portapapeles' })
+    notify?.({ type: 'positive', icon: 'content_copy', message: `${what} se copió al portapapeles` })
   } catch {
-    notify?.({ type: 'negative', message: 'No se pudo copiar la lista' })
+    notify?.({ type: 'negative', message: `No se pudo copiar ${what.toLowerCase()}` })
   }
 }
